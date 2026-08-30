@@ -178,8 +178,9 @@ export async function resolvePageTranslation(input: {
   request: TranslationRequest;
   signal?: AbortSignal;
   bypassCache?: boolean;
+  onPartial?: (paragraphs: string[]) => void;
 }): Promise<PageTranslationOutcome> {
-  const { provider, cache, fingerprint, request, signal, bypassCache } = input;
+  const { provider, cache, fingerprint, request, signal, bypassCache, onPartial } = input;
   const sourceHash = await sha256Hex(request.text);
   if (!bypassCache) {
     const hit = await cache.lookup({
@@ -202,7 +203,7 @@ export async function resolvePageTranslation(input: {
     }
   }
 
-  const result = await provider.translate(request, { signal });
+  const result = await provider.translate(request, { signal, onPartial });
   await cache.save({
     key: translationCacheKey({
       sourceHash,

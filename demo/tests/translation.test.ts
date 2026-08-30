@@ -14,7 +14,7 @@ import {
 
 void test('cache keys change with language, provider, model, and prompt version', () => {
   const base = { sourceHash: 'abc', targetLanguage: '简体中文', provider: 'p', model: 'm' };
-  assert.equal(translationCacheKey(base), 'abc:简体中文:p:m:v1');
+  assert.equal(translationCacheKey(base), 'abc:简体中文:p:m:v2');
   assert.notEqual(
     translationCacheKey(base),
     translationCacheKey({ ...base, targetLanguage: '日本語' }),
@@ -22,7 +22,7 @@ void test('cache keys change with language, provider, model, and prompt version'
   assert.notEqual(translationCacheKey(base), translationCacheKey({ ...base, model: 'm2' }));
   assert.notEqual(
     translationCacheKey(base),
-    translationCacheKey({ ...base, promptVersion: 2 }),
+    translationCacheKey({ ...base, promptVersion: 3 }),
   );
 });
 
@@ -77,7 +77,29 @@ void test('translateWithRetry does not retry deterministic failures', async () =
   assert.equal(calls, 1);
 });
 
-function stubFetch(status: number, body: unknown) {
+/** Builds a fetch stub that answers with an SSE chat-completions stream. */
+function stubStreamFetch(content: string, chunksSize = 8) {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl = (async (url: string | URL, init: RequestInit = {}) => {
+    calls.push({ url: String(url), init });
+    const chunks = content.match(new RegExp(`[\\s\\S]{1,${chunksSize}}`, 'g')) ?? [];
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) {
+          const data = JSON.stringify({ choices: [{ delta: { content: chunk } }] });
+          controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+        }
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }) as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+function stubStatusFetch(status: number, body: unknown) {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const fetchImpl = (async (url: string | URL, init: RequestInit = {}) => {
     calls.push({ url: String(url), init });
@@ -86,32 +108,63 @@ function stubFetch(status: number, body: unknown) {
   return { fetchImpl, calls };
 }
 
-void test('openai-compatible provider sends a prompt and parses paragraph JSON', async () => {
-  const { fetchImpl, calls } = stubFetch(200, {
-    choices: [{ message: { content: '{"paragraphs": ["第一段。", "第二段。"]}' } }],
-  });
+void test('openai-compatible provider streams paragraphs progressively', async () => {
+  const { fetchImpl, calls } = stubStreamFetch('第一段。\n\n第二段。\n\n第三段。');
   const provider = createOpenAICompatibleProvider({
     baseUrl: 'https://api.example.com/v1/',
     apiKey: 'sk-test',
     model: 'test-model',
     fetchImpl,
   });
-  const result = await provider.translate({
-    text: 'Hello world.',
-    sourceLanguage: 'auto',
-    targetLanguage: '简体中文',
-    pageNumber: 3,
-  });
-  assert.deepEqual(result.paragraphs, ['第一段。', '第二段。']);
-  assert.equal(result.provider, 'openai-compatible');
+
+  const snapshots: string[][] = [];
+  const result = await provider.translate(
+    { text: 'Hello.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 3 },
+    { onPartial: (paragraphs) => snapshots.push([...paragraphs]) },
+  );
+
+  assert.deepEqual(result.paragraphs, ['第一段。', '第二段。', '第三段。']);
+  assert.ok(snapshots.length >= 2, 'onPartial should fire while streaming');
+  assert.deepEqual(snapshots.at(-1), result.paragraphs);
+  for (let index = 1; index < snapshots.length; index += 1) {
+    const growth = snapshots[index].join('|').startsWith(snapshots[index - 1].join('|'));
+    assert.equal(growth, true, 'partial paragraphs must only grow');
+  }
+
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, 'https://api.example.com/v1/chat/completions');
   const headers = calls[0].init.headers as Record<string, string>;
   assert.equal(headers.authorization, 'Bearer sk-test');
+  const body = JSON.parse(calls[0].init.body as string);
+  assert.equal(body.stream, true);
+});
+
+void test('disableThinking adds the thinking-off flag to the request body', async () => {
+  const { fetchImpl, calls } = stubStreamFetch('x');
+  const provider = createOpenAICompatibleProvider({
+    baseUrl: 'https://api.example.com/v1',
+    apiKey: 'sk-test',
+    model: 'glm-4-flash',
+    disableThinking: true,
+    fetchImpl,
+  });
+  await provider.translate({ text: 'Hi.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 });
+  const body = JSON.parse(calls[0].init.body as string);
+  assert.deepEqual(body.thinking, { type: 'disabled' });
+
+  const without = createOpenAICompatibleProvider({
+    baseUrl: 'https://api.example.com/v1',
+    apiKey: 'sk-test',
+    model: 'gpt-4o-mini',
+    fetchImpl,
+  });
+  await without.translate({ text: 'Hi.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 });
+  const body2 = JSON.parse(calls[1].init.body as string);
+  assert.equal(body2.thinking, undefined);
 });
 
 void test('openai-compatible provider surfaces auth errors without retrying', async () => {
-  const { fetchImpl } = stubFetch(401, { error: { message: '令牌已过期或验证不正确' } });
+  const { fetchImpl } = stubStatusFetch(401, { error: { message: '令牌已过期或验证不正确' } });
   const provider = createOpenAICompatibleProvider({
     baseUrl: 'https://api.example.com/v1',
     apiKey: 'sk-bad',
@@ -143,32 +196,6 @@ void test('openai-compatible provider reports network failures', async () => {
   );
 });
 
-void test('disableThinking adds the thinking-off flag to the request body', async () => {
-  const { fetchImpl, calls } = stubFetch(200, {
-    choices: [{ message: { content: '{"paragraphs": ["x"]}' } }],
-  });
-  const provider = createOpenAICompatibleProvider({
-    baseUrl: 'https://api.example.com/v1',
-    apiKey: 'sk-test',
-    model: 'glm-5.3-flash',
-    disableThinking: true,
-    fetchImpl,
-  });
-  await provider.translate({ text: 'Hi.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 });
-  const body = JSON.parse(calls[0].init.body as string);
-  assert.deepEqual(body.thinking, { type: 'disabled' });
-
-  const without = createOpenAICompatibleProvider({
-    baseUrl: 'https://api.example.com/v1',
-    apiKey: 'sk-test',
-    model: 'gpt-4o-mini',
-    fetchImpl,
-  });
-  await without.translate({ text: 'Hi.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 });
-  const body2 = JSON.parse(calls[1].init.body as string);
-  assert.equal(body2.thinking, undefined);
-});
-
 void test('mock provider mirrors the source paragraph count offline', async () => {
   const provider = createMockTranslationProvider();
   const result = await provider.translate({
@@ -181,7 +208,18 @@ void test('mock provider mirrors the source paragraph count offline', async () =
   assert.match(result.paragraphs[0], /第 5 页/);
 });
 
-void test('paragraph parsing falls back to plain lines when JSON is missing', () => {
-  assert.deepEqual(parseParagraphList('第一段。\n第二段。', 'src'), ['第一段。', '第二段。']);
-  assert.deepEqual(parseParagraphList('no structure at all', 'a\n\nb'), ['no structure at all']);
+void test('paragraph parsing handles blank-line text, JSON fallback, and lines', () => {
+  assert.deepEqual(
+    parseParagraphList('第一段。\n\n第二段。', 'src'),
+    ['第一段。', '第二段。'],
+  );
+  assert.deepEqual(
+    parseParagraphList('{"paragraphs": ["来自 JSON。"]}', 'src'),
+    ['来自 JSON。'],
+  );
+  assert.deepEqual(parseParagraphList('第一行。\n第二行。', 'src'), ['第一行。\n第二行。']);
+  assert.deepEqual(
+    parseParagraphList('``` translation\n第一段。\n\n第二段。\n```', 'src'),
+    ['第一段。', '第二段。'],
+  );
 });

@@ -300,6 +300,20 @@ function TranslationBody({
   onRetry: () => void;
 }) {
   if (!state || state.status === 'translating') {
+    if (state?.paragraphs && state.paragraphs.length > 0) {
+      // Streaming: show paragraphs as they arrive instead of a blank wait.
+      return (
+        <article className="translation-copy">
+          {state.paragraphs.map((paragraph) => (
+            <p key={paragraph.slice(0, 48) + String(paragraph.length)}>{paragraph}</p>
+          ))}
+          <p className="flex items-center gap-2 text-xs text-amber-700" aria-label="翻译中">
+            <LoaderCircle className="size-3.5 animate-spin" />
+            正在翻译…
+          </p>
+        </article>
+      );
+    }
     return (
       <div className="flex h-full min-h-[360px] flex-col items-center justify-center px-8 text-center">
         <span className="mb-5 flex size-11 items-center justify-center rounded-full bg-amber-100 text-amber-700">
@@ -652,6 +666,11 @@ export default function Home() {
           },
           signal: controller.signal,
           bypassCache: bypassRequested,
+          onPartial: (paragraphs) => {
+            if (!cancelled && paragraphs.length > 0) {
+              updateTranslationState(key, { status: 'translating', paragraphs });
+            }
+          },
         });
         if (cancelled) return;
         updateTranslationState(key, {

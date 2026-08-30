@@ -35,13 +35,19 @@ export class TranslationError extends Error {
   }
 }
 
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 export const MAX_AUTO_RETRIES = 2;
+
+export interface TranslateOptions {
+  signal?: AbortSignal;
+  /** Receives the paragraphs generated so far, for progressive display. */
+  onPartial?: (paragraphs: string[]) => void;
+}
 
 export interface TranslationProvider {
   id: string;
   model: string;
-  translate(request: TranslationRequest, options?: { signal?: AbortSignal }): Promise<TranslationResult>;
+  translate(request: TranslationRequest, options?: TranslateOptions): Promise<TranslationResult>;
 }
 
 export interface TranslationCacheKeyParts {
@@ -95,7 +101,7 @@ export function describeTranslationError(code: TranslationErrorCode): string {
 export async function translateWithRetry(
   provider: TranslationProvider,
   request: TranslationRequest,
-  options?: { signal?: AbortSignal },
+  options?: TranslateOptions,
 ): Promise<TranslationResult> {
   let attempts = 0;
   for (;;) {
@@ -114,8 +120,9 @@ const SYSTEM_PROMPT = [
   'You are a professional document translator.',
   'Translate the user text into the requested target language.',
   'Rules:',
-  '- Return only the translation, no summaries or explanations.',
+  '- Output only the translation, no summaries or explanations.',
   '- Keep the paragraph order and paragraph count.',
+  '- Separate paragraphs with one blank line.',
   '- Preserve formulas, code, citation numbers, and proper nouns.',
   '- Never invent information that is not in the source text.',
 ].join('\n');
@@ -155,6 +162,7 @@ export function createOpenAICompatibleProvider(config: OpenAICompatibleConfig): 
           body: JSON.stringify({
             model: config.model,
             temperature: 0.2,
+            stream: true,
             ...(config.disableThinking ? { thinking: { type: 'disabled' } } : {}),
             messages: [
               { role: 'system', content: SYSTEM_PROMPT },
@@ -164,7 +172,6 @@ export function createOpenAICompatibleProvider(config: OpenAICompatibleConfig): 
                   `Source language: ${request.sourceLanguage}`,
                   `Target language: ${request.targetLanguage}`,
                   `Page number: ${request.pageNumber}`,
-                  'Return a JSON object: {"paragraphs": ["...", "..."]}',
                   '---',
                   request.text,
                 ].join('\n'),
@@ -186,15 +193,8 @@ export function createOpenAICompatibleProvider(config: OpenAICompatibleConfig): 
         );
       }
 
-      let payload: unknown;
-      try {
-        payload = await response.json();
-      } catch {
-        throw new TranslationError('server', '翻译服务返回了无法解析的响应。');
-      }
-      const content = (payload as { choices?: Array<{ message?: { content?: string } }> })
-        ?.choices?.[0]?.message?.content;
-      if (typeof content !== 'string' || content.length === 0) {
+      const content = await readStreamingContent(response, options);
+      if (content.length === 0) {
         throw new TranslationError('server', '翻译服务未返回译文内容。');
       }
       return {
@@ -204,6 +204,77 @@ export function createOpenAICompatibleProvider(config: OpenAICompatibleConfig): 
       };
     },
   };
+}
+
+/** Reads an SSE chat-completions stream, reporting paragraphs as they arrive. */
+async function readStreamingContent(response: Response, options?: TranslateOptions): Promise<string> {
+  const body = response.body;
+  if (!body) {
+    const payload = await response.json();
+    return extractChoiceContent(payload);
+  }
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  let reported = '';
+
+  const report = () => {
+    if (!options?.onPartial) return;
+    const paragraphs = splitStreamParagraphs(content);
+    const joined = paragraphs.join('\n\n');
+    if (joined !== reported) {
+      reported = joined;
+      options.onPartial(paragraphs);
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let boundary = buffer.indexOf('\n');
+    while (boundary !== -1) {
+      const line = buffer.slice(0, boundary).trim();
+      buffer = buffer.slice(boundary + 1);
+      boundary = buffer.indexOf('\n');
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') continue;
+      try {
+        const chunk = JSON.parse(data) as {
+          choices?: Array<{ delta?: { content?: string } }>;
+        };
+        content += chunk.choices?.[0]?.delta?.content ?? '';
+      } catch {
+        // partial JSON line; the next chunk completes it
+      }
+    }
+    report();
+  }
+  report();
+  return content;
+}
+
+function extractChoiceContent(payload: unknown): string {
+  const content = (payload as { choices?: Array<{ message?: { content?: string } }> })
+    ?.choices?.[0]?.message?.content;
+  return typeof content === 'string' ? content : '';
+}
+
+/** Same paragraph rule as the final parse, safe to run mid-stream. */
+function splitStreamParagraphs(content: string): string[] {
+  const cleaned = stripCodeFences(content);
+  return cleaned
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0);
+}
+
+function stripCodeFences(text: string): string {
+  return text.replace(/```[^\n]*\n?/g, '');
 }
 
 /**
@@ -227,8 +298,15 @@ async function extractErrorDetail(response: Response): Promise<string> {
   return '';
 }
 
+/**
+ * Splits model output into display paragraphs. The prompt asks for
+ * blank-line-separated plain text (streaming friendly); JSON arrays from
+ * older prompts or chatty models are still recognized as a fallback.
+ */
 export function parseParagraphList(content: string, sourceText: string): string[] {
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  const cleaned = stripCodeFences(content.trim());
+
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
   if (jsonMatch) {
     try {
       const parsed = JSON.parse(jsonMatch[0]) as { paragraphs?: unknown };
@@ -243,7 +321,14 @@ export function parseParagraphList(content: string, sourceText: string): string[
       // fall through to plain-text handling
     }
   }
-  const lines = content
+
+  const paragraphs = cleaned
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0);
+  if (paragraphs.length > 0) return paragraphs;
+
+  const lines = cleaned
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
