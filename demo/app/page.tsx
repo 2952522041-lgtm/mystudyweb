@@ -834,6 +834,10 @@ export default function Home() {
     setSettingsError(null);
   };
 
+  const updateDraftApiKey = (apiKey: string) => {
+    setDraftSettings((previous) => updateReaderApiKey(previous, apiKey));
+  };
+
   return (
     <TooltipProvider>
       <main className="flex h-screen min-h-[680px] flex-col overflow-hidden bg-background text-foreground">
@@ -1272,9 +1276,7 @@ export default function Home() {
                       id="setting-api-key"
                       type="password"
                       value={draftSettings.apiKey}
-                      onChange={(event) =>
-                        setDraftSettings((previous) => updateReaderApiKey(previous, event.target.value))
-                      }
+                      onChange={(event) => updateDraftApiKey(event.target.value)}
                       placeholder="sk-…"
                     />
                   </div>

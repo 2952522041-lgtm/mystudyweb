@@ -17,3 +17,12 @@ void test('reader canvas keeps every page in a continuous full-width column', ()
   assert.match(styles, /\.document-stage[\s\S]*overflow-auto/);
   assert.match(styles, /\.document-pages[\s\S]*min-w-full/);
 });
+
+void test('API key input captures its value before updating the settings state', () => {
+  assert.match(pageSource, /const updateDraftApiKey = \(apiKey: string\) =>/);
+  assert.match(pageSource, /onChange=\{\(event\) => updateDraftApiKey\(event\.target\.value\)\}/);
+  assert.doesNotMatch(
+    pageSource,
+    /setDraftSettings\(\(previous\) => updateReaderApiKey\(previous, event\.target\.value\)\)/,
+  );
+});
