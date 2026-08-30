@@ -602,7 +602,76 @@ Playwright 端到端测试使用包含正文、图片、图表和公式的固定
 
 本节对应产品设计第 12 节。该模块尚未实现；第一版只实现浏览器绑定本地课程文件夹的存储方式。课程目录中的结构化文件是业务数据的唯一可信来源，IndexedDB 仅保存目录句柄、临时缓存、任务恢复信息和服务设置。技术边界需要允许后续增加 Tauri、浏览器内部存储或云端实现。
 
-### 16.1 支持环境与权限流程
+### 16.1 技术栈与模块边界
+
+课程知识库继续建立在现有 React、TypeScript、vinext/Vite 和 PDF.js 应用之上，不为该模块更换前端框架或增加后端数据库。下表区分已经存在的能力和计划新增的技术，计划项只有在进入实现阶段后才加入依赖：
+
+| 层级 | 技术 | 状态 | 职责 |
+| --- | --- | --- | --- |
+| 界面与领域逻辑 | React 19 + TypeScript | 已有 | 课程库、导入流程、总结、脑图和状态协调 |
+| 构建 | vinext + Vite | 已有 | 开发、测试和生产构建 |
+| PDF 处理 | PDF.js | 已有 | 页面渲染、逐页文字提取和来源页码定位 |
+| 本地目录 | File System Access API | 计划新增 | 选择课程目录、复制 PDF、读写 Markdown/JSON/SVG |
+| 内容指纹 | Web Crypto SHA-256 | 已有，可复用 | PDF 去重和稳定文档标识 |
+| 临时存储 | IndexedDB | 已有，可复用 | 目录句柄、解析缓存、任务恢复和服务设置 |
+| AI 调用 | OpenAI-compatible API + Fetch/SSE | 已有，可扩展 | 分块摘要、对话洞察和课程知识合并 |
+| 运行时校验 | Zod（计划） | 计划新增 | 校验 AI 结构化输出和本地 schema |
+| 交互脑图 | `@xyflow/react`（React Flow，计划） | 计划新增 | 节点交互、折叠、来源查看和页码跳转 |
+| 自动布局 | `elkjs`（计划） | 计划新增 | 树形和多层知识图布局 |
+| 本地成果 | Markdown + JSON + SVG | 计划新增 | 可阅读、可恢复、可迁移的课程成果 |
+| 测试 | node:test + Playwright（计划） | 部分已有 | 领域单测、存储契约和浏览器用户流程 |
+
+第一版不需要 LangChain、向量数据库、全文 RAG、后端关系型数据库、Electron 或 Tauri。未来若纯 Web 的目录权限和恢复体验无法满足需求，再新增 `TauriDirectoryStorage`，而不是提前维护第二套运行时。
+
+#### 前端模块建议
+
+新增代码按存储、知识处理和展示三类职责拆分：
+
+```text
+demo/
+├─ components/
+│  ├─ course-library.tsx
+│  ├─ course-import-dialog.tsx
+│  ├─ document-summary-panel.tsx
+│  └─ knowledge-mindmap.tsx
+└─ lib/
+   ├─ course-storage/
+   │  ├─ types.ts
+   │  ├─ course-storage.ts
+   │  ├─ browser-directory-storage.ts
+   │  ├─ memory-course-storage.ts
+   │  ├─ manifest-schema.ts
+   │  └─ file-utils.ts
+   └─ knowledge/
+      ├─ document-chunker.ts
+      ├─ document-digest.ts
+      ├─ knowledge-provider.ts
+      ├─ course-merger.ts
+      ├─ conversation-insights.ts
+      └─ artifact-renderer.ts
+```
+
+`course-storage` 只处理权限、目录、文件和版本提交；`knowledge` 只处理分块、结构化摘要、合并和成果渲染；React 组件只协调用户交互。PDF 文字提取、分块和哈希在大文档上应逐步迁入 Web Worker，避免阻塞主线程。
+
+#### AI 与成果生成边界
+
+为课程知识处理新增独立于翻译和逐页答疑的接口：
+
+```ts
+interface KnowledgeProvider {
+  digestDocumentChunk(input: ChunkInput): Promise<ChunkDigest>;
+  mergeDocument(input: MergeInput): Promise<CourseKnowledge>;
+  extractConversationInsights(
+    input: ConversationInput,
+  ): Promise<LearningInsight[]>;
+}
+```
+
+AI 只返回经过 Zod 校验的结构化数据，不直接写本地目录，也不自由生成作为唯一数据源的完整 Markdown。程序通过稳定的渲染函数从课程知识 JSON 产生 `课程总结.md`、交互脑图数据和 SVG 快照。这样更换模型或提示词不会改变文件协议，也能在不重新请求 AI 的情况下重新渲染成果。
+
+交互脑图以结构化 JSON 为源数据，React Flow 负责应用内交互，ELK.js 负责自动布局。Mermaid 可以作为后续附加导出格式，但不作为唯一脑图数据源，因为它不足以承载稳定节点 ID、PDF 页码、对话来源、冲突和人工 ownership 状态。
+
+### 16.2 支持环境与权限流程
 
 第一版目标环境限定为支持 File System Access API 所需目录选择与读写能力的桌面 Chromium 浏览器。课程创建必须由用户点击触发目录选择，并请求该目录的读写权限。应用不得访问用户未选择的目录，也不得将“不支持 API”“用户拒绝授权”“此前授权需要重新确认”和“目录内容损坏”合并成同一种错误。
 
@@ -610,7 +679,7 @@ Playwright 端到端测试使用包含正文、图片、图表和公式的固定
 
 开发和部署环境必须满足安全上下文要求。若目标浏览器缺少目录选择或写入能力，第一版直接显示环境不受支持，不回退到未经过设计验证的下载或纯 IndexedDB 工作流。
 
-### 16.2 课程目录与可信数据边界
+### 16.3 课程目录与可信数据边界
 
 推荐目录结构：
 
@@ -637,7 +706,7 @@ Playwright 端到端测试使用包含正文、图片、图表和公式的固定
 
 API Key、供应商密钥、页面图像和生成中的流式片段不得写入课程目录。用户可见 Markdown 和 SVG 是派生成果，不能替代结构化 JSON 成为合并依据。`我的课程笔记.md` 是用户拥有的独立文件，不参与自动覆盖式生成。
 
-### 16.3 PDF 导入与去重
+### 16.4 PDF 导入与去重
 
 用户选取 PDF 后，应用流式计算 SHA-256 指纹，在 `course.json` 中检查是否已经存在相同内容。新资料默认复制到 `PDFs/`，原文件不修改；文件名必须清理路径分隔符和平台非法字符，重名但内容不同的文件增加稳定后缀。
 
@@ -655,7 +724,7 @@ selected
 
 每一步成功后更新 `document.json` 和课程清单。失败记录可行动的错误与最后成功阶段，重试从该阶段继续。只有 PDF 已完整写入并关闭写入流后才能标记为 `copied`，只有新课程成果完整生成后才能标记为 `course-merged`。
 
-### 16.4 内部摘要与用户可见成果
+### 16.5 内部摘要与用户可见成果
 
 每份 PDF 都生成内部 `DocumentDigest`，即使用户关闭了单 PDF 总结和脑图：
 
@@ -680,7 +749,7 @@ interface DocumentDigest {
 
 用户选择单 PDF 成果时，由 `DocumentDigest` 和已验证的来源片段渲染客观总结、个性化学习总结及结构化脑图。每个结论和脑图节点保存 `documentId + pageNumber` 来源；对话衍生内容额外保存会话或消息标识，并标注为 AI 解释或用户学习洞察。
 
-### 16.5 课程增量合并
+### 16.6 课程增量合并
 
 课程级知识库维护稳定的概念节点、关系、来源集合、冲突和用户学习状态。新增 PDF 时，合并器输入当前结构化课程状态和新 `DocumentDigest`，而不是输入旧版 Markdown 后重新总结。
 
@@ -696,7 +765,7 @@ interface DocumentDigest {
 
 更新前将当前 `course.json`、课程脑图 JSON、课程总结 Markdown 和 SVG 复制到同一个 `History/<revision-id>/`。新版本写入全部完成后再更新课程清单中的活动版本；失败时继续使用旧版本，并将任务标记为可重试。
 
-### 16.6 对话洞察同步
+### 16.7 对话洞察同步
 
 逐页对话继续在回答完成后持久化，不因流式片段变化频繁写文件。后台或用户结束学习时，将新增对话提炼为结构化 `LearningInsight`：
 
@@ -717,7 +786,7 @@ interface LearningInsight {
 
 课程合并只消费未排除的学习洞察。被后续回答纠正的洞察保留修订关系而不是同时作为有效结论。客观 PDF 内容、AI 解释和用户自己的理解在结构化数据与渲染结果中使用不同来源类型。
 
-### 16.7 存储适配边界
+### 16.8 存储适配边界
 
 React 组件和总结业务不得直接调用 `showDirectoryPicker()`、文件句柄或 IndexedDB。第一版提供 `BrowserDirectoryStorage`，并通过面向业务的接口访问：
 
@@ -737,13 +806,13 @@ interface CourseStorage {
 
 以后可以增加 `TauriDirectoryStorage`、`IndexedDBStorage` 或 `CloudStorage`。替换存储实现不应改变课程合并、总结生成、脑图生成和阅读器的领域接口。存储适配器内部仍可封装底层文件读写，但上层不散布路径拼接和权限判断。
 
-### 16.8 外部修改与一致性
+### 16.9 外部修改与一致性
 
 写入前比较 `course.json` 中的 revision 与加载时 revision；发现外部变化时停止自动覆盖，重新加载并提示用户处理。第一版不承诺实时监控目录变化，可以在课程重新获得焦点、执行导入或生成前主动扫描清单和关键文件元数据。
 
 AI 生成 Markdown 应明确标记为可再生成成果。用户需要长期编辑的内容写入 `我的课程笔记.md` 或带 `ownership: user` 的结构化节点。第一版不自动解析任意外部 Markdown 修改并猜测如何回写知识库。
 
-### 16.9 测试策略
+### 16.10 测试策略
 
 单元测试至少覆盖：
 
@@ -759,7 +828,7 @@ AI 生成 Markdown 应明确标记为可再生成成果。用户需要长期编�
 
 浏览器端到端测试使用临时测试目录或受控文件系统模拟，验证：创建课程、生成空成果、复制 PDF、重复导入拦截、可选生成单 PDF 成果、可选并入课程、丢失权限后重新连接、恢复课程、外部 revision 冲突和历史版本恢复。真实浏览器仍需进行少量人工测试，覆盖目录选择、权限重授和本地 SVG/Markdown 可读性。
 
-### 16.10 推荐实施顺序
+### 16.11 推荐实施顺序
 
 1. 定义课程清单、文档摘要、课程知识库和版本 schema；
 2. 实现 `CourseStorage` 与可测试的内存实现，再实现 `BrowserDirectoryStorage`；

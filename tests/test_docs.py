@@ -73,12 +73,13 @@ class TechnicalSolutionDocumentTest(unittest.TestCase):
         content = TECHNICAL_SOLUTION.read_text(encoding="utf-8")
 
         required_sections = (
-            "### 16.2 课程目录与可信数据边界",
-            "### 16.3 PDF 导入与去重",
-            "### 16.4 内部摘要与用户可见成果",
-            "### 16.5 课程增量合并",
-            "### 16.7 存储适配边界",
-            "### 16.9 测试策略",
+            "### 16.1 技术栈与模块边界",
+            "### 16.3 课程目录与可信数据边界",
+            "### 16.4 PDF 导入与去重",
+            "### 16.5 内部摘要与用户可见成果",
+            "### 16.6 课程增量合并",
+            "### 16.8 存储适配边界",
+            "### 16.10 测试策略",
         )
 
         for section in required_sections:
@@ -91,6 +92,11 @@ class TechnicalSolutionDocumentTest(unittest.TestCase):
             "每份 PDF 都生成内部 `DocumentDigest`",
             "我的课程笔记.md",
             "API Key",
+            "@xyflow/react",
+            "elkjs",
+            "Zod",
+            "interface KnowledgeProvider",
+            "不需要 LangChain、向量数据库、全文 RAG",
         ):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, content)
