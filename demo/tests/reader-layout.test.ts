@@ -13,7 +13,7 @@ void test('reader exposes a scrollable thumbnail for every PDF page', () => {
 
 void test('reader canvas keeps every page in a continuous full-width column', () => {
   assert.match(pageSource, /className="document-pages"/);
-  assert.match(pageSource, /<PaperPage[\s\S]*page=\{pageNumber\}/);
+  assert.match(pageSource, /className=\{`pdf-page /);
   assert.match(styles, /\.document-stage[\s\S]*overflow-auto/);
   assert.match(styles, /\.document-pages[\s\S]*min-w-full/);
 });

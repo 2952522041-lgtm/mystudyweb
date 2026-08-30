@@ -196,11 +196,15 @@
     width: max-content;
   }
 
-  .paper-page {
-    @apply aspect-[0.707] w-[calc(100%_-_24px)] shrink-0 overflow-hidden bg-white px-[9%] py-[8%] shadow-[0_3px_14px_rgba(15,23,42,0.16)] ring-1 ring-slate-900/5 transition-[width,box-shadow] duration-200;
+  .pdf-page {
+    @apply shrink-0 transition-[width] duration-200;
   }
 
-  .paper-page-current {
+  .pdf-page > div {
+    @apply transition-shadow duration-200;
+  }
+
+  .pdf-page-current > div {
     @apply shadow-[0_6px_20px_rgba(15,23,42,0.2)] ring-2 ring-amber-400/60;
   }
 
@@ -242,10 +246,6 @@
 
   .app-toolbar > :nth-child(2) {
     @apply hidden;
-  }
-
-  .paper-page {
-    @apply px-8;
   }
 
   .thumbnail-sidebar {
