@@ -35,7 +35,7 @@ export class TranslationError extends Error {
   }
 }
 
-export const PROMPT_VERSION = 2;
+export const PROMPT_VERSION = 3;
 export const MAX_AUTO_RETRIES = 2;
 
 export interface TranslateOptions {
@@ -118,7 +118,7 @@ export async function translateWithRetry(
 
 const SYSTEM_PROMPT = [
   'You are a professional document translator.',
-  'Translate the user text into the requested target language.',
+  'Translate the user text directly into the requested target language without analysis.',
   'Rules:',
   '- Output only the translation, no summaries or explanations.',
   '- Keep the paragraph order and paragraph count.',
@@ -126,6 +126,11 @@ const SYSTEM_PROMPT = [
   '- Preserve formulas, code, citation numbers, and proper nouns.',
   '- Never invent information that is not in the source text.',
 ].join('\n');
+
+/** Keeps one-page translations bounded without truncating normal dense pages. */
+export function recommendedMaxOutputTokens(text: string): number {
+  return Math.min(Math.max(Math.ceil(text.length * 1.2), 1024), 8192);
+}
 
 export interface OpenAICompatibleConfig {
   baseUrl: string;
@@ -161,8 +166,9 @@ export function createOpenAICompatibleProvider(config: OpenAICompatibleConfig): 
           },
           body: JSON.stringify({
             model: config.model,
-            temperature: 0.2,
+            temperature: 0.1,
             stream: true,
+            max_tokens: recommendedMaxOutputTokens(request.text),
             ...(config.disableThinking ? { thinking: { type: 'disabled' } } : {}),
             messages: [
               { role: 'system', content: SYSTEM_PROMPT },

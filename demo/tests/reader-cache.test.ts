@@ -2,18 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  applyTranslationPreset,
   createMemoryStore,
   createProgressStore,
   createTranslationCache,
   DEFAULT_SETTINGS,
   loadReaderSettings,
+  readerServiceHost,
   resolvePageTranslation,
   saveReaderSettings,
   usingRemoteProvider,
+  validateReaderSettings,
   type CachedTranslation,
   type DocumentProgress,
 } from '../lib/reader-cache.ts';
-import { createMockTranslationProvider, type TranslationRequest } from '../lib/translation.ts';
+import { createMockTranslationProvider, TranslationError, type TranslationRequest } from '../lib/translation.ts';
 
 void test('translation cache stores and retrieves by document, page, language, and provider', async () => {
   const cache = createTranslationCache(createMemoryStore<CachedTranslation>());
@@ -114,6 +117,33 @@ void test('bypassCache forces a fresh provider call and overwrites the cache', a
   assert.equal(call, 2);
 });
 
+void test('page translation retries transient provider failures before caching', async () => {
+  const cache = createTranslationCache(createMemoryStore<CachedTranslation>());
+  let calls = 0;
+  const provider = {
+    id: 'retry-provider',
+    model: 'retry-model',
+    async translate() {
+      calls += 1;
+      if (calls < 3) throw new TranslationError('server', 'temporary');
+      return { paragraphs: ['完成'], provider: 'retry-provider', model: 'retry-model' };
+    },
+  };
+  const result = await resolvePageTranslation({
+    provider,
+    cache,
+    fingerprint: 'fp-retry',
+    request: {
+      text: 'Retry this page.',
+      sourceLanguage: 'auto',
+      targetLanguage: '简体中文',
+      pageNumber: 1,
+    },
+  });
+  assert.equal(result.status, 'complete');
+  assert.equal(calls, 3);
+});
+
 void test('progress store round-trips reading position per document', async () => {
   const progress = createProgressStore(createMemoryStore<DocumentProgress>());
   assert.equal(await progress.load('fp1'), undefined);
@@ -155,5 +185,40 @@ void test('remote provider is only active with a configured key', () => {
   assert.equal(
     usingRemoteProvider({ ...DEFAULT_SETTINGS, providerMode: 'openai-compatible', apiKey: 'sk-test' }),
     true,
+  );
+});
+
+void test('recommended presets select current non-thinking translation models', () => {
+  const glm = applyTranslationPreset(DEFAULT_SETTINGS, 'glm');
+  assert.equal(glm.model, 'glm-4.7-flash');
+  assert.equal(glm.disableThinking, true);
+  const deepseek = applyTranslationPreset(DEFAULT_SETTINGS, 'deepseek');
+  assert.equal(deepseek.model, 'deepseek-v4-flash');
+  assert.equal(deepseek.baseUrl, 'https://api.deepseek.com');
+});
+
+void test('reader settings validate URLs, keys, and model names safely', () => {
+  assert.equal(readerServiceHost('https://api.deepseek.com'), 'api.deepseek.com');
+  assert.equal(readerServiceHost('not a url'), null);
+  assert.match(
+    validateReaderSettings({ ...DEFAULT_SETTINGS, providerMode: 'openai-compatible' }) ?? '',
+    /API Key/,
+  );
+  assert.match(
+    validateReaderSettings({
+      ...DEFAULT_SETTINGS,
+      providerMode: 'openai-compatible',
+      baseUrl: 'invalid',
+      apiKey: 'key',
+    }) ?? '',
+    /接口地址/,
+  );
+  assert.equal(
+    validateReaderSettings({
+      ...DEFAULT_SETTINGS,
+      providerMode: 'openai-compatible',
+      apiKey: 'key',
+    }),
+    null,
   );
 });

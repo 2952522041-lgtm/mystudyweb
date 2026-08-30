@@ -3,6 +3,7 @@ import {
   createMockTranslationProvider,
   createOpenAICompatibleProvider,
   PROMPT_VERSION,
+  translateWithRetry,
   translationCacheKey,
   type TranslationProvider,
   type TranslationRequest,
@@ -203,7 +204,7 @@ export async function resolvePageTranslation(input: {
     }
   }
 
-  const result = await provider.translate(request, { signal, onPartial });
+  const result = await translateWithRetry(provider, request, { signal, onPartial });
   await cache.save({
     key: translationCacheKey({
       sourceHash,
@@ -234,11 +235,54 @@ export interface ReaderSettings {
 
 export const DEFAULT_SETTINGS: ReaderSettings = {
   providerMode: 'mock',
-  baseUrl: 'https://api.openai.com/v1',
+  baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
   apiKey: '',
-  model: 'gpt-4o-mini',
-  disableThinking: false,
+  model: 'glm-4.7-flash',
+  disableThinking: true,
 };
+
+export const TRANSLATION_PRESETS = {
+  glm: {
+    label: '智谱 · 免费极速',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'glm-4.7-flash',
+  },
+  deepseek: {
+    label: 'DeepSeek · 高性价比',
+    baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-v4-flash',
+  },
+} as const;
+
+export type TranslationPresetId = keyof typeof TRANSLATION_PRESETS;
+
+export function applyTranslationPreset(settings: ReaderSettings, presetId: TranslationPresetId): ReaderSettings {
+  const preset = TRANSLATION_PRESETS[presetId];
+  return {
+    ...settings,
+    providerMode: 'openai-compatible',
+    baseUrl: preset.baseUrl,
+    model: preset.model,
+    disableThinking: true,
+  };
+}
+
+export function readerServiceHost(baseUrl: string): string | null {
+  try {
+    const url = new URL(baseUrl);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.host : null;
+  } catch {
+    return null;
+  }
+}
+
+export function validateReaderSettings(settings: ReaderSettings): string | null {
+  if (settings.providerMode === 'mock') return null;
+  if (!readerServiceHost(settings.baseUrl)) return '请输入有效的 HTTP(S) 接口地址。';
+  if (settings.apiKey.trim().length === 0) return '请输入 API Key。';
+  if (settings.model.trim().length === 0) return '请输入模型名称。';
+  return null;
+}
 
 const SETTINGS_STORAGE_KEY = 'pdf-reader-settings';
 

@@ -7,6 +7,7 @@ import {
   createMockTranslationProvider,
   createOpenAICompatibleProvider,
   parseParagraphList,
+  recommendedMaxOutputTokens,
   shouldAutoRetry,
   translateWithRetry,
   translationCacheKey,
@@ -14,7 +15,7 @@ import {
 
 void test('cache keys change with language, provider, model, and prompt version', () => {
   const base = { sourceHash: 'abc', targetLanguage: '简体中文', provider: 'p', model: 'm' };
-  assert.equal(translationCacheKey(base), 'abc:简体中文:p:m:v2');
+  assert.equal(translationCacheKey(base), 'abc:简体中文:p:m:v3');
   assert.notEqual(
     translationCacheKey(base),
     translationCacheKey({ ...base, targetLanguage: '日本語' }),
@@ -22,7 +23,7 @@ void test('cache keys change with language, provider, model, and prompt version'
   assert.notEqual(translationCacheKey(base), translationCacheKey({ ...base, model: 'm2' }));
   assert.notEqual(
     translationCacheKey(base),
-    translationCacheKey({ ...base, promptVersion: 3 }),
+    translationCacheKey({ ...base, promptVersion: 4 }),
   );
 });
 
@@ -137,6 +138,13 @@ void test('openai-compatible provider streams paragraphs progressively', async (
   assert.equal(headers.authorization, 'Bearer sk-test');
   const body = JSON.parse(calls[0].init.body as string);
   assert.equal(body.stream, true);
+  assert.equal(body.max_tokens, 1024);
+});
+
+void test('translation output limit scales with page length and stays bounded', () => {
+  assert.equal(recommendedMaxOutputTokens('short page'), 1024);
+  assert.equal(recommendedMaxOutputTokens('x'.repeat(2000)), 2400);
+  assert.equal(recommendedMaxOutputTokens('x'.repeat(20000)), 8192);
 });
 
 void test('disableThinking adds the thinking-off flag to the request body', async () => {

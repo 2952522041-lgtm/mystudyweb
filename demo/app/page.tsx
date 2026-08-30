@@ -53,17 +53,22 @@ import { pickCurrentPage, measurePageRects } from '@/lib/current-page';
 import { loadPdfjs, type PDFDocumentProxy, type RenderTask } from '@/lib/pdfjs';
 import { itemsFromPdfJs, normalizePage, pageHasText } from '@/lib/pdf-text';
 import {
+  applyTranslationPreset,
   computeFileFingerprint,
   createReaderService,
   createProviderForSettings,
   DEFAULT_SETTINGS,
   loadReaderSettings,
+  readerServiceHost,
   resolvePageTranslation,
   saveReaderSettings,
+  TRANSLATION_PRESETS,
   usingRemoteProvider,
+  validateReaderSettings,
   type ReaderSettings,
+  type TranslationPresetId,
 } from '@/lib/reader-cache';
-import { clampPage, fillColumnPageWidth, stepZoom } from '@/lib/reader-model';
+import { clampPage, fillColumnPageWidth, nextPageToPrefetch, stepZoom } from '@/lib/reader-model';
 import {
   describeTranslationError,
   TranslationError,
@@ -375,6 +380,7 @@ export default function Home() {
   const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS);
   const [draftSettings, setDraftSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [translationStates, setTranslationStates] = useState<Record<string, PageTranslationState>>({});
   const [renderedPages, setRenderedPages] = useState<Set<number>>(() => new Set());
   const [copied, setCopied] = useState(false);
@@ -383,6 +389,7 @@ export default function Home() {
   const [importError, setImportError] = useState<string | null>(null);
   const [translationVisible, setTranslationVisible] = useState(true);
   const [stageWidth, setStageWidth] = useState(0);
+  const [prefetchedTranslationPage, setPrefetchedTranslationPage] = useState<number | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentStageRef = useRef<HTMLDivElement>(null);
@@ -393,6 +400,7 @@ export default function Home() {
   const serviceRef = useRef<ReturnType<typeof createReaderService> | null>(null);
   const settingsRef = useRef(settings);
   const bypassCacheRef = useRef(new Set<string>());
+  const prefetchedTranslationsRef = useRef(new Set<string>());
   const retryTokenRef = useRef(0);
   const [retryToken, setRetryToken] = useState(0);
 
@@ -577,6 +585,8 @@ export default function Home() {
         setRenderedPages(new Set());
         setTranslationStates({});
         translationStatesRef.current = {};
+        prefetchedTranslationsRef.current.clear();
+        setPrefetchedTranslationPage(null);
         pageElementsRef.current.clear();
         setPdfDoc(doc);
         setPageSizes(sizes);
@@ -717,13 +727,21 @@ export default function Home() {
   };
 
   const applySettings = () => {
+    const validationError = validateReaderSettings(draftSettings);
+    if (validationError) {
+      setSettingsError(validationError);
+      return;
+    }
     setSettings(draftSettings);
     saveReaderSettings(draftSettings);
+    setSettingsError(null);
     setSettingsOpen(false);
     // Provider/model changes alter the cache key: drop session states so the
     // visible page re-translates under the new settings.
     translationStatesRef.current = {};
     setTranslationStates({});
+    prefetchedTranslationsRef.current.clear();
+    setPrefetchedTranslationPage(null);
     retryTokenRef.current += 1;
     setRetryToken(retryTokenRef.current);
   };
@@ -733,6 +751,7 @@ export default function Home() {
   const currentState = translationStates[translationKeyCurrent];
   const isReady = currentState?.status === 'complete' || currentState?.status === 'cached';
   const remoteProvider = usingRemoteProvider(settings);
+  const remoteProviderHost = remoteProvider ? readerServiceHost(settings.baseUrl) : null;
   const statusLabel = !docMeta
     ? '尚未导入 PDF'
     : docMeta.scanUnsupported
@@ -746,6 +765,73 @@ export default function Home() {
               ? '译文来自缓存'
               : '译文已完成'
             : '译文待加载';
+
+  // Once the current translation is ready, quietly prepare the next page so
+  // sequential reading usually becomes an immediate cache hit.
+  useEffect(() => {
+    if (!pdfDoc || !docMeta || docMeta.scanUnsupported || !isReady) return;
+    const nextPage = nextPageToPrefetch(translationPage, docMeta.pageCount);
+    if (!nextPage) return;
+    const provider = createProviderForSettings(settingsRef.current);
+    const prefetchedTranslations = prefetchedTranslationsRef.current;
+    const identity = [docMeta.fingerprint, nextPage, targetLanguage, provider.id, provider.model].join(':');
+    if (prefetchedTranslations.has(identity)) return;
+
+    const controller = new AbortController();
+    let completed = false;
+    const timer = setTimeout(() => {
+      prefetchedTranslations.add(identity);
+      void (async () => {
+        try {
+          const pdfPage = await pdfDoc.getPage(nextPage);
+          const viewport = pdfPage.getViewport({ scale: 1 });
+          const content = await pdfPage.getTextContent();
+          const normalized = normalizePage(
+            itemsFromPdfJs(
+              content.items as Array<{ str?: string; transform?: number[]; width?: number; height?: number }>,
+              viewport.height,
+            ),
+          );
+          if (normalized.text.trim().length === 0 || controller.signal.aborted) return;
+          await resolvePageTranslation({
+            provider,
+            cache: serviceRef.current!.cache,
+            fingerprint: docMeta.fingerprint,
+            request: {
+              text: normalized.text,
+              sourceLanguage: 'auto',
+              targetLanguage,
+              pageNumber: nextPage,
+            },
+            signal: controller.signal,
+          });
+          if (!controller.signal.aborted) {
+            completed = true;
+            setPrefetchedTranslationPage(nextPage);
+          }
+        } catch {
+          if (!controller.signal.aborted) prefetchedTranslations.delete(identity);
+        }
+      })();
+    }, 150);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+      if (!completed) prefetchedTranslations.delete(identity);
+    };
+  }, [pdfDoc, docMeta, isReady, translationPage, targetLanguage, retryToken]);
+
+  const openSettings = () => {
+    setDraftSettings(settings);
+    setSettingsError(null);
+    setSettingsOpen(true);
+  };
+
+  const chooseTranslationPreset = (presetId: TranslationPresetId) => {
+    setDraftSettings((previous) => applyTranslationPreset(previous, presetId));
+    setSettingsError(null);
+  };
 
   return (
     <TooltipProvider>
@@ -823,7 +909,7 @@ export default function Home() {
                 <Plus />
               </IconButton>
             </div>
-            <IconButton label="翻译设置" onClick={() => setSettingsOpen(true)}>
+            <IconButton label="翻译设置" onClick={openSettings}>
               <Settings />
             </IconButton>
             <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
@@ -986,7 +1072,7 @@ export default function Home() {
                                 </p>
                                 <p className="mt-0.5 text-[11px] text-slate-400">
                                   {remoteProvider
-                                    ? `当前页文字将发送至 ${new URL(settings.baseUrl).host}`
+                                    ? `当前页文字将发送至 ${remoteProviderHost ?? '所配置服务'}`
                                     : '演示模式 · 不发送任何数据'}
                                 </p>
                               </div>
@@ -1046,6 +1132,8 @@ export default function Home() {
           <div className="flex items-center gap-4">
             {docMeta?.restoredPage ? (
               <span>已恢复上次阅读进度（第 {docMeta.restoredPage} 页）</span>
+            ) : prefetchedTranslationPage === page + 1 ? (
+              <span>第 {page + 1} 页译文已预取</span>
             ) : renderedPages.has(page + 1) ? (
               <span>第 {page + 1} 页已预加载</span>
             ) : null}
@@ -1120,6 +1208,25 @@ export default function Home() {
             </DialogHeader>
 
             <div className="space-y-4">
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-slate-700">推荐配置</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {(Object.keys(TRANSLATION_PRESETS) as TranslationPresetId[]).map((presetId) => (
+                    <Button
+                      key={presetId}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => chooseTranslationPreset(presetId)}
+                    >
+                      {TRANSLATION_PRESETS[presetId].label}
+                    </Button>
+                  ))}
+                </div>
+                <p className="text-[11px] leading-5 text-slate-500">
+                  两个推荐配置都会关闭深度思考。普通翻译无需推理，首段会明显更快。
+                </p>
+              </div>
               <div className="space-y-1.5">
                 <label htmlFor="setting-provider" className="text-xs font-medium text-slate-700">
                   翻译服务
@@ -1180,7 +1287,7 @@ export default function Home() {
                       onChange={(event) =>
                         setDraftSettings((previous) => ({ ...previous, model: event.target.value }))
                       }
-                      placeholder="gpt-4o-mini"
+                      placeholder="glm-4.7-flash"
                     />
                   </div>
                   <div className="flex items-start gap-2.5">
@@ -1195,13 +1302,18 @@ export default function Home() {
                       }
                     />
                     <label htmlFor="setting-disable-thinking" className="text-xs leading-5 text-slate-700">
-                      关闭思考模式（GLM、DeepSeek-R1 等推理模型推荐勾选，可明显提速）
+                      关闭思考模式（翻译场景推荐，可明显缩短等待时间）
                     </label>
                   </div>
                   <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
                     API Key 仅保存在本机浏览器中，请求由浏览器直接发往接口地址；请确保该地址允许跨域访问。
                   </p>
                 </>
+              ) : null}
+              {settingsError ? (
+                <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                  {settingsError}
+                </p>
               ) : null}
             </div>
 

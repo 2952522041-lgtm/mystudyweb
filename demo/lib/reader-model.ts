@@ -89,6 +89,11 @@ export function stepZoom(current: number, direction: -1 | 1): number {
   return ZOOM_STEPS[targetIndex];
 }
 
+export function nextPageToPrefetch(currentPage: number, pageCount: number): number | null {
+  const nextPage = Math.round(currentPage) + 1;
+  return nextPage <= pageCount ? nextPage : null;
+}
+
 export function getTranslation(page: number): TranslationPage {
   return (
     translations[page] ?? {
