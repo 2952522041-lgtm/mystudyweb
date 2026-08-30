@@ -1,0 +1,46 @@
+# 页语 — PDF 随页翻译阅读器
+
+导入外文 PDF，左侧阅读原文，翻到哪一页，右侧自动显示该页译文。
+
+## 日常使用
+
+```bash
+./start.sh
+```
+
+然后打开 http://localhost:8787 （按 Ctrl+C 停止）。
+
+1. 点「导入 PDF」选择一份**文字型**外文 PDF（扫描版暂不支持）
+2. 左侧阅读、翻页，停顿约半秒后右侧自动翻译当前页
+3. 右上角齿轮「翻译设置」可切换目标语言、配置真实翻译服务
+
+默认是**演示模式**（不联网，显示占位译文）。要看真实译文：设置 → 选「OpenAI 兼容接口」→ 填服务地址（如 `https://api.openai.com/v1` 或 `https://api.deepseek.com/v1`）→ 填自己的 API Key 和模型名。
+
+- API Key、译文缓存、阅读进度都只保存在本机浏览器，不会上传
+- 同一文件再次导入时自动恢复上次阅读页码，已翻译页面秒开（缓存）
+- 翻译失败会显示具体原因，可点「重新翻译」重试
+
+## 开发
+
+代码在 `demo/`，技术栈 React 19 + vinext（Vite）+ PDF.js + Tailwind 4。
+
+```bash
+cd demo
+pnpm dev        # 开发服务器 http://localhost:3000
+pnpm test       # 单元测试（node --test）
+pnpm lint       # oxlint
+pnpm build      # 生产构建
+```
+
+核心模块：
+
+- `demo/lib/pdf-text.ts` — PDF 文字提取与段落重建（双栏检测、连字符合并）
+- `demo/lib/translation.ts` — 翻译供应商适配器、错误分类、重试与缓存键规则
+- `demo/lib/reader-cache.ts` — IndexedDB 缓存、阅读进度、设置存储
+- `demo/lib/current-page.ts` — 当前页判定（最大可见面积规则）
+
+产品与架构文档见 `PRODUCT_DESIGN.md` 和 `docs/TECHNICAL_SOLUTION.md`。
+
+## 部署为公开网站
+
+`demo/` 已配置 Cloudflare Workers（wrangler）。在 `demo/` 目录执行 `npx wrangler deploy` 即可发布（需要登录 Cloudflare 账号）。注意：公开部署时翻译请求仍由浏览器直接发往所配置的翻译服务；如需托管密钥的代理后端，见技术方案第 6.4 节的公开阶段规划。
