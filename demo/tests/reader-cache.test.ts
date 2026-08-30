@@ -193,28 +193,22 @@ void test('remote provider is only active with a configured key', () => {
 });
 
 void test('recommended presets select current non-thinking translation models', () => {
-  const glm = applyTranslationPreset(DEFAULT_SETTINGS, 'glm');
-  assert.equal(glm.model, 'glm-4.7-flash');
-  assert.equal(glm.disableThinking, true);
+  assert.equal(DEFAULT_SETTINGS.model, 'glm-4.7-flashx');
   const glmFast = applyTranslationPreset(DEFAULT_SETTINGS, 'glmFast');
   assert.equal(glmFast.model, 'glm-4.7-flashx');
+  assert.equal(glmFast.disableThinking, true);
   const deepseek = applyTranslationPreset(DEFAULT_SETTINGS, 'deepseek');
   assert.equal(deepseek.model, 'deepseek-v4-flash');
   assert.equal(deepseek.baseUrl, 'https://api.deepseek.com');
 });
 
 void test('recommended presets retain independent API keys', () => {
-  let settings = applyTranslationPreset(DEFAULT_SETTINGS, 'glm');
-  settings = updateReaderApiKey(settings, 'glm-free-key');
-  settings = applyTranslationPreset(settings, 'glmFast');
-  assert.equal(settings.apiKey, '');
+  let settings = applyTranslationPreset(DEFAULT_SETTINGS, 'glmFast');
   settings = updateReaderApiKey(settings, 'glm-fast-key');
   settings = applyTranslationPreset(settings, 'deepseek');
   assert.equal(settings.apiKey, '');
   settings = updateReaderApiKey(settings, 'deepseek-key');
 
-  settings = applyTranslationPreset(settings, 'glm');
-  assert.equal(settings.apiKey, 'glm-free-key');
   settings = applyTranslationPreset(settings, 'glmFast');
   assert.equal(settings.apiKey, 'glm-fast-key');
   settings = applyTranslationPreset(settings, 'deepseek');

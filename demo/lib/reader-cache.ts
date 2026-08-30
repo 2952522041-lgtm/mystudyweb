@@ -239,16 +239,11 @@ export const DEFAULT_SETTINGS: ReaderSettings = {
   baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
   apiKey: '',
   apiKeys: {},
-  model: 'glm-4.7-flash',
+  model: 'glm-4.7-flashx',
   disableThinking: true,
 };
 
 export const TRANSLATION_PRESETS = {
-  glm: {
-    label: '智谱 · 免费优先',
-    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    model: 'glm-4.7-flash',
-  },
   glmFast: {
     label: '智谱 · 稳定极速',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',

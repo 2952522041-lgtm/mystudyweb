@@ -1290,7 +1290,7 @@ export default function Home() {
                       onChange={(event) =>
                         setDraftSettings((previous) => ({ ...previous, model: event.target.value }))
                       }
-                      placeholder="glm-4.7-flash"
+                      placeholder="glm-4.7-flashx"
                     />
                   </div>
                   <div className="flex items-start gap-2.5">

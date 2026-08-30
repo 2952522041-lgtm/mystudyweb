@@ -25,7 +25,7 @@
 | 扫描版 PDF | ✅ | 抽样前 3 页，无文字层则明确提示不支持（MVP 不做 OCR） |
 | 重新翻译 | ✅ | 绕过缓存强制重翻并覆盖 |
 
-已实测的真实使用案例：港中深 MAT 3007 期中试卷（旧配置 `glm-4-flash`，整页十几秒，流式 2 秒内出首段）。当前推荐改用关闭深度思考的 `glm-4.7-flash`。
+已实测的真实使用案例：港中深 MAT 3007 期中试卷（旧配置 `glm-4-flash`，整页十几秒，流式 2 秒内出首段）。当前推荐改用关闭深度思考的 `glm-4.7-flashx`。
 
 ## 三、技术栈与代码地图
 
@@ -41,7 +41,7 @@ demo/
 ├─ lib/reader-cache.ts     # KV 存储（IndexedDB/内存）、译文缓存、进度、设置
 ├─ lib/current-page.ts     # 当前页判定（纯函数）
 ├─ lib/reader-model.ts     # 缩放步进、页宽计算等纯函数
-├─ tests/                  # node --test 单元测试（48 个）+ 源码结构冒烟测试
+├─ tests/                  # node --test 单元测试（49 个）+ 源码结构冒烟测试
 ├─ public/sample.pdf       # 测试语料：文字型 PDF
 ├─ public/scanned.pdf      # 测试语料：无文字层（扫描型）PDF
 └─ scripts/copy-pdf-worker.mjs
@@ -61,7 +61,7 @@ demo/
 ./start.sh              # 一键本地使用（构建 + wrangler dev，自动挑空闲端口）
 cd demo
 pnpm dev                # 开发服务器 :3000（HMR）
-pnpm test               # 48 个单元测试
+pnpm test               # 49 个单元测试
 pnpm lint               # oxlint（0 错误为交付标准）
 npx tsc --noEmit        # 类型检查
 pnpm build              # 生产构建
@@ -87,7 +87,7 @@ python3 -m unittest discover tests   # 根目录文档完整性测试
 - **pdf.js worker 不要用 `?url` 导入**：会破坏 SSR（`window is not defined`）。当前方案是 predev/prebuild 脚本把 worker 复制进 `public/`，`workerSrc = '/pdf.worker.min.mjs'`。
 - **翻译 effect 不要依赖自己的状态输出**：曾导致无限"翻译→abort"循环。会话内状态放 `translationStatesRef`，effect 只依赖页码/语言/文档。
 - **react-compiler（oxlint）很严格**：effect 内同步 setState、渲染期写 ref、闭包引用判定都会报错，提交前必须 `pnpm lint` 清零。
-- 翻译应关闭深度思考。当前推荐 `glm-4.7-flash`（免费）、`glm-4.7-flashx`（稳定低延迟）或 `deepseek-v4-flash`；设置界面有一键配置并默认发送 `thinking: disabled`。
-- 三个推荐配置分别保存自己的 API Key；旧版单 Key 设置加载时只迁移到当前匹配的配置，不会复制到其他配置。
+- 翻译应关闭深度思考。当前推荐 `glm-4.7-flashx`（稳定低延迟）或 `deepseek-v4-flash`；设置界面有一键配置并默认发送 `thinking: disabled`。
+- 两个推荐配置分别保存自己的 API Key；旧版单 Key 设置加载时只迁移到当前匹配的配置，不会复制到其他配置。
 - **智谱返回的具体错误在 `error.message`**，应用已透传显示；排查用户问题先看译文面板的错误行。
 - 本地多实例调试时注意端口占用：`start.sh` 会自动跳过被占端口。
