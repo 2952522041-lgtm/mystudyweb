@@ -14,6 +14,7 @@ export interface KVStore<V> {
   get(key: string): Promise<V | undefined>;
   set(key: string, value: V): Promise<void>;
   delete(key: string): Promise<void>;
+  keys(): Promise<string[]>;
 }
 
 export function createMemoryStore<V>(): KVStore<V> {
@@ -28,11 +29,17 @@ export function createMemoryStore<V>(): KVStore<V> {
     async delete(key) {
       map.delete(key);
     },
+    async keys() {
+      return [...map.keys()];
+    },
   };
 }
 
 /** Browser-only IndexedDB-backed store; used for translations and progress. */
-export function createIndexedDBStore<V>(databaseName: string, storeName: string): KVStore<V> {
+export function createIndexedDBStore<V>(
+  databaseName: string,
+  storeName: string,
+): KVStore<V> {
   const openDatabase = () =>
     new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(databaseName, 1);
@@ -42,7 +49,8 @@ export function createIndexedDBStore<V>(databaseName: string, storeName: string)
         }
       };
       request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed'));
+      request.onerror = () =>
+        reject(request.error ?? new Error('IndexedDB open failed'));
     });
 
   const withStore = async <T>(
@@ -55,7 +63,8 @@ export function createIndexedDBStore<V>(databaseName: string, storeName: string)
         const transaction = database.transaction(storeName, mode);
         const request = operation(transaction.objectStore(storeName));
         request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed'));
+        request.onerror = () =>
+          reject(request.error ?? new Error('IndexedDB request failed'));
       });
     } finally {
       database.close();
@@ -64,13 +73,28 @@ export function createIndexedDBStore<V>(databaseName: string, storeName: string)
 
   return {
     async get(key) {
-      return withStore<V | undefined>('readonly', (store) => store.get(key) as IDBRequest<V | undefined>);
+      return withStore<V | undefined>(
+        'readonly',
+        (store) => store.get(key) as IDBRequest<V | undefined>,
+      );
     },
     async set(key, value) {
-      await withStore('readwrite', (store) => store.put(value, key) as IDBRequest<unknown>);
+      await withStore(
+        'readwrite',
+        (store) => store.put(value, key) as IDBRequest<unknown>,
+      );
     },
     async delete(key) {
-      await withStore('readwrite', (store) => store.delete(key) as unknown as IDBRequest<unknown>);
+      await withStore(
+        'readwrite',
+        (store) => store.delete(key) as unknown as IDBRequest<unknown>,
+      );
+    },
+    async keys() {
+      const keys = await withStore<IDBValidKey[]>('readonly', (store) =>
+        store.getAllKeys(),
+      );
+      return keys.map(String);
     },
   };
 }
@@ -105,7 +129,9 @@ export interface TranslationCache {
  * surface translations produced under the previous settings. Failed pages are
  * never persisted, so a temporary fault cannot stick.
  */
-export function createTranslationCache(store: KVStore<CachedTranslation>): TranslationCache {
+export function createTranslationCache(
+  store: KVStore<CachedTranslation>,
+): TranslationCache {
   const storageKey = (parts: {
     fingerprint: string;
     pageNumber: number;
@@ -156,8 +182,12 @@ export function createReaderService(options?: {
   cacheStore?: KVStore<CachedTranslation>;
   progressStore?: KVStore<DocumentProgress>;
 }) {
-  const cache = createTranslationCache(options?.cacheStore ?? createIndexedDBStore('pdf-reader', 'kv'));
-  const progress = createProgressStore(options?.progressStore ?? createIndexedDBStore('pdf-reader', 'kv'));
+  const cache = createTranslationCache(
+    options?.cacheStore ?? createIndexedDBStore('pdf-reader', 'kv'),
+  );
+  const progress = createProgressStore(
+    options?.progressStore ?? createIndexedDBStore('pdf-reader', 'kv'),
+  );
   return { cache, progress };
 }
 
@@ -181,7 +211,15 @@ export async function resolvePageTranslation(input: {
   bypassCache?: boolean;
   onPartial?: (paragraphs: string[]) => void;
 }): Promise<PageTranslationOutcome> {
-  const { provider, cache, fingerprint, request, signal, bypassCache, onPartial } = input;
+  const {
+    provider,
+    cache,
+    fingerprint,
+    request,
+    signal,
+    bypassCache,
+    onPartial,
+  } = input;
   const sourceHash = await sha256Hex(request.text);
   if (!bypassCache) {
     const hit = await cache.lookup({
@@ -204,7 +242,10 @@ export async function resolvePageTranslation(input: {
     }
   }
 
-  const result = await translateWithRetry(provider, request, { signal, onPartial });
+  const result = await translateWithRetry(provider, request, {
+    signal,
+    onPartial,
+  });
   await cache.save({
     key: translationCacheKey({
       sourceHash,
@@ -259,15 +300,26 @@ export const TRANSLATION_PRESETS = {
 export type TranslationPresetId = keyof typeof TRANSLATION_PRESETS;
 export type ReaderApiKeyProfileId = TranslationPresetId | 'custom';
 
-export function readerApiKeyProfileId(settings: Pick<ReaderSettings, 'baseUrl' | 'model'>): ReaderApiKeyProfileId {
+export function readerApiKeyProfileId(
+  settings: Pick<ReaderSettings, 'baseUrl' | 'model'>,
+): ReaderApiKeyProfileId {
   const baseUrl = settings.baseUrl.replace(/\/$/, '');
-  const match = (Object.entries(TRANSLATION_PRESETS) as Array<
-    [TranslationPresetId, (typeof TRANSLATION_PRESETS)[TranslationPresetId]]
-  >).find(([, preset]) => preset.baseUrl.replace(/\/$/, '') === baseUrl && preset.model === settings.model);
+  const match = (
+    Object.entries(TRANSLATION_PRESETS) as Array<
+      [TranslationPresetId, (typeof TRANSLATION_PRESETS)[TranslationPresetId]]
+    >
+  ).find(
+    ([, preset]) =>
+      preset.baseUrl.replace(/\/$/, '') === baseUrl &&
+      preset.model === settings.model,
+  );
   return match?.[0] ?? 'custom';
 }
 
-export function updateReaderApiKey(settings: ReaderSettings, apiKey: string): ReaderSettings {
+export function updateReaderApiKey(
+  settings: ReaderSettings,
+  apiKey: string,
+): ReaderSettings {
   const profileId = readerApiKeyProfileId(settings);
   return {
     ...settings,
@@ -276,7 +328,10 @@ export function updateReaderApiKey(settings: ReaderSettings, apiKey: string): Re
   };
 }
 
-export function applyTranslationPreset(settings: ReaderSettings, presetId: TranslationPresetId): ReaderSettings {
+export function applyTranslationPreset(
+  settings: ReaderSettings,
+  presetId: TranslationPresetId,
+): ReaderSettings {
   const preset = TRANSLATION_PRESETS[presetId];
   const currentProfileId = readerApiKeyProfileId(settings);
   const apiKeys = { ...settings.apiKeys, [currentProfileId]: settings.apiKey };
@@ -294,15 +349,20 @@ export function applyTranslationPreset(settings: ReaderSettings, presetId: Trans
 export function readerServiceHost(baseUrl: string): string | null {
   try {
     const url = new URL(baseUrl);
-    return url.protocol === 'https:' || url.protocol === 'http:' ? url.host : null;
+    return url.protocol === 'https:' || url.protocol === 'http:'
+      ? url.host
+      : null;
   } catch {
     return null;
   }
 }
 
-export function validateReaderSettings(settings: ReaderSettings): string | null {
+export function validateReaderSettings(
+  settings: ReaderSettings,
+): string | null {
   if (settings.providerMode === 'mock') return null;
-  if (!readerServiceHost(settings.baseUrl)) return '请输入有效的 HTTP(S) 接口地址。';
+  if (!readerServiceHost(settings.baseUrl))
+    return '请输入有效的 HTTP(S) 接口地址。';
   if (settings.apiKey.trim().length === 0) return '请输入 API Key。';
   if (settings.model.trim().length === 0) return '请输入模型名称。';
   return null;
@@ -310,7 +370,9 @@ export function validateReaderSettings(settings: ReaderSettings): string | null 
 
 const SETTINGS_STORAGE_KEY = 'pdf-reader-settings';
 
-export function loadReaderSettings(storage: Pick<Storage, 'getItem' | 'setItem'> = localStorage): ReaderSettings {
+export function loadReaderSettings(
+  storage: Pick<Storage, 'getItem' | 'setItem'> = localStorage,
+): ReaderSettings {
   try {
     const raw = storage.getItem(SETTINGS_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
@@ -336,8 +398,13 @@ export function saveReaderSettings(
   storage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
 }
 
-export function createProviderForSettings(settings: ReaderSettings): TranslationProvider {
-  if (settings.providerMode === 'openai-compatible' && settings.apiKey.trim().length > 0) {
+export function createProviderForSettings(
+  settings: ReaderSettings,
+): TranslationProvider {
+  if (
+    settings.providerMode === 'openai-compatible' &&
+    settings.apiKey.trim().length > 0
+  ) {
     return createOpenAICompatibleProvider({
       baseUrl: settings.baseUrl,
       apiKey: settings.apiKey.trim(),
@@ -349,5 +416,8 @@ export function createProviderForSettings(settings: ReaderSettings): Translation
 }
 
 export function usingRemoteProvider(settings: ReaderSettings): boolean {
-  return settings.providerMode === 'openai-compatible' && settings.apiKey.trim().length > 0;
+  return (
+    settings.providerMode === 'openai-compatible' &&
+    settings.apiKey.trim().length > 0
+  );
 }

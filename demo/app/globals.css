@@ -33,7 +33,9 @@
 }
 
 :root {
-  --font-sans-ui: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --font-sans-ui:
+    Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'PingFang SC', 'Noto Sans CJK SC', sans-serif;
   --background: oklch(0.975 0.008 78);
   --foreground: oklch(0.245 0.025 253);
   --card: oklch(1 0 0);
@@ -43,13 +45,13 @@
   --primary: oklch(0.61 0.15 58);
   --primary-foreground: oklch(0.99 0.005 80);
   --secondary: oklch(0.945 0.012 77);
-  --secondary-foreground: oklch(0.30 0.025 253);
+  --secondary-foreground: oklch(0.3 0.025 253);
   --muted: oklch(0.95 0.008 260);
   --muted-foreground: oklch(0.54 0.025 255);
   --accent: oklch(0.94 0.025 72);
   --accent-foreground: oklch(0.43 0.09 55);
-  --destructive: oklch(0.58 0.20 27);
-  --border: oklch(0.90 0.012 255);
+  --destructive: oklch(0.58 0.2 27);
+  --border: oklch(0.9 0.012 255);
   --input: oklch(0.88 0.012 255);
   --ring: oklch(0.66 0.12 61);
   --radius: 0.55rem;
@@ -67,9 +69,9 @@
   --secondary: oklch(0.28 0.02 255);
   --secondary-foreground: oklch(0.94 0.01 80);
   --muted: oklch(0.27 0.02 255);
-  --muted-foreground: oklch(0.70 0.02 255);
+  --muted-foreground: oklch(0.7 0.02 255);
   --accent: oklch(0.31 0.05 61);
-  --accent-foreground: oklch(0.90 0.08 70);
+  --accent-foreground: oklch(0.9 0.08 70);
   --destructive: oklch(0.66 0.18 28);
   --border: oklch(1 0 0 / 12%);
   --input: oklch(1 0 0 / 16%);
@@ -236,6 +238,92 @@
 
   .status-bar {
     @apply flex h-7 shrink-0 items-center justify-between border-t border-slate-200 bg-[#fffdf9] px-4 text-[10px] text-slate-500;
+  }
+
+  .ai-chat-panel {
+    @apply flex min-h-0 flex-1 flex-col bg-[#fffdf9];
+  }
+
+  .ai-context-bar {
+    @apply flex shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/70 px-5 py-3;
+  }
+
+  .ai-message-scroll {
+    @apply min-h-0 flex-1 overflow-y-auto px-[clamp(22px,4vw,52px)] py-6;
+    scrollbar-color: #d6d3d1 transparent;
+    scrollbar-width: thin;
+  }
+
+  .ai-empty-state,
+  .ai-chat-welcome {
+    @apply flex min-h-full flex-col items-center justify-center gap-3 text-center;
+  }
+
+  .ai-composer {
+    @apply mx-[clamp(18px,4vw,48px)] mb-5 shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-[0_6px_24px_rgba(15,23,42,0.08)];
+  }
+
+  .ai-markdown {
+    @apply max-w-full text-sm leading-7 text-slate-700;
+  }
+
+  .ai-markdown > :first-child {
+    @apply mt-0;
+  }
+
+  .ai-markdown > :last-child {
+    @apply mb-0;
+  }
+
+  .ai-markdown p,
+  .ai-markdown ul,
+  .ai-markdown ol,
+  .ai-markdown pre,
+  .ai-markdown blockquote,
+  .ai-markdown table,
+  .ai-markdown .katex-display {
+    @apply my-3;
+  }
+
+  .ai-markdown ul {
+    @apply list-disc pl-5;
+  }
+
+  .ai-markdown ol {
+    @apply list-decimal pl-5;
+  }
+
+  .ai-markdown code {
+    @apply rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.9em] text-slate-800;
+  }
+
+  .ai-markdown pre {
+    @apply overflow-x-auto rounded-lg bg-slate-900 p-3 text-slate-100;
+  }
+
+  .ai-markdown pre code {
+    @apply bg-transparent p-0 text-inherit;
+  }
+
+  .ai-markdown blockquote {
+    @apply border-l-2 border-violet-400 pl-3 text-slate-500;
+  }
+
+  .ai-markdown table {
+    @apply block max-w-full overflow-x-auto border-collapse text-xs;
+  }
+
+  .ai-markdown th,
+  .ai-markdown td {
+    @apply border border-slate-200 px-2 py-1.5;
+  }
+
+  .ai-markdown a {
+    @apply text-violet-700 underline underline-offset-2;
+  }
+
+  .ai-markdown .katex-display {
+    @apply overflow-x-auto overflow-y-hidden py-1;
   }
 }
 

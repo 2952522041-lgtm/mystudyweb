@@ -5,7 +5,7 @@
 
 ## 一、项目是什么
 
-「页语」——PDF 随页翻译阅读器。用户导入外文 PDF，左侧读原文，翻到哪一页，右侧自动显示该页中文译文。产品范围、验收标准见 `PRODUCT_DESIGN.md`；架构设计见 `docs/TECHNICAL_SOLUTION.md`。
+「页语」——PDF 随页翻译与 AI 答疑阅读器。用户导入外文 PDF，左侧读原文，右侧可切换随页译文和基于当前页文字、图片及公式的视觉答疑。产品范围、验收标准见 `PRODUCT_DESIGN.md`；架构设计见 `docs/TECHNICAL_SOLUTION.md`。
 
 ## 二、当前状态（MVP 已可用）
 
@@ -24,6 +24,11 @@
 | 错误处理 | ✅ | 错误分类（网络/鉴权/限流/额度/服务端），透传服务端原始错误信息，瞬时错误自动重试 ≤2 次 |
 | 扫描版 PDF | ✅ | 抽样前 3 页，无文字层则明确提示不支持（MVP 不做 OCR） |
 | 重新翻译 | ✅ | 绕过缓存强制重翻并覆盖 |
+| 翻译 / AI 双模式 | ✅ | 右侧顶部切换，左侧阅读位置保持不变 |
+| 当前页视觉答疑 | ✅ | 同时发送规范化文字和离屏渲染 PNG，支持图片、图表、表格和公式理解 |
+| 独立 AI 配置 | ✅ | 答疑 API 地址、Key、模型与翻译完全隔离，要求视觉模型 |
+| 每页独立会话 | ✅ | IndexedDB 本地保存；翻页切换、返回恢复，流式回答归属原页面 |
+| AI 回答展示 | ✅ | Markdown + GFM + KaTeX，支持表格、代码和 LaTeX 公式 |
 
 已实测的真实使用案例：港中深 MAT 3007 期中试卷（旧配置 `glm-4-flash`，整页十几秒，流式 2 秒内出首段）。当前推荐改用关闭深度思考的 `glm-4.7-flashx`。
 
@@ -33,15 +38,20 @@ React 19 + vinext（Vite 的 Next 兼容层，beta）+ PDF.js + Tailwind 4 + Bas
 
 ```
 demo/
-├─ app/page.tsx            # 阅读器主页面（全部 UI 与交互状态）
+├─ app/page.tsx            # 阅读器主页面、稳定页码与右侧模式协调
 ├─ app/globals.css         # 主题与布局类
+├─ components/ai-chat-panel.tsx       # 每页对话、流式状态、Markdown/公式展示
+├─ components/reader-settings-dialog.tsx # 翻译与 AI 独立设置
 ├─ lib/pdfjs.ts            # pdf.js 懒加载（worker 由 predev/prebuild 复制到 public/）
 ├─ lib/pdf-text.ts         # 文本提取规范化流水线 + sha256（纯函数，Node 可测）
 ├─ lib/translation.ts      # 供应商适配器、SSE 流式解析、错误分类、重试、缓存键、提示词
+├─ lib/chat.ts             # 多模态答疑适配器、SSE、错误分类和安全提示词
+├─ lib/chat-cache.ts       # 独立 AI 设置与逐页会话存储
+├─ lib/page-vision.ts      # 固定质量离屏渲染与页面视觉输入
 ├─ lib/reader-cache.ts     # KV 存储（IndexedDB/内存）、译文缓存、进度、设置
 ├─ lib/current-page.ts     # 当前页判定（纯函数）
 ├─ lib/reader-model.ts     # 缩放步进、页宽计算等纯函数
-├─ tests/                  # node --test 单元测试（49 个）+ 源码结构冒烟测试
+├─ tests/                  # node --test 单元测试（58 个）+ 源码结构冒烟测试
 ├─ public/sample.pdf       # 测试语料：文字型 PDF
 ├─ public/scanned.pdf      # 测试语料：无文字层（扫描型）PDF
 └─ scripts/copy-pdf-worker.mjs
@@ -54,6 +64,9 @@ demo/
 3. **失败状态不写入缓存**，临时故障不会在下次打开时仍显示失败。
 4. **提示词要求空行分段的纯文本**（流式友好），兼容旧 JSON 输出解析（`parseParagraphList`）。
 5. **重新翻译走 `bypassCache`**，绕过会话内与持久缓存并覆盖结果。
+6. **答疑请求使用不可变页面快照**。问题发出后绑定文档指纹和页码，用户翻页不会把回答写到新页面。
+7. **页面图像按需生成且不持久化**。只有用户提问时才离屏渲染 PNG，IndexedDB 只保存完成的对话消息。
+8. **PDF 内容是不可信数据**。答疑系统提示词要求忽略页面内试图改变规则的指令，只依据绑定页面作答。
 
 ## 四、如何运行 / 测试 / 构建
 
@@ -61,7 +74,7 @@ demo/
 ./start.sh              # 一键本地使用（构建 + wrangler dev，自动挑空闲端口）
 cd demo
 pnpm dev                # 开发服务器 :3000（HMR）
-pnpm test               # 49 个单元测试
+pnpm test               # 58 个单元测试
 pnpm lint               # oxlint（0 错误为交付标准）
 npx tsc --noEmit        # 类型检查
 pnpm build              # 生产构建
@@ -77,10 +90,11 @@ python3 -m unittest discover tests   # 根目录文档完整性测试
 1. **E2E 测试缺失**。建议引入 Playwright：导入 `public/sample.pdf` → 翻页 → 断言译文面板状态。目前只有单元测试和源码正则冒烟测试（`tests/reader-layout.test.ts` 较脆弱，重构 UI 时记得同步）。
 2. **没有 CI**。建议 GitHub Actions：test + lint + tsc + build 四件套。
 3. **桌面端（Tauri）未启动**。当前是纯 Web 实现（技术方案允许的容器替换路线）。Web 版限制：文件句柄不持久，重开页面需重新导入文件（同文件可恢复进度）。Tauri 化后可做"最近文档直接打开"。
-4. **无托管密钥的薄后端代理**。当前用户 Key 存本地浏览器、浏览器直连供应商（已在设置界面告知）。公开运营前需按技术方案 6.4 建代理。
+4. **无托管密钥的薄后端代理**。当前翻译和答疑 Key 存本地浏览器、浏览器直连供应商（已在设置界面告知）。公开运营前需按技术方案 6.4 和 15.8 建代理。
 5. **源语言固定为 auto**，未做语言检测展示。
 6. **双栏论文语料未覆盖**。`lib/pdf-text.ts` 的双栏检测有单元测试，但缺真实双栏论文验证；`public/` 里应补充双栏测试 PDF。
 7. **vinext 是 beta**（1.0.0-beta.5），升级时注意 RSC 相关破坏性变更。
+8. **真实视觉供应商需要人工冒烟**。自动测试使用模拟多模态响应；上线前需用目标供应商检查图片字段兼容、CORS、请求体限制和公式理解质量。
 
 ## 六、踩过的坑（重要）
 
