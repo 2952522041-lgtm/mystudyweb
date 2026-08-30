@@ -124,6 +124,8 @@ export interface OpenAICompatibleConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** Skips the model's built-in reasoning pass (GLM and similar models). */
+  disableThinking?: boolean;
   fetchImpl?: typeof fetch;
 }
 
@@ -153,6 +155,7 @@ export function createOpenAICompatibleProvider(config: OpenAICompatibleConfig): 
           body: JSON.stringify({
             model: config.model,
             temperature: 0.2,
+            ...(config.disableThinking ? { thinking: { type: 'disabled' } } : {}),
             messages: [
               { role: 'system', content: SYSTEM_PROMPT },
               {

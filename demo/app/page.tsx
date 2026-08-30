@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -1162,6 +1163,21 @@ export default function Home() {
                       }
                       placeholder="gpt-4o-mini"
                     />
+                  </div>
+                  <div className="flex items-start gap-2.5">
+                    <Checkbox
+                      id="setting-disable-thinking"
+                      checked={draftSettings.disableThinking}
+                      onCheckedChange={(checked) =>
+                        setDraftSettings((previous) => ({
+                          ...previous,
+                          disableThinking: checked === true,
+                        }))
+                      }
+                    />
+                    <label htmlFor="setting-disable-thinking" className="text-xs leading-5 text-slate-700">
+                      关闭思考模式（GLM、DeepSeek-R1 等推理模型推荐勾选，可明显提速）
+                    </label>
                   </div>
                   <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
                     API Key 仅保存在本机浏览器中，请求由浏览器直接发往接口地址；请确保该地址允许跨域访问。

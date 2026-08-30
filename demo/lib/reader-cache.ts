@@ -228,6 +228,7 @@ export interface ReaderSettings {
   baseUrl: string;
   apiKey: string;
   model: string;
+  disableThinking: boolean;
 }
 
 export const DEFAULT_SETTINGS: ReaderSettings = {
@@ -235,6 +236,7 @@ export const DEFAULT_SETTINGS: ReaderSettings = {
   baseUrl: 'https://api.openai.com/v1',
   apiKey: '',
   model: 'gpt-4o-mini',
+  disableThinking: false,
 };
 
 const SETTINGS_STORAGE_KEY = 'pdf-reader-settings';
@@ -262,6 +264,7 @@ export function createProviderForSettings(settings: ReaderSettings): Translation
       baseUrl: settings.baseUrl,
       apiKey: settings.apiKey.trim(),
       model: settings.model,
+      disableThinking: settings.disableThinking,
     });
   }
   return createMockTranslationProvider();

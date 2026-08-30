@@ -140,6 +140,32 @@ void test('openai-compatible provider reports network failures', async () => {
   );
 });
 
+void test('disableThinking adds the thinking-off flag to the request body', async () => {
+  const { fetchImpl, calls } = stubFetch(200, {
+    choices: [{ message: { content: '{"paragraphs": ["x"]}' } }],
+  });
+  const provider = createOpenAICompatibleProvider({
+    baseUrl: 'https://api.example.com/v1',
+    apiKey: 'sk-test',
+    model: 'glm-5.3-flash',
+    disableThinking: true,
+    fetchImpl,
+  });
+  await provider.translate({ text: 'Hi.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 });
+  const body = JSON.parse(calls[0].init.body as string);
+  assert.deepEqual(body.thinking, { type: 'disabled' });
+
+  const without = createOpenAICompatibleProvider({
+    baseUrl: 'https://api.example.com/v1',
+    apiKey: 'sk-test',
+    model: 'gpt-4o-mini',
+    fetchImpl,
+  });
+  await without.translate({ text: 'Hi.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 });
+  const body2 = JSON.parse(calls[1].init.body as string);
+  assert.equal(body2.thinking, undefined);
+});
+
 void test('mock provider mirrors the source paragraph count offline', async () => {
   const provider = createMockTranslationProvider();
   const result = await provider.translate({
