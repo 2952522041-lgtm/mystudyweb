@@ -24,6 +24,7 @@ class TechnicalSolutionDocumentTest(unittest.TestCase):
             "## 10. 测试策略",
             "## 12. 分阶段实施",
             "## 13. 关键风险与取舍",
+            "## 15. AI 当前页视觉答疑技术方案",
         )
 
         for section in required_sections:
@@ -36,6 +37,36 @@ class TechnicalSolutionDocumentTest(unittest.TestCase):
         for technology in ("Tauri 2", "React", "TypeScript", "PDF.js", "SQLite"):
             with self.subTest(technology=technology):
                 self.assertIn(technology, content)
+
+    def test_visual_page_qa_technical_design_is_complete(self) -> None:
+        content = TECHNICAL_SOLUTION.read_text(encoding="utf-8")
+
+        required_sections = (
+            "### 15.2 当前页视觉图像生成",
+            "### 15.3 多模态答疑供应商接口",
+            "### 15.5 对话协调与翻页归属",
+            "### 15.6 本地存储设计",
+            "### 15.7 回答渲染与界面拆分",
+            "### 15.9 测试策略",
+        )
+
+        for section in required_sections:
+            with self.subTest(section=section):
+                self.assertIn(section, content)
+
+    def test_visual_page_qa_uses_lightweight_existing_stack(self) -> None:
+        content = TECHNICAL_SOLUTION.read_text(encoding="utf-8")
+
+        for requirement in (
+            "PDF.js + Canvas API",
+            "OpenAI-compatible Chat Completions",
+            "Fetch + ReadableStream + SSE",
+            "React Markdown + GFM + KaTeX",
+            "chat:{documentFingerprint}:{pageNumber}",
+            "不需要 LangChain",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, content)
 
 
 class ProductDesignDocumentTest(unittest.TestCase):
