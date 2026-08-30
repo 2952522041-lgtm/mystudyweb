@@ -55,6 +55,13 @@ void test('right panel exposes translation and page-scoped AI modes', () => {
   assert.match(chatSource, /renderPageImage\(pdfDoc, pageNumber/);
 });
 
+void test('chat tab content is a column flex container so messages scroll above the pinned composer', () => {
+  assert.match(
+    pageSource,
+    /<TabsContent\s+value="chat"[\s\S]*?className="flex min-h-0 flex-col overflow-hidden/,
+  );
+});
+
 void test('translation and AI settings use independent controlled fields', () => {
   assert.match(settingsSource, /translationSettings: ReaderSettings/);
   assert.match(settingsSource, /chatSettings: ChatSettings/);

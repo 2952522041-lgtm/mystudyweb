@@ -1287,7 +1287,7 @@ export default function Home() {
                       <TabsContent
                         value="chat"
                         keepMounted
-                        className="min-h-0 overflow-hidden data-[hidden]:hidden"
+                        className="flex min-h-0 flex-col overflow-hidden data-[hidden]:hidden"
                       >
                         <AIChatPanel
                           pdfDoc={pdfDoc}
