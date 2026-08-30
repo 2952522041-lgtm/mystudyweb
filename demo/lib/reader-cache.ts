@@ -167,7 +167,9 @@ export interface PageTranslationOutcome {
 
 /**
  * Resolves one page: cache first, then a single provider call whose result is
- * written to cache. Callers handle provider errors and cancellation.
+ * written to cache. Callers handle provider errors and cancellation. A
+ * caller-requested retranslation passes bypassCache to ignore an existing
+ * cache entry and overwrite it with a fresh result.
  */
 export async function resolvePageTranslation(input: {
   provider: TranslationProvider;
@@ -175,26 +177,29 @@ export async function resolvePageTranslation(input: {
   fingerprint: string;
   request: TranslationRequest;
   signal?: AbortSignal;
+  bypassCache?: boolean;
 }): Promise<PageTranslationOutcome> {
-  const { provider, cache, fingerprint, request, signal } = input;
+  const { provider, cache, fingerprint, request, signal, bypassCache } = input;
   const sourceHash = await sha256Hex(request.text);
-  const hit = await cache.lookup({
-    fingerprint,
-    pageNumber: request.pageNumber,
-    sourceHash,
-    targetLanguage: request.targetLanguage,
-    provider: provider.id,
-    model: provider.model,
-  });
-  if (hit) {
-    return {
-      status: 'cached',
-      result: {
-        paragraphs: hit.paragraphs,
-        provider: hit.provider,
-        model: hit.model,
-      },
-    };
+  if (!bypassCache) {
+    const hit = await cache.lookup({
+      fingerprint,
+      pageNumber: request.pageNumber,
+      sourceHash,
+      targetLanguage: request.targetLanguage,
+      provider: provider.id,
+      model: provider.model,
+    });
+    if (hit) {
+      return {
+        status: 'cached',
+        result: {
+          paragraphs: hit.paragraphs,
+          provider: hit.provider,
+          model: hit.model,
+        },
+      };
+    }
   }
 
   const result = await provider.translate(request, { signal });

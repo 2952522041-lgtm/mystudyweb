@@ -13,7 +13,7 @@ import {
   type CachedTranslation,
   type DocumentProgress,
 } from '../lib/reader-cache.ts';
-import { createMockTranslationProvider } from '../lib/translation.ts';
+import { createMockTranslationProvider, type TranslationRequest } from '../lib/translation.ts';
 
 void test('translation cache stores and retrieves by document, page, language, and provider', async () => {
   const cache = createTranslationCache(createMemoryStore<CachedTranslation>());
@@ -87,6 +87,31 @@ void test('resolvePageTranslation never reuses cache across languages', async ()
     request: { text: 'One.', sourceLanguage: 'auto', targetLanguage: '日本語', pageNumber: 1 },
   });
   assert.equal(otherLanguage.status, 'complete');
+});
+
+void test('bypassCache forces a fresh provider call and overwrites the cache', async () => {
+  const cache = createTranslationCache(createMemoryStore<CachedTranslation>());
+  let call = 0;
+  const provider = {
+    id: 'mock',
+    model: 'demo',
+    async translate(request: TranslationRequest) {
+      call += 1;
+      return createMockTranslationProvider().translate(request);
+    },
+  };
+  const fingerprint = 'fp';
+  const request = { text: 'One.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 };
+
+  await resolvePageTranslation({ provider, cache, fingerprint, request });
+  const bypassed = await resolvePageTranslation({ provider, cache, fingerprint, request, bypassCache: true });
+  assert.equal(bypassed.status, 'complete');
+  assert.equal(call, 2);
+
+  // the fresh result replaced the old cache entry
+  const after = await resolvePageTranslation({ provider, cache, fingerprint, request });
+  assert.equal(after.status, 'cached');
+  assert.equal(call, 2);
 });
 
 void test('progress store round-trips reading position per document', async () => {

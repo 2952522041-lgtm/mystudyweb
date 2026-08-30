@@ -6,7 +6,9 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "predev": "node scripts/copy-pdf-worker.mjs",
     "dev": "vinext dev",
+    "prebuild": "node scripts/copy-pdf-worker.mjs",
     "build": "vinext build",
     "start": "wrangler dev --config dist/server/wrangler.json",
     "test": "node --test --experimental-strip-types tests/*.test.ts",

@@ -607,8 +607,11 @@ export default function Home() {
   useEffect(() => {
     if (!pdfDoc || !docMeta || docMeta.scanUnsupported) return;
     const key = translationKey(translationPage, targetLanguage);
-    const existing = translationStates[key];
-    if (existing && (existing.status === 'complete' || existing.status === 'cached')) return;
+    const bypassRequested = bypassCacheRef.current.delete(key);
+    const existing = translationStatesRef.current[key];
+    if (!bypassRequested && existing && (existing.status === 'complete' || existing.status === 'cached')) {
+      return;
+    }
 
     const controller = new AbortController();
     bypassCacheRef.current.delete(key);
@@ -647,6 +650,7 @@ export default function Home() {
             pageNumber: translationPage,
           },
           signal: controller.signal,
+          bypassCache: bypassRequested,
         });
         if (cancelled) return;
         updateTranslationState(key, {
@@ -669,7 +673,7 @@ export default function Home() {
       cancelled = true;
       controller.abort();
     };
-  }, [pdfDoc, docMeta, translationPage, targetLanguage, retryToken, translationKey, translationStates, updateTranslationState]);
+  }, [pdfDoc, docMeta, translationPage, targetLanguage, retryToken, translationKey, updateTranslationState]);
 
   const retranslate = () => {
     const key = translationKey(translationPage, targetLanguage);
@@ -696,7 +700,10 @@ export default function Home() {
     setSettings(draftSettings);
     saveReaderSettings(draftSettings);
     setSettingsOpen(false);
-    // Provider/model changes alter the cache key, so refresh the current page.
+    // Provider/model changes alter the cache key: drop session states so the
+    // visible page re-translates under the new settings.
+    translationStatesRef.current = {};
+    setTranslationStates({});
     retryTokenRef.current += 1;
     setRetryToken(retryTokenRef.current);
   };
