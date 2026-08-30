@@ -48,6 +48,7 @@ import {
 } from '@/components/ui/tooltip';
 import {
   clampPage,
+  fillColumnPageWidth,
   getTranslation,
   PAGE_COUNT,
   stepZoom,
@@ -101,18 +102,22 @@ function IconButton({
 
 function PaperPage({
   page,
+  width,
   active,
-  zoom,
+  elementRef,
 }: {
   page: number;
+  width?: number;
   active: boolean;
-  zoom: number;
+  elementRef: (node: HTMLElement | null) => void;
 }) {
   return (
     <article
-      className={`paper-page ${active ? 'paper-page-active' : ''}`}
+      ref={elementRef}
+      className={`paper-page ${active ? 'paper-page-current' : ''}`}
       aria-label={`PDF 第 ${page} 页${active ? '，当前页' : ''}`}
-      style={{ maxWidth: `${Math.round((660 * zoom) / 95)}px` }}
+      data-page={page}
+      style={width ? { width: `${width}px` } : undefined}
     >
       <div className="mb-10 flex items-start justify-between border-b border-slate-200 pb-4">
         <div>
@@ -139,6 +144,39 @@ function PaperPage({
         <p>{sourceParagraphs[2]}</p>
       </div>
     </article>
+  );
+}
+
+function PageThumbnail({
+  page,
+  active,
+  onSelect,
+  activeRef,
+}: {
+  page: number;
+  active: boolean;
+  onSelect: () => void;
+  activeRef?: React.Ref<HTMLButtonElement>;
+}) {
+  return (
+    <button
+      ref={activeRef}
+      type="button"
+      className={`page-thumbnail ${active ? 'page-thumbnail-active' : ''}`}
+      aria-label={`查看第 ${page} 页${active ? '，当前页' : ''}`}
+      aria-current={active ? 'page' : undefined}
+      onClick={onSelect}
+    >
+      <span className="thumbnail-paper" aria-hidden="true">
+        <span className="thumbnail-kicker" />
+        <span className="thumbnail-title" />
+        <span className="thumbnail-line w-full" />
+        <span className="thumbnail-line w-10/12" />
+        <span className="thumbnail-line w-11/12" />
+        <span className="thumbnail-line w-8/12" />
+      </span>
+      <span className="thumbnail-page-number">{page}</span>
+    </button>
   );
 }
 
@@ -221,8 +259,40 @@ export default function Home() {
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
   const [fileName, setFileName] = useState('Learning How to Learn.pdf');
+  const [stageWidth, setStageWidth] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const documentStageRef = useRef<HTMLDivElement>(null);
+  const pageElementsRef = useRef(new Map<number, HTMLElement>());
+  const activeThumbnailRef = useRef<HTMLButtonElement>(null);
+  const initialPagePositionedRef = useRef(false);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const stage = documentStageRef.current;
+    if (!stage) return;
+
+    const updateStageSize = () => {
+      setStageWidth(stage.clientWidth);
+    };
+    const frame = requestAnimationFrame(updateStageSize);
+    const observer = new ResizeObserver(updateStageSize);
+    observer.observe(stage);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!stageWidth || initialPagePositionedRef.current) return;
+    initialPagePositionedRef.current = true;
+    pageElementsRef.current.get(page)?.scrollIntoView({ block: 'center' });
+  }, [page, stageWidth]);
+
+  useEffect(() => {
+    activeThumbnailRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [page]);
 
   useEffect(() => {
     const key = `${page}-${targetLanguage}`;
@@ -252,8 +322,39 @@ export default function Home() {
   }, [cachedKeys, page, retriedErrorPage, targetLanguage]);
 
   const goToPage = (nextPage: number) => {
+    const targetPage = clampPage(nextPage, pageCount);
     setCopied(false);
-    setPage(clampPage(nextPage, pageCount));
+    setPage(targetPage);
+    requestAnimationFrame(() => {
+      pageElementsRef.current.get(targetPage)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    });
+  };
+
+  const updatePageFromScroll = () => {
+    const stage = documentStageRef.current;
+    if (!stage) return;
+
+    const stageRect = stage.getBoundingClientRect();
+    const readingLine = stageRect.top + stage.clientHeight * 0.42;
+    let closestPage = page;
+    let closestDistance = Number.POSITIVE_INFINITY;
+
+    for (const [pageNumber, element] of pageElementsRef.current) {
+      const rect = element.getBoundingClientRect();
+      const distance = Math.abs(rect.top + Math.min(rect.height * 0.42, stage.clientHeight / 2) - readingLine);
+      if (distance < closestDistance) {
+        closestPage = pageNumber;
+        closestDistance = distance;
+      }
+    }
+
+    if (closestPage !== page) {
+      setCopied(false);
+      setPage(closestPage);
+    }
   };
 
   const retranslate = () => {
@@ -283,14 +384,16 @@ export default function Home() {
       setFileName(name);
       setPageCount(name === 'Designing for Learning.pdf' ? 18 : 12);
       setPage(1);
+      requestAnimationFrame(() => {
+        pageElementsRef.current.get(1)?.scrollIntoView({ block: 'start' });
+      });
       setImporting(false);
       setImportOpen(false);
     }, 850);
   };
 
-  const visiblePages = Array.from(
-    new Set([page - 1, page, page + 1].filter((item) => item >= 1 && item <= pageCount)),
-  );
+  const pageNumbers = Array.from({ length: pageCount }, (_, index) => index + 1);
+  const currentPageWidth = fillColumnPageWidth(stageWidth, zoom);
   const isReady = translationStatus === 'cached' || translationStatus === 'complete';
 
   return (
@@ -376,15 +479,46 @@ export default function Home() {
                   </div>
                   <span className="status-chip">第 {page} 页正在阅读</span>
                 </div>
-                <div className="document-scroll">
-                  {visiblePages.map((visiblePage) => (
-                    <PaperPage
-                      key={visiblePage}
-                      page={visiblePage}
-                      active={visiblePage === page}
-                      zoom={zoom}
-                    />
-                  ))}
+                <div className="reader-workspace">
+                  <nav className="thumbnail-sidebar" aria-label="PDF 页面预览">
+                    <div className="thumbnail-sidebar-heading">
+                      <span>页面</span>
+                      <span>{pageCount}</span>
+                    </div>
+                    <div className="thumbnail-scroll">
+                      {pageNumbers.map((pageNumber) => (
+                        <PageThumbnail
+                          key={pageNumber}
+                          page={pageNumber}
+                          active={pageNumber === page}
+                          activeRef={pageNumber === page ? activeThumbnailRef : undefined}
+                          onSelect={() => goToPage(pageNumber)}
+                        />
+                      ))}
+                    </div>
+                  </nav>
+
+                  <div
+                    ref={documentStageRef}
+                    className="document-stage"
+                    aria-label="PDF 连续阅读画布"
+                    onScroll={updatePageFromScroll}
+                  >
+                    <div className="document-pages">
+                      {pageNumbers.map((pageNumber) => (
+                        <PaperPage
+                          key={pageNumber}
+                          page={pageNumber}
+                          width={currentPageWidth}
+                          active={pageNumber === page}
+                          elementRef={(node) => {
+                            if (node) pageElementsRef.current.set(pageNumber, node);
+                            else pageElementsRef.current.delete(pageNumber);
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </section>
             </ResizablePanel>

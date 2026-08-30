@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   clampPage,
+  fillColumnPageWidth,
   getTranslation,
   stepZoom,
   translationCopy,
@@ -19,6 +20,12 @@ void test('zoom changes one supported step at a time and stops at limits', () =>
   assert.equal(stepZoom(95, -1), 85);
   assert.equal(stepZoom(150, 1), 150);
   assert.equal(stepZoom(75, -1), 75);
+});
+
+void test('PDF pages fill the reading column and respect zoom', () => {
+  assert.equal(fillColumnPageWidth(900), 876);
+  assert.equal(fillColumnPageWidth(360), 336);
+  assert.equal(fillColumnPageWidth(900, 110), 1014);
 });
 
 void test('uncached demo pages still return a useful translation state', () => {

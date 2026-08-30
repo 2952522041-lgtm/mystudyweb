@@ -67,6 +67,15 @@ export function clampPage(page: number, pageCount = PAGE_COUNT): number {
   return Math.min(Math.max(Math.round(page), 1), pageCount);
 }
 
+export function fillColumnPageWidth(
+  containerWidth: number,
+  zoom = 95,
+  gutter = 24,
+): number {
+  const availableWidth = Math.max(containerWidth - gutter, 0);
+  return Math.round(availableWidth * (zoom / 95));
+}
+
 export function stepZoom(current: number, direction: -1 | 1): number {
   const nearestIndex = ZOOM_STEPS.reduce((bestIndex, step, index) =>
     Math.abs(step - current) < Math.abs(ZOOM_STEPS[bestIndex] - current)
