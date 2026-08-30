@@ -111,7 +111,7 @@ void test('openai-compatible provider sends a prompt and parses paragraph JSON',
 });
 
 void test('openai-compatible provider surfaces auth errors without retrying', async () => {
-  const { fetchImpl } = stubFetch(401, { error: { message: 'bad key' } });
+  const { fetchImpl } = stubFetch(401, { error: { message: '令牌已过期或验证不正确' } });
   const provider = createOpenAICompatibleProvider({
     baseUrl: 'https://api.example.com/v1',
     apiKey: 'sk-bad',
@@ -120,7 +120,10 @@ void test('openai-compatible provider surfaces auth errors without retrying', as
   });
   await assert.rejects(
     provider.translate({ text: 'Hello.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 }),
-    (error: unknown) => error instanceof TranslationError && error.code === 'auth',
+    (error: unknown) =>
+      error instanceof TranslationError &&
+      error.code === 'auth' &&
+      /令牌已过期或验证不正确/.test(error.message),
   );
 });
 

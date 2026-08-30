@@ -178,9 +178,10 @@ export function createOpenAICompatibleProvider(config: OpenAICompatibleConfig): 
       }
 
       if (!response.ok) {
+        const detail = await extractErrorDetail(response);
         throw new TranslationError(
           classifyHttpError(response.status),
-          `翻译服务返回 ${response.status}。`,
+          detail ? `翻译服务返回 ${response.status}：${detail}` : `翻译服务返回 ${response.status}。`,
           response.status,
         );
       }
@@ -203,6 +204,27 @@ export function createOpenAICompatibleProvider(config: OpenAICompatibleConfig): 
       };
     },
   };
+}
+
+/**
+ * Surfaces the provider's own explanation (wrong key, missing balance,
+ * unknown model, …) so the reader can act instead of seeing a bare status.
+ */
+async function extractErrorDetail(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as {
+      error?: { message?: unknown; code?: unknown };
+      message?: unknown;
+    };
+    const message = payload?.error?.message ?? payload?.message;
+    if (typeof message === 'string' && message.trim().length > 0) {
+      const trimmed = message.trim();
+      return trimmed.length > 120 ? `${trimmed.slice(0, 120)}…` : trimmed;
+    }
+  } catch {
+    // not a JSON error body
+  }
+  return '';
 }
 
 export function parseParagraphList(content: string, sourceText: string): string[] {
