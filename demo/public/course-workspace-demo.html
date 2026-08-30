@@ -400,6 +400,99 @@
       .status.none { color: #7b8492; background: #eff1f4; }
       .document-actions { display: flex; gap: 7px; justify-content: flex-end; }
 
+      body.reader-mode .layout { grid-template-columns: 1fr; }
+      body.reader-mode .sidebar { display: none; }
+      body.reader-mode .workspace { padding: 16px 20px 24px; }
+      body.reader-mode .workspace-inner { width: 100%; }
+
+      .reader-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 13px;
+      }
+
+      .reader-title-wrap { display: flex; align-items: center; gap: 11px; min-width: 0; }
+      .reader-back { width: 35px; height: 35px; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 9px; background: white; }
+      .reader-file-name { display: block; overflow: hidden; font-size: 15px; font-weight: 730; text-overflow: ellipsis; white-space: nowrap; }
+      .reader-file-meta { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+      .reader-head-actions { display: flex; align-items: center; gap: 8px; }
+
+      .reader-grid {
+        height: calc(100vh - 145px);
+        min-height: 640px;
+        display: grid;
+        grid-template-columns: 146px minmax(430px, 1fr) 390px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        background: white;
+      }
+
+      .page-sidebar { overflow: auto; padding: 14px 12px; background: #f7f8fa; border-right: 1px solid var(--line); }
+      .page-sidebar-label { margin: 0 0 11px 3px; color: var(--muted); font-size: 10px; font-weight: 750; }
+      .page-thumb { width: 100%; margin-bottom: 10px; padding: 7px; border: 1px solid transparent; border-radius: 9px; background: transparent; }
+      .page-thumb:hover { background: white; }
+      .page-thumb.active { border-color: #a9a0ef; background: white; box-shadow: 0 3px 10px rgba(35, 50, 72, 0.07); }
+      .thumb-paper { display: block; height: 118px; padding: 10px 7px; border: 1px solid #dfe3e8; background: white; box-shadow: 0 2px 5px rgba(26, 40, 57, 0.05); }
+      .thumb-line { height: 3px; margin-bottom: 6px; border-radius: 2px; background: #dfe3e8; }
+      .thumb-line.short { width: 62%; }
+      .thumb-number { display: block; margin-top: 6px; color: var(--muted); font-size: 9px; text-align: center; }
+
+      .pdf-stage { overflow: auto; padding: 26px clamp(20px, 3vw, 42px) 45px; background: #e9edf2; }
+      .pdf-toolbar { position: sticky; top: -15px; z-index: 2; width: fit-content; display: flex; align-items: center; gap: 8px; margin: 0 auto 16px; padding: 6px 9px; border: 1px solid rgba(205, 211, 220, 0.9); border-radius: 9px; background: rgba(255, 255, 255, 0.94); box-shadow: 0 5px 15px rgba(31, 45, 64, 0.08); font-size: 10px; }
+      .pdf-toolbar button { width: 25px; height: 25px; border: 0; border-radius: 6px; background: #f2f4f7; }
+      .pdf-paper { width: min(680px, 100%); min-height: 880px; margin: 0 auto; padding: 64px 68px; background: white; box-shadow: 0 5px 22px rgba(28, 42, 60, 0.13); font-family: Georgia, "Times New Roman", serif; }
+      .pdf-paper .paper-course { color: #67717e; font-family: Inter, sans-serif; font-size: 10px; letter-spacing: 0.08em; }
+      .pdf-paper h2 { margin: 17px 0 7px; font-size: 25px; font-weight: 500; }
+      .pdf-paper .paper-rule { width: 42px; height: 2px; margin: 17px 0 25px; background: #7c6de0; }
+      .pdf-paper h3 { margin: 25px 0 9px; font-size: 16px; }
+      .pdf-paper p { margin: 0 0 13px; color: #2f3742; font-size: 12px; line-height: 1.75; }
+      .equation { margin: 22px 0; padding: 16px; border-left: 3px solid #8d82e8; background: #f7f6ff; font-size: 16px; text-align: center; }
+      .paper-figure { display: grid; grid-template-columns: repeat(7, 1fr); align-items: end; gap: 8px; height: 105px; margin: 22px 0 8px; padding: 15px 20px 8px; border-left: 1px solid #9da6b1; border-bottom: 1px solid #9da6b1; }
+      .figure-bar { border-radius: 4px 4px 0 0; background: linear-gradient(#8a7de8, #c7c1f5); }
+      .figure-caption { color: #687281; font-family: Inter, sans-serif; font-size: 9px; text-align: center; }
+      .paper-page-number { margin-top: 45px; color: #9299a4; font-family: Inter, sans-serif; font-size: 10px; text-align: center; }
+
+      .reader-panel { min-width: 0; display: grid; grid-template-rows: auto 1fr; border-left: 1px solid var(--line); }
+      .reader-tabs { display: grid; grid-template-columns: repeat(4, 1fr); padding: 7px 7px 0; border-bottom: 1px solid var(--line); }
+      .reader-tab { padding: 10px 5px 11px; border: 0; border-bottom: 2px solid transparent; color: #737d8b; background: transparent; font-size: 10px; font-weight: 650; }
+      .reader-tab.active { color: var(--violet); border-color: var(--violet); }
+      .reader-panel-body { min-height: 0; overflow: auto; }
+      .reader-pane { display: none; min-height: 100%; padding: 22px; }
+      .reader-pane.active { display: block; }
+      .reader-context { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 17px; }
+      .reader-context-title { font-size: 12px; font-weight: 740; }
+      .reader-context-page { color: var(--violet); font-size: 10px; }
+      .translation-block { padding: 13px 0; border-top: 1px solid var(--soft-line); color: #4a5667; font-size: 12px; line-height: 1.8; }
+      .translation-block:first-of-type { border-top: 0; }
+      .chat-bubble { width: fit-content; max-width: 92%; margin-bottom: 12px; padding: 10px 12px; border-radius: 11px; background: #f0f2f6; color: #465163; font-size: 11px; line-height: 1.6; }
+      .chat-bubble.user { margin-left: auto; color: white; background: var(--violet); }
+      .chat-composer { display: flex; gap: 7px; margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--soft-line); }
+      .chat-composer input { min-width: 0; flex: 1; height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; }
+
+      .doc-summary-label { color: var(--violet); font-size: 10px; font-weight: 780; }
+      .doc-summary-title { margin: 6px 0 4px; font-size: 18px; }
+      .doc-summary-meta { color: var(--muted); font-size: 9px; }
+      .doc-summary-section { margin-top: 21px; }
+      .doc-summary-section h4 { margin: 0 0 8px; font-size: 12px; }
+      .doc-summary-section p, .doc-summary-section li { color: #4e5a6b; font-size: 11px; line-height: 1.72; }
+      .doc-summary-section ul { margin: 0; padding-left: 17px; }
+      .doc-summary-source { display: inline-flex; margin: 7px 5px 0 0; padding: 4px 7px; border: 0; border-radius: 6px; color: var(--blue); background: var(--blue-soft); font-size: 9px; }
+      .doc-focus { margin-top: 18px; padding: 12px; border: 1px solid #ddd9fa; border-radius: 9px; background: #f8f7ff; }
+      .doc-focus strong { display: block; margin-bottom: 5px; color: var(--violet); font-size: 10px; }
+      .doc-focus p { margin: 0; color: #555f70; font-size: 10px; line-height: 1.6; }
+
+      .doc-map { position: relative; height: 430px; margin-top: 14px; overflow: hidden; border: 1px solid var(--soft-line); border-radius: 11px; background: #fafbfe; }
+      .doc-map-line { position: absolute; left: 50%; width: 2px; background: #d3d8e2; transform: translateX(-50%); }
+      .doc-map-node { position: absolute; left: 50%; width: 170px; padding: 9px 10px; border: 1px solid #d9deea; border-left: 4px solid var(--blue); border-radius: 9px; background: white; box-shadow: 0 4px 11px rgba(34, 50, 73, 0.06); font-size: 10px; transform: translateX(-50%); }
+      .doc-map-node.root { color: white; border-color: var(--navy); background: var(--navy); text-align: center; }
+      .doc-map-node.insight { border-left-color: var(--violet); }
+      .doc-map-node.question { border-left-color: var(--amber); }
+      .doc-map-node small { display: block; margin-top: 3px; color: #8a93a1; font-size: 8px; }
+      .doc-map-node.root small { color: #cbd6e2; }
+
       .empty-state { padding: 70px 25px; text-align: center; }
       .empty-icon { width: 54px; height: 54px; display: grid; place-items: center; margin: 0 auto 15px; border-radius: 16px; color: var(--violet); background: var(--violet-soft); font-size: 24px; }
       .empty-state h2 { margin: 0 0 7px; font-size: 19px; }
@@ -498,6 +591,8 @@
         .summary-aside, .map-detail { border-radius: 0 0 14px 14px; }
         .document-row { grid-template-columns: minmax(220px, 1fr) 130px auto; }
         .document-row > :nth-child(3) { display: none; }
+        .reader-grid { grid-template-columns: 110px minmax(380px, 1fr) 340px; }
+        .pdf-paper { padding: 50px 45px; }
       }
 
       @media (max-width: 720px) {
@@ -518,6 +613,13 @@
         .document-row > :nth-child(2), .document-row > :nth-child(3) { display: flex; }
         .document-actions { justify-content: flex-start; }
         .folder-state { max-width: 100%; }
+        body.reader-mode .workspace { padding: 10px; }
+        .reader-head { align-items: flex-start; }
+        .reader-head-actions { display: none; }
+        .reader-grid { height: auto; min-height: 0; grid-template-columns: 1fr; overflow: visible; }
+        .page-sidebar { display: none; }
+        .pdf-stage { max-height: 620px; border-bottom: 1px solid var(--line); }
+        .reader-panel { min-height: 620px; border-left: 0; }
       }
     </style>
   </head>
@@ -526,7 +628,7 @@
       <header class="topbar">
         <div class="brand"><span class="brand-mark">页</span><span>页语</span></div>
         <nav class="top-nav" aria-label="主导航">
-          <button class="active" type="button">课程知识库</button>
+          <button class="active" type="button" id="courseNav">课程知识库</button>
           <button type="button" id="readerNav">PDF 阅读器</button>
         </nav>
         <div class="top-actions">
@@ -648,6 +750,10 @@
         const state = {
           activeCourseId: "ml",
           activeTab: "summary",
+          view: "course",
+          activeDocumentId: null,
+          readerTab: "summary",
+          currentPage: 24,
           selectedNodeId: "gradient",
           folderChosen: false,
           importFileName: "Deep Learning Optimization.pdf",
@@ -731,7 +837,8 @@
               <div>${doc.merged ? statusMarkup("merged", "已纳入课程") : statusMarkup("pending", "尚未纳入课程知识库")}</div>
               <div>${doc.summary && doc.mindmap ? statusMarkup("ready", "总结与脑图已生成") : statusMarkup("none", "未生成独立成果")}</div>
               <div class="document-actions">
-                ${doc.merged ? `<button class="button small" type="button" data-open-doc="${doc.id}">查看</button>` : `<button class="button small primary" type="button" data-merge-doc="${doc.id}">并入课程</button>`}
+                <button class="button small" type="button" data-open-doc="${doc.id}">打开</button>
+                ${!doc.merged ? `<button class="button small primary" type="button" data-merge-doc="${doc.id}">并入课程</button>` : ""}
                 ${!doc.summary ? `<button class="button small" type="button" data-generate-doc="${doc.id}">生成成果</button>` : ""}
               </div>
             </div>
@@ -814,8 +921,139 @@
           return `<section class="tab-panel ${state.activeTab === "documents" ? "active" : ""}" data-panel="documents"><div class="documents-panel"><div class="documents-head"><div><h2>课程资料</h2><p>导入资料与课程总知识库的关系彼此独立。</p></div>${course.documents.length > 0 ? '<button class="button primary" type="button" data-open-import>＋ 导入 PDF</button>' : ""}</div>${content}</div></section>`;
         }
 
+        function documentTopic(doc) {
+          if (doc.id === "lecture-01") {
+            return {
+              title: "Foundations of Machine Learning",
+              overview: "本讲建立机器学习问题的基本语言：样本、特征、标签、假设空间，以及训练误差和测试误差之间的区别。",
+              points: ["监督学习从带标签样本中学习映射关系。", "经验风险是在有限训练数据上计算的损失。", "真正目标是获得对未见数据仍然有效的模型。"],
+              focus: "你重点询问了训练误差很低但测试误差仍然较高的原因，并将其标记为需要继续复习。",
+              pages: ["第 3–12 页", "第 19–30 页"],
+            };
+          }
+          if (doc.id === "lecture-02") {
+            return {
+              title: "Linear Models and Optimization",
+              overview: "本讲把线性回归和逻辑回归表示为参数化预测问题，并使用损失函数与梯度下降完成模型训练。",
+              points: ["线性模型通过参数控制预测函数。", "损失函数衡量预测结果与真实标签的差异。", "梯度下降沿负梯度方向迭代更新参数。"],
+              focus: "你围绕学习率过大为什么会震荡追问了 3 次，并用“下山时步子过大”的类比建立了直觉。",
+              pages: ["第 2–19 页", "第 21–37 页"],
+            };
+          }
+          return {
+            title: doc.name.replace(/\.pdf$/i, ""),
+            overview: "这份资料已经完成内部摘要，可在生成独立成果后查看客观重点、个性化学习洞察和逐页来源。",
+            points: ["识别资料中的主要主题与章节。", "提取关键定义、公式和结论。", "保留每个知识点对应的 PDF 页码。"],
+            focus: "目前还没有与这份 PDF 相关的学习对话。开始阅读和提问后，这里会持续补充你的学习重点。",
+            pages: ["第 1–3 页", `第 ${Math.max(1, doc.pages - 2)}–${doc.pages} 页`],
+          };
+        }
+
+        function documentSummaryPane(doc) {
+          if (!doc.summary) {
+            return `<div class="reader-pane ${state.readerTab === "summary" ? "active" : ""}" data-reader-pane="summary"><div class="empty-state" style="padding:55px 10px"><div class="empty-icon">Σ</div><h2>尚未生成 PDF 总结</h2><p>这不会影响阅读。生成后会得到客观内容总结、你的学习重点和可跳转的来源页码。</p><button class="button primary" type="button" data-generate-current>生成这份 PDF 的总结和脑图</button></div></div>`;
+          }
+          const topic = documentTopic(doc);
+          return `
+            <div class="reader-pane ${state.readerTab === "summary" ? "active" : ""}" data-reader-pane="summary">
+              <div class="doc-summary-label">单 PDF 总结</div>
+              <h3 class="doc-summary-title">${topic.title}</h3>
+              <div class="doc-summary-meta">版本 2 · 根据 PDF 内容与 4 条学习对话生成</div>
+              <section class="doc-summary-section"><h4>内容概览</h4><p>${topic.overview}</p>${topic.pages.map((page) => `<button class="doc-summary-source" type="button" data-page-source>${page}</button>`).join("")}</section>
+              <section class="doc-summary-section"><h4>本 PDF 核心重点</h4><ul>${topic.points.map((point) => `<li>${point}</li>`).join("")}</ul></section>
+              <div class="doc-focus"><strong>结合你的 AI 问答</strong><p>${topic.focus}</p></div>
+              <section class="doc-summary-section"><h4>仍未解决</h4><p>凸性对实际非凸模型的优化结果有什么影响？</p><button class="doc-summary-source" type="button" data-page-source>AI 对话 · 第 ${state.currentPage} 页</button></section>
+            </div>`;
+        }
+
+        function documentMindmapPane(doc) {
+          if (!doc.mindmap) {
+            return `<div class="reader-pane ${state.readerTab === "mindmap" ? "active" : ""}" data-reader-pane="mindmap"><div class="empty-state" style="padding:55px 10px"><div class="empty-icon">⌘</div><h2>尚未生成 PDF 脑图</h2><p>生成后，每个节点都可以追溯到这份 PDF 的页码或相关 AI 对话。</p><button class="button primary" type="button" data-generate-current>生成总结和脑图</button></div></div>`;
+          }
+          return `
+            <div class="reader-pane ${state.readerTab === "mindmap" ? "active" : ""}" data-reader-pane="mindmap">
+              <div class="reader-context"><span class="reader-context-title">本 PDF 知识脑图</span><span class="reader-context-page">7 个节点</span></div>
+              <div class="mindmap-legend"><span class="legend-item"><i class="legend-dot" style="background:var(--blue)"></i>PDF 知识</span><span class="legend-item"><i class="legend-dot" style="background:var(--violet)"></i>问答洞察</span><span class="legend-item"><i class="legend-dot" style="background:var(--amber)"></i>待解决</span></div>
+              <div class="doc-map">
+                <span class="doc-map-line" style="top:65px;height:285px"></span>
+                <button class="doc-map-node root" style="top:22px" type="button" data-page-source>线性模型与优化<small>PDF 总主题</small></button>
+                <button class="doc-map-node" style="top:105px" type="button" data-page-source>模型表示<small>第 2–9 页</small></button>
+                <button class="doc-map-node" style="top:174px" type="button" data-page-source>损失函数<small>第 10–19 页</small></button>
+                <button class="doc-map-node insight" style="top:243px" type="button" data-page-source>梯度下降与学习率<small>第 24 页 · 问答 3 次</small></button>
+                <button class="doc-map-node question" style="top:322px" type="button" data-page-source>凸性为什么重要？<small>第 31 页 · 尚未解决</small></button>
+              </div>
+            </div>`;
+        }
+
+        function translationPane() {
+          return `
+            <div class="reader-pane ${state.readerTab === "translation" ? "active" : ""}" data-reader-pane="translation">
+              <div class="reader-context"><span class="reader-context-title">页面翻译</span><span class="reader-context-page">正在基于第 ${state.currentPage} 页</span></div>
+              <div class="translation-block">梯度下降是一种迭代优化算法，用于寻找可微函数的局部最小值。</div>
+              <div class="translation-block">在每一步中，参数沿当前点梯度的反方向更新。学习率决定单次更新的步长。</div>
+              <div class="translation-block">如果学习率过小，收敛速度会很慢；如果学习率过大，更新可能越过最低点并产生震荡。</div>
+            </div>`;
+        }
+
+        function chatPane() {
+          return `
+            <div class="reader-pane ${state.readerTab === "chat" ? "active" : ""}" data-reader-pane="chat">
+              <div class="reader-context"><span class="reader-context-title">AI 答疑</span><span class="reader-context-page">正在基于第 ${state.currentPage} 页</span></div>
+              <div class="chat-bubble user">为什么学习率太大会震荡？</div>
+              <div class="chat-bubble">可以把最低点想象成山谷。每次更新的步长太大时，会从山谷一侧直接跨到另一侧，因此损失值来回变化，无法稳定靠近最低点。</div>
+              <div class="chat-bubble user">把这个理解加入我的总结。</div>
+              <div class="chat-bubble">已标记为你的学习重点，下次更新本 PDF 总结时会保留这个类比。</div>
+              <div class="chat-composer"><input aria-label="向 AI 提问" placeholder="询问当前页内容…" /><button class="button primary small" type="button" data-send-chat>发送</button></div>
+            </div>`;
+        }
+
+        function readerPageNumbers(doc) {
+          const count = Math.min(5, doc.pages);
+          const start = Math.max(1, Math.min(state.currentPage - 2, doc.pages - count + 1));
+          return Array.from({ length: count }, (_, index) => start + index);
+        }
+
+        function renderDocumentReader(course, doc) {
+          const pages = readerPageNumbers(doc);
+          return `
+            <div class="reader-head">
+              <div class="reader-title-wrap"><button class="reader-back" type="button" data-back-course aria-label="返回课程">←</button><span><span class="reader-file-name">${doc.name}</span><span class="reader-file-meta">${course.name} · ${doc.pages} 页 · 已复制到课程文件夹</span></span></div>
+              <div class="reader-head-actions">${doc.merged ? statusMarkup("merged", "已纳入课程") : statusMarkup("pending", "尚未纳入课程知识库")}<button class="button small" type="button" data-back-course>返回课程</button></div>
+            </div>
+            <div class="reader-grid">
+              <aside class="page-sidebar"><div class="page-sidebar-label">页面缩略图</div>${pages.map((page) => `<button class="page-thumb ${page === state.currentPage ? "active" : ""}" type="button" data-page="${page}"><span class="thumb-paper"><i class="thumb-line"></i><i class="thumb-line short"></i><i class="thumb-line"></i><i class="thumb-line"></i><i class="thumb-line short"></i></span><span class="thumb-number">${page}</span></button>`).join("")}</aside>
+              <section class="pdf-stage">
+                <div class="pdf-toolbar"><button type="button" data-prev-page>‹</button><span>第 ${state.currentPage} / ${doc.pages} 页</span><button type="button" data-next-page>›</button><span style="color:#9aa2ae">100%</span></div>
+                <article class="pdf-paper"><div class="paper-course">CS 485 · MACHINE LEARNING</div><h2>Gradient Descent and Learning Rate</h2><div class="paper-rule"></div><p>Gradient descent is an iterative optimization algorithm for finding a local minimum of a differentiable function. The method updates model parameters in the direction opposite to the gradient.</p><div class="equation">θ<sub>t+1</sub> = θ<sub>t</sub> − η ∇L(θ<sub>t</sub>)</div><h3>Choosing the learning rate</h3><p>The learning rate η controls the size of each update. A small value produces stable but slow progress. A large value can overshoot the minimum and cause the loss to oscillate.</p><div class="paper-figure">${[34, 48, 65, 88, 64, 44, 30].map((height) => `<span class="figure-bar" style="height:${height}px"></span>`).join("")}</div><div class="figure-caption">Figure 4. Loss oscillation caused by an excessive learning rate</div><h3>Convergence</h3><p>For a convex and smooth objective, an appropriate step size gives a predictable convergence behavior. For non-convex objectives, the optimization landscape may contain saddle points and multiple local minima.</p><div class="paper-page-number">${state.currentPage}</div></article>
+              </section>
+              <aside class="reader-panel">
+                <div class="reader-tabs"><button class="reader-tab ${state.readerTab === "translation" ? "active" : ""}" type="button" data-reader-tab="translation">页面翻译</button><button class="reader-tab ${state.readerTab === "chat" ? "active" : ""}" type="button" data-reader-tab="chat">AI 答疑</button><button class="reader-tab ${state.readerTab === "summary" ? "active" : ""}" type="button" data-reader-tab="summary">PDF 总结</button><button class="reader-tab ${state.readerTab === "mindmap" ? "active" : ""}" type="button" data-reader-tab="mindmap">PDF 脑图</button></div>
+                <div class="reader-panel-body">${translationPane()}${chatPane()}${documentSummaryPane(doc)}${documentMindmapPane(doc)}</div>
+              </aside>
+            </div>`;
+        }
+
+        function openDocument(documentId) {
+          const course = courseById(state.activeCourseId);
+          const doc = course.documents.find((item) => item.id === documentId);
+          if (!doc) return;
+          state.activeDocumentId = documentId;
+          state.currentPage = Math.min(doc.pages, 24);
+          state.readerTab = doc.summary ? "summary" : "translation";
+          state.view = "reader";
+          renderAll();
+        }
+
         function renderWorkspace() {
           const course = courseById(state.activeCourseId);
+          if (state.view === "reader") {
+            const doc = course.documents.find((item) => item.id === state.activeDocumentId) || course.documents[0];
+            if (doc) {
+              $("#workspace").innerHTML = renderDocumentReader(course, doc);
+              return;
+            }
+            state.view = "course";
+          }
           const total = course.documents.length;
           $("#workspace").innerHTML = `
             <div class="workspace-head">
@@ -837,7 +1075,13 @@
           `;
         }
 
-        function renderAll() { renderCourses(); renderWorkspace(); }
+        function renderAll() {
+          document.body.classList.toggle("reader-mode", state.view === "reader");
+          $("#courseNav").classList.toggle("active", state.view === "course");
+          $("#readerNav").classList.toggle("active", state.view === "reader");
+          renderCourses();
+          renderWorkspace();
+        }
 
         function mergeDocument(documentId) {
           const course = courseById(state.activeCourseId);
@@ -899,14 +1143,32 @@
           const target = event.target.closest("button");
           if (!target) return;
           if (target.dataset.close) closeModal(target.dataset.close);
-          if (target.dataset.courseId) { state.activeCourseId = target.dataset.courseId; state.activeTab = "summary"; renderAll(); }
+          if (target.dataset.courseId) { state.activeCourseId = target.dataset.courseId; state.activeTab = "summary"; state.view = "course"; state.activeDocumentId = null; renderAll(); }
           if (target.dataset.tab) { state.activeTab = target.dataset.tab; renderWorkspace(); }
           if (target.hasAttribute("data-open-import")) openModal("importModal");
           if (target.dataset.mergeDoc) mergeDocument(target.dataset.mergeDoc);
           if (target.dataset.generateDoc) generateDocument(target.dataset.generateDoc);
-          if (target.dataset.openDoc) showToast("原型中：这里将打开该 PDF 的阅读与独立总结页面");
+          if (target.dataset.openDoc) openDocument(target.dataset.openDoc);
+          if (target.hasAttribute("data-back-course")) { state.view = "course"; state.activeTab = "documents"; renderAll(); }
+          if (target.dataset.readerTab) { state.readerTab = target.dataset.readerTab; renderWorkspace(); }
+          if (target.dataset.page) { state.currentPage = Number(target.dataset.page); renderWorkspace(); }
+          if (target.hasAttribute("data-prev-page")) {
+            state.currentPage = Math.max(1, state.currentPage - 1); renderWorkspace();
+          }
+          if (target.hasAttribute("data-next-page")) {
+            const course = courseById(state.activeCourseId);
+            const doc = course.documents.find((item) => item.id === state.activeDocumentId);
+            state.currentPage = Math.min(doc?.pages || state.currentPage, state.currentPage + 1); renderWorkspace();
+          }
+          if (target.hasAttribute("data-generate-current") && state.activeDocumentId) generateDocument(state.activeDocumentId);
           if (target.dataset.nodeId) { state.selectedNodeId = target.dataset.nodeId; renderWorkspace(); }
-          if (target.hasAttribute("data-source-jump") || target.classList.contains("source-link")) showToast("原型中：这里将跳转到对应 PDF 页码或 AI 对话");
+          if (target.classList.contains("source-link") && state.view === "course") {
+            const course = courseById(state.activeCourseId);
+            const doc = course.documents.find((item) => item.merged) || course.documents[0];
+            if (doc) openDocument(doc.id);
+          }
+          if (target.hasAttribute("data-source-jump") || target.hasAttribute("data-page-source")) showToast(`已定位到第 ${state.currentPage} 页的相关来源`);
+          if (target.hasAttribute("data-send-chat")) showToast("原型中：问题会发送给当前页 AI 答疑");
           if (target.id === "fitMapButton") { $("#mapViewport").scrollTo({ left: 0, top: 0, behavior: "smooth" }); showToast("脑图已适应当前画布"); }
         });
 
@@ -926,13 +1188,26 @@
           const name = $("#courseNameInput").value.trim() || "未命名课程";
           const id = `course-${Date.now()}`;
           state.courses.push({ id, name, description: "本地课程 · 刚刚创建", folder: `学习资料 / ${name}`, lastUpdate: "尚未生成", concepts: 0, mergedCount: 0, documents: [] });
-          state.activeCourseId = id; state.activeTab = "summary"; closeModal("createCourseModal"); renderAll(); showToast(`课程“${name}”已在本地文件夹创建`);
+          state.activeCourseId = id; state.activeTab = "summary"; state.view = "course"; closeModal("createCourseModal"); renderAll(); showToast(`课程“${name}”已在本地文件夹创建`);
         });
-        $("#readerNav").addEventListener("click", () => showToast("原型中：这里返回现有 PDF 阅读器"));
+        $("#courseNav").addEventListener("click", () => { state.view = "course"; renderAll(); });
+        $("#readerNav").addEventListener("click", () => {
+          if (state.view === "reader") return;
+          const course = courseById(state.activeCourseId);
+          const doc = course.documents.find((item) => item.summary) || course.documents[0];
+          if (doc) openDocument(doc.id);
+          else showToast("请先为当前课程导入一份 PDF");
+        });
         document.addEventListener("keydown", (event) => {
           if (event.key === "Escape") document.querySelectorAll(".modal-backdrop.open").forEach((modal) => modal.classList.remove("open"));
         });
 
+        const previewParams = new URLSearchParams(window.location.search);
+        if (previewParams.get("view") === "reader") {
+          state.view = "reader";
+          state.activeDocumentId = "lecture-02";
+          state.readerTab = previewParams.get("tab") || "summary";
+        }
         renderAll();
       })();
     </script>

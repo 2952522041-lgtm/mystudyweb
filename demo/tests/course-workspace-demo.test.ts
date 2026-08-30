@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { Script } from 'node:vm';
 
 const demoUrl = new URL('../public/course-workspace-demo.html', import.meta.url);
 
@@ -29,4 +30,29 @@ void test('course workspace demo is standalone and does not call remote APIs', a
   assert.doesNotMatch(html, /<script[^>]+src=/i);
   assert.doesNotMatch(html, /\bfetch\s*\(/);
   assert.doesNotMatch(html, /XMLHttpRequest|WebSocket/);
+});
+
+void test('each PDF opens a reader with its own summary and mindmap', async () => {
+  const html = await readFile(demoUrl, 'utf8');
+
+  for (const requirement of [
+    'function openDocument',
+    'data-open-doc',
+    '页面缩略图',
+    '页面翻译',
+    'AI 答疑',
+    '单 PDF 总结',
+    '本 PDF 知识脑图',
+    'data-back-course',
+  ]) {
+    assert.match(html, new RegExp(requirement));
+  }
+});
+
+void test('course workspace demo inline script compiles', async () => {
+  const html = await readFile(demoUrl, 'utf8');
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+
+  assert.equal(scripts.length, 1);
+  assert.doesNotThrow(() => new Script(scripts[0][1]));
 });
