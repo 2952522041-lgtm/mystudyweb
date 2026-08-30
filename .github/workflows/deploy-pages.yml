@@ -1,0 +1,66 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: demo/pnpm-lock.yaml
+      - name: Install dependencies
+        working-directory: demo
+        run: pnpm install --frozen-lockfile
+      - name: Verify documentation
+        run: python3 -m unittest discover tests
+      - name: Run frontend tests
+        working-directory: demo
+        run: pnpm test
+      - name: Run lint
+        working-directory: demo
+        run: pnpm lint
+      - name: Run typecheck
+        working-directory: demo
+        run: pnpm exec tsc --noEmit
+      - name: Build static site
+        working-directory: demo
+        run: pnpm pages
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: demo/dist/client
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -17,7 +17,7 @@
 
 默认是**演示模式**（不联网，显示占位译文）。要看真实译文：打开「阅读服务设置」中的「页面翻译」，选择智谱或 DeepSeek 推荐配置，再填写对应平台的 API Key。也可以选择 OpenAI 兼容接口后手动填写服务地址和模型名。
 
-AI 答疑需要单独配置 OpenAI 兼容接口、API Key 和支持图片输入的模型。发送问题时，应用会把当前页提取文字和清晰页面图像一起发送给该服务，因此可以解读本页图片、图表、表格和公式。每一页拥有独立会话，翻页后自动切换，回到原页时恢复历史。
+AI 答疑需要单独配置 OpenAI 兼容接口、API Key 和支持图片输入的模型，并在保存前确认模型具备视觉能力。发送问题时，应用会把当前页提取文字和清晰页面图像一起发送给该服务，因此可以解读本页图片、图表、表格和公式。每一页拥有独立会话，翻页后自动切换，回到原页时恢复历史。
 
 推荐配置：
 
@@ -59,7 +59,7 @@ pnpm build      # 生产构建
 
 两种方式任选：
 
-**GitHub Pages（静态、免费）**：在 `demo/` 目录执行 `pnpm pages`，然后把 `dist/client/` 的内容发布到仓库的 `gh-pages` 分支根目录，并在仓库 Settings → Pages 里选择从 `gh-pages` 分支部署。站点地址为 `https://<用户名>.github.io/<仓库名>/`。`pnpm pages` 会生成静态导出并把资源引用改写到 `<仓库名>/` 子路径下（vinext 的 `basePath` 与静态导出不兼容，因此用后处理代替）。
+**GitHub Pages（静态、免费）**：仓库已包含 `.github/workflows/deploy-pages.yml`，推送到 `master` 后会先执行测试、lint、类型检查和静态构建，再通过 GitHub Actions 自动部署。首次使用时，在仓库 Settings → Pages 中将 Source 设为 **GitHub Actions**。站点地址为 `https://<用户名>.github.io/<仓库名>/`。本地也可在 `demo/` 目录执行 `pnpm pages` 检查 `dist/client/` 产物；脚本会根据 `GITHUB_REPOSITORY` 自动改写项目子路径，本地默认使用当前仓库名 `mystudyweb`。
 
 **Cloudflare Workers**：在 `demo/` 目录执行 `npx wrangler deploy` 即可发布（需要登录 Cloudflare 账号）。注意：国内访问 `*.workers.dev` 不稳定。
 

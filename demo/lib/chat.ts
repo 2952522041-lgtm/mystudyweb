@@ -99,7 +99,8 @@ export function describeChatError(code: ChatErrorCode): string {
 export function classifyChatHttpError(status: number): ChatErrorCode {
   if (status === 401 || status === 403) return 'auth';
   if (status === 402) return 'quota';
-  if (status === 413 || status === 422) return 'invalid_input';
+  if (status === 400 || status === 413 || status === 422)
+    return 'invalid_input';
   if (status === 429) return 'rate_limit';
   if (status >= 500) return 'server';
   return 'unknown';

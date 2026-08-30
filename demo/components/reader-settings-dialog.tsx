@@ -247,6 +247,7 @@ export function ReaderSettingsDialog({
                   setChatDraft((previous) => ({
                     ...previous,
                     baseUrl: event.target.value,
+                    visionConfirmed: false,
                   }))
                 }
                 placeholder="https://api.openai.com/v1"
@@ -286,10 +287,29 @@ export function ReaderSettingsDialog({
                   setChatDraft((previous) => ({
                     ...previous,
                     model: event.target.value,
+                    visionConfirmed: false,
                   }))
                 }
                 placeholder="支持图片输入的模型名称"
               />
+            </div>
+            <div className="flex items-start gap-2.5">
+              <Checkbox
+                id="chat-vision-confirmed"
+                checked={chatDraft.visionConfirmed}
+                onCheckedChange={(checked) =>
+                  setChatDraft((previous) => ({
+                    ...previous,
+                    visionConfirmed: checked === true,
+                  }))
+                }
+              />
+              <label
+                htmlFor="chat-vision-confirmed"
+                className="text-xs leading-5 text-slate-700"
+              >
+                我已确认该模型支持图片输入
+              </label>
             </div>
             <p className="text-[11px] leading-5 text-slate-500">
               AI 配置只保存在本机浏览器中，不会与翻译配置共享。

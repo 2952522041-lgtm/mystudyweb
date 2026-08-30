@@ -67,4 +67,5 @@ void test('translation and AI settings use independent controlled fields', () =>
   assert.match(settingsSource, /chatSettings: ChatSettings/);
   assert.match(settingsSource, /id="chat-api-key"/);
   assert.match(settingsSource, /支持图片输入的模型/);
+  assert.match(settingsSource, /id="chat-vision-confirmed"/);
 });

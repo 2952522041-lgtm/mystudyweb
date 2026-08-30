@@ -9,12 +9,14 @@ export interface ChatSettings {
   baseUrl: string;
   apiKey: string;
   model: string;
+  visionConfirmed: boolean;
 }
 
 export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   baseUrl: 'https://api.openai.com/v1',
   apiKey: '',
   model: 'gpt-4.1-mini',
+  visionConfirmed: false,
 };
 
 const CHAT_SETTINGS_STORAGE_KEY = 'pdf-reader-chat-settings';
@@ -32,6 +34,8 @@ export function validateChatSettings(settings: ChatSettings): string | null {
   if (settings.apiKey.trim().length === 0) return '请输入 AI 答疑 API Key。';
   if (settings.model.trim().length === 0)
     return '请输入支持视觉输入的模型名称。';
+  if (settings.visionConfirmed !== true)
+    return '请确认所填模型支持图片输入后再保存。';
   return null;
 }
 

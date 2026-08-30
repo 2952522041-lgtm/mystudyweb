@@ -1,36 +1,80 @@
 /**
- * Post-processes a `vinext build` static export (output: 'export') for
- * publication on GitHub Pages project sites, which serve the repository
- * under a sub-path (e.g. /<user>.github.io/<repo>/).
+ * Post-processes a vinext static export for GitHub Pages project sites.
  *
- * vinext's `basePath` option is incompatible with `output: 'export'`
- * (prerendered HTML then references chunk names that were never emitted),
- * so the export is built at the root and this script rewrites the
- * root-absolute `/_next/` references to `/<repo>/_next/` afterwards.
- *
- * Run AFTER `pnpm build`; see the `build:pages` npm script.
+ * vinext's `basePath` option is currently incompatible with `output: 'export'`,
+ * so the export is built at the domain root and every text asset that can
+ * contain a root-absolute `/_next/` URL is rewritten afterwards.
  */
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-const repoName = 'mystudyweb';
-const clientDir = path.resolve(import.meta.dirname, '../dist/client');
+const REWRITE_EXTENSIONS = new Set([
+  '.css',
+  '.html',
+  '.js',
+  '.json',
+  '.mjs',
+  '.rsc',
+  '.txt',
+  '.webmanifest',
+  '.xml',
+]);
 
-// GitHub Pages runs Jekyll by default, which drops `_next/` directories.
-await writeFile(path.join(clientDir, '.nojekyll'), '');
-
-async function rewriteHtml(file) {
-  const source = await readFile(file, 'utf8');
-  const rewritten = source.replaceAll('/_next/', `/${repoName}/_next/`);
-  if (rewritten !== source) await writeFile(file, rewritten);
-  return rewritten !== source;
-}
-
-const entries = await readdir(clientDir, { recursive: true });
-let changed = 0;
-for (const entry of entries) {
-  if (entry.endsWith('.html')) {
-    if (await rewriteHtml(path.join(clientDir, entry))) changed += 1;
+/** @param {Record<string, string | undefined>} environment */
+export function resolveRepositoryName(environment = process.env) {
+  const explicit = environment.PAGES_REPO_NAME?.trim();
+  const fromGitHub = environment.GITHUB_REPOSITORY?.split('/').at(-1)?.trim();
+  const repositoryName = explicit || fromGitHub || 'mystudyweb';
+  if (!/^[A-Za-z0-9._-]+$/.test(repositoryName)) {
+    throw new Error(`Invalid GitHub Pages repository name: ${repositoryName}`);
   }
+  return repositoryName;
 }
-console.log(`build:pages rewrote ${changed} HTML file(s) under dist/client`);
+
+export function isRewriteTarget(file) {
+  return (
+    path.basename(file) === '_headers' ||
+    REWRITE_EXTENSIONS.has(path.extname(file).toLowerCase())
+  );
+}
+
+export function rewriteAssetPaths(source, repositoryName) {
+  return source.replace(
+    /(^|[^A-Za-z0-9._-])\/_next\//g,
+    `$1/${repositoryName}/_next/`,
+  );
+}
+
+export async function rewriteGitHubPagesOutput(clientDir, repositoryName) {
+  await writeFile(path.join(clientDir, '.nojekyll'), '');
+
+  const entries = await readdir(clientDir, { recursive: true });
+  let changed = 0;
+  for (const entry of entries) {
+    if (!isRewriteTarget(entry)) continue;
+    const file = path.join(clientDir, entry);
+    const source = await readFile(file, 'utf8');
+    const rewritten = rewriteAssetPaths(source, repositoryName);
+    if (rewritten === source) continue;
+    await writeFile(file, rewritten);
+    changed += 1;
+  }
+  return changed;
+}
+
+async function main() {
+  const clientDir = path.resolve(import.meta.dirname, '../dist/client');
+  const repositoryName = resolveRepositoryName();
+  const changed = await rewriteGitHubPagesOutput(clientDir, repositoryName);
+  console.log(
+    `build:pages rewrote ${changed} text asset(s) under dist/client for /${repositoryName}/`,
+  );
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  await main();
+}

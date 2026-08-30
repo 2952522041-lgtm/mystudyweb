@@ -114,6 +114,7 @@ void test('chat provider preserves service error details without exposing creden
       !/secret-key/.test(error.message),
   );
   assert.equal(classifyChatHttpError(401), 'auth');
+  assert.equal(classifyChatHttpError(400), 'invalid_input');
   assert.equal(classifyChatHttpError(413), 'invalid_input');
   assert.equal(classifyChatHttpError(429), 'rate_limit');
 });
@@ -133,11 +134,26 @@ void test('AI settings remain independent and validate a complete visual model c
     ...DEFAULT_CHAT_SETTINGS,
     apiKey: 'chat-only-key',
     model: 'vision-model',
+    visionConfirmed: true,
   };
   saveChatSettings(configured, storage);
   assert.deepEqual(loadChatSettings(storage), configured);
   assert.equal(chatSettingsConfigured(configured), true);
   assert.equal(backing.has('pdf-reader-settings'), false);
+});
+
+void test('AI settings reject a model until visual input support is confirmed', () => {
+  const unconfirmed = {
+    ...DEFAULT_CHAT_SETTINGS,
+    apiKey: 'chat-only-key',
+    model: 'text-or-vision-model',
+  };
+  assert.match(validateChatSettings(unconfirmed) ?? '', /确认.*图片输入/);
+  assert.equal(chatSettingsConfigured(unconfirmed), false);
+  assert.equal(
+    validateChatSettings({ ...unconfirmed, visionConfirmed: true }),
+    null,
+  );
 });
 
 void test('page conversations are isolated and can be cleared without touching other keys', async () => {

@@ -51,7 +51,7 @@ demo/
 ├─ lib/reader-cache.ts     # KV 存储（IndexedDB/内存）、译文缓存、进度、设置
 ├─ lib/current-page.ts     # 当前页判定（纯函数）
 ├─ lib/reader-model.ts     # 缩放步进、页宽计算等纯函数
-├─ tests/                  # node --test 单元测试（58 个）+ 源码结构冒烟测试
+├─ tests/                  # node --test 单元测试 + 源码结构冒烟测试
 ├─ public/sample.pdf       # 测试语料：文字型 PDF
 ├─ public/scanned.pdf      # 测试语料：无文字层（扫描型）PDF
 └─ scripts/copy-pdf-worker.mjs
@@ -74,14 +74,14 @@ demo/
 ./start.sh              # 一键本地使用（构建 + wrangler dev，自动挑空闲端口）
 cd demo
 pnpm dev                # 开发服务器 :3000（HMR）
-pnpm test               # 58 个单元测试
+pnpm test               # 单元测试与源码结构冒烟测试
 pnpm lint               # oxlint（0 错误为交付标准）
 npx tsc --noEmit        # 类型检查
 pnpm build              # 生产构建
 python3 -m unittest discover tests   # 根目录文档完整性测试
 ```
 
-部署公开站点：`cd demo && npx wrangler deploy`（需 Cloudflare 账号，项目已有 `.openai/hosting.json` 与 wrangler 配置）。
+部署公开站点：推送 `master` 后由 GitHub Actions 自动部署 Pages（首次需在仓库 Settings → Pages 选择 GitHub Actions）；也可执行 `cd demo && npx wrangler deploy` 部署 Cloudflare Workers。
 
 ## 五、已知限制与建议路线
 
