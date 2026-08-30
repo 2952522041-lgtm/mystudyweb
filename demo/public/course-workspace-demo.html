@@ -1,0 +1,940 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>页语 · 本地课程知识库 Demo</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #182230;
+        --muted: #687386;
+        --line: #e3e8ef;
+        --soft-line: #edf0f4;
+        --paper: #ffffff;
+        --canvas: #f5f7fa;
+        --navy: #243a59;
+        --navy-2: #355374;
+        --violet: #6557d8;
+        --violet-soft: #efedff;
+        --blue-soft: #e8f2ff;
+        --blue: #3676b9;
+        --green: #2f7c68;
+        --green-soft: #e8f5f0;
+        --amber: #a66716;
+        --amber-soft: #fff4df;
+        --red: #b8504a;
+        --red-soft: #fff0ee;
+        --shadow: 0 12px 34px rgba(27, 42, 61, 0.1);
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        background: var(--canvas);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      button, input { font: inherit; }
+
+      button {
+        color: inherit;
+        cursor: pointer;
+      }
+
+      button:focus-visible, input:focus-visible {
+        outline: 3px solid rgba(101, 87, 216, 0.22);
+        outline-offset: 2px;
+      }
+
+      .app-shell {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: 60px 1fr;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 0 24px;
+        color: white;
+        background: var(--navy);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .brand, .brand-mark, .top-actions, .top-nav, .button, .folder-state,
+      .course-item, .metric, .status, .source-link, .tab-button, .document-title,
+      .modal-file, .toggle-copy, .progress-step, .detail-source, .toast {
+        display: flex;
+        align-items: center;
+      }
+
+      .brand { gap: 10px; font-size: 17px; font-weight: 760; letter-spacing: 0.02em; }
+
+      .brand-mark {
+        width: 30px;
+        height: 30px;
+        justify-content: center;
+        border-radius: 9px;
+        background: linear-gradient(145deg, #8c7ef3, #5f70de);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+        font-family: Georgia, serif;
+        font-size: 18px;
+      }
+
+      .top-nav { align-self: stretch; gap: 4px; }
+
+      .top-nav button {
+        height: 100%;
+        padding: 0 16px;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        color: #bcc8d6;
+        background: transparent;
+        font-size: 14px;
+      }
+
+      .top-nav button.active { color: white; border-color: #9186ff; }
+      .top-actions { gap: 10px; }
+
+      .icon-button {
+        width: 34px;
+        height: 34px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 9px;
+        color: #dbe4ed;
+        background: rgba(255, 255, 255, 0.06);
+      }
+
+      .layout { min-height: 0; display: grid; grid-template-columns: 252px 1fr; }
+
+      .sidebar {
+        min-height: calc(100vh - 60px);
+        display: flex;
+        flex-direction: column;
+        padding: 20px 14px 16px;
+        background: #f9fafc;
+        border-right: 1px solid var(--line);
+      }
+
+      .sidebar-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 8px 11px;
+        color: #7a8494;
+        font-size: 12px;
+        font-weight: 760;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .add-course {
+        width: 27px;
+        height: 27px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: white;
+        font-size: 19px;
+        line-height: 1;
+      }
+
+      .course-list { display: grid; gap: 5px; }
+
+      .course-item {
+        width: 100%;
+        gap: 10px;
+        padding: 10px 11px;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        text-align: left;
+        background: transparent;
+      }
+
+      .course-item:hover { background: white; }
+
+      .course-item.active {
+        background: white;
+        border-color: #dfe3eb;
+        box-shadow: 0 3px 10px rgba(34, 51, 76, 0.05);
+      }
+
+      .course-icon {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+        border-radius: 9px;
+        color: var(--violet);
+        background: var(--violet-soft);
+        font-weight: 780;
+      }
+
+      .course-meta { min-width: 0; }
+      .course-name { overflow: hidden; font-size: 14px; font-weight: 690; text-overflow: ellipsis; white-space: nowrap; }
+      .course-count { margin-top: 3px; color: var(--muted); font-size: 12px; }
+
+      .sidebar-storage {
+        margin-top: auto;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: white;
+      }
+
+      .storage-heading { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 720; }
+      .storage-dot { width: 8px; height: 8px; border-radius: 50%; background: #47a184; box-shadow: 0 0 0 3px #e5f5ef; }
+      .storage-copy { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+
+      .workspace { min-width: 0; padding: 22px clamp(18px, 3vw, 38px) 44px; overflow: auto; }
+      .workspace-inner { width: min(1220px, 100%); margin: 0 auto; }
+
+      .workspace-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 20px;
+      }
+
+      .eyebrow { color: #7a8493; font-size: 12px; }
+      h1 { margin: 6px 0 4px; font-size: 28px; letter-spacing: -0.03em; }
+      .course-description { margin: 0; color: var(--muted); font-size: 13px; }
+      .head-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+
+      .folder-state {
+        max-width: 310px;
+        gap: 8px;
+        padding: 9px 11px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        color: #566173;
+        background: white;
+        font-size: 12px;
+      }
+
+      .folder-state span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      .button {
+        min-height: 38px;
+        justify-content: center;
+        gap: 7px;
+        padding: 8px 13px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: white;
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .button:hover { border-color: #cbd1dc; background: #fbfcfd; }
+      .button.primary { color: white; border-color: var(--violet); background: var(--violet); }
+      .button.primary:hover { background: #5749ca; }
+      .button.subtle { color: #596476; background: #f8f9fb; }
+      .button.danger { color: var(--red); }
+      .button.small { min-height: 31px; padding: 5px 10px; font-size: 12px; }
+      .button:disabled { cursor: not-allowed; opacity: 0.48; }
+
+      .overview-strip {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr)) 1.35fr;
+        margin-bottom: 18px;
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        background: white;
+        overflow: hidden;
+      }
+
+      .metric { gap: 11px; padding: 15px 18px; border-right: 1px solid var(--soft-line); }
+      .metric:last-child { border: 0; }
+      .metric-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: var(--blue-soft); color: var(--blue); }
+      .metric-value { font-size: 19px; font-weight: 760; line-height: 1; }
+      .metric-label { margin-top: 4px; color: var(--muted); font-size: 11px; }
+      .metric.wide .metric-value { font-size: 13px; line-height: 1.2; }
+
+      .section-shell { border: 1px solid var(--line); border-radius: 14px; background: white; box-shadow: 0 2px 8px rgba(23, 40, 62, 0.025); }
+
+      .tabs {
+        display: flex;
+        gap: 4px;
+        padding: 7px 8px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .tab-button {
+        justify-content: center;
+        gap: 7px;
+        padding: 11px 14px 12px;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        color: #6d7787;
+        background: transparent;
+        font-size: 13px;
+        font-weight: 630;
+      }
+
+      .tab-button.active { color: var(--violet); border-color: var(--violet); }
+      .tab-panel { display: none; }
+      .tab-panel.active { display: block; }
+
+      .summary-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
+      .summary-article { padding: 28px 32px 34px; border-right: 1px solid var(--soft-line); }
+      .summary-aside { padding: 22px; background: #fbfcfe; border-radius: 0 0 14px 0; }
+
+      .article-kicker { color: var(--violet); font-size: 12px; font-weight: 760; }
+      .summary-article h2 { margin: 7px 0 4px; font-size: 21px; }
+      .summary-version { color: var(--muted); font-size: 11px; }
+
+      .summary-section { margin-top: 25px; }
+      .summary-section h3 { margin: 0 0 10px; font-size: 15px; }
+      .summary-section p { margin: 0; color: #465265; font-size: 13px; line-height: 1.8; }
+      .summary-section ul { margin: 9px 0 0; padding-left: 20px; color: #465265; font-size: 13px; line-height: 1.8; }
+
+      .source-link {
+        display: inline-flex;
+        gap: 5px;
+        margin: 8px 6px 0 0;
+        padding: 5px 8px;
+        border: 0;
+        border-radius: 6px;
+        color: var(--blue);
+        background: var(--blue-soft);
+        font-size: 11px;
+      }
+
+      .aside-block + .aside-block { margin-top: 24px; }
+      .aside-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px; font-size: 12px; font-weight: 760; }
+      .change-item, .question-item { padding: 10px 0; border-top: 1px solid var(--soft-line); font-size: 12px; line-height: 1.55; }
+      .change-item:first-of-type, .question-item:first-of-type { border-top: 0; }
+      .change-type { margin-right: 6px; font-weight: 760; }
+      .change-type.add { color: var(--green); }
+      .change-type.update { color: var(--blue); }
+      .question-item { color: #4f5a6a; }
+      .question-source { display: block; margin-top: 4px; color: #929aa7; font-size: 10px; }
+
+      .mindmap-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 285px; min-height: 570px; }
+      .mindmap-main { min-width: 0; padding: 18px; border-right: 1px solid var(--soft-line); }
+      .mindmap-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 12px; }
+      .mindmap-legend { display: flex; flex-wrap: wrap; gap: 13px; color: var(--muted); font-size: 11px; }
+      .legend-item { display: flex; align-items: center; gap: 5px; }
+      .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+      .map-viewport {
+        position: relative;
+        height: 500px;
+        overflow: auto;
+        border: 1px solid var(--soft-line);
+        border-radius: 12px;
+        background-color: #fafbfe;
+        background-image: radial-gradient(#dce1e9 0.8px, transparent 0.8px);
+        background-size: 18px 18px;
+      }
+
+      .map-stage { position: relative; width: 840px; height: 500px; transform-origin: 50% 50%; }
+      .map-lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+      .map-lines path { fill: none; stroke: #cbd2dd; stroke-width: 2; }
+
+      .map-node {
+        position: absolute;
+        width: 138px;
+        min-height: 50px;
+        padding: 8px 10px;
+        border: 1px solid #d9deea;
+        border-radius: 11px;
+        text-align: left;
+        background: white;
+        box-shadow: 0 6px 14px rgba(34, 50, 73, 0.07);
+      }
+
+      .map-node:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(34, 50, 73, 0.1); }
+      .map-node.selected { border-color: var(--violet); box-shadow: 0 0 0 3px var(--violet-soft); }
+      .map-node.root { width: 150px; color: white; border-color: var(--navy); background: var(--navy); }
+      .map-node.pdf { border-left: 4px solid var(--blue); }
+      .map-node.insight { border-left: 4px solid var(--violet); }
+      .map-node.question { border-left: 4px solid var(--amber); }
+      .map-node-title { display: block; font-size: 12px; font-weight: 720; line-height: 1.35; }
+      .map-node-meta { display: block; margin-top: 4px; color: #818a99; font-size: 9px; }
+      .map-node.root .map-node-meta { color: #c7d4e3; }
+
+      .map-detail { padding: 22px; background: #fbfcfe; border-radius: 0 0 14px 0; }
+      .map-detail-label { color: var(--violet); font-size: 10px; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
+      .map-detail h3 { margin: 7px 0 9px; font-size: 17px; }
+      .map-detail p { margin: 0; color: #566173; font-size: 12px; line-height: 1.7; }
+      .detail-sources { margin-top: 20px; }
+      .detail-source { align-items: flex-start; gap: 9px; padding: 10px 0; border-top: 1px solid var(--soft-line); font-size: 11px; line-height: 1.45; }
+      .detail-source:first-child { border-top: 0; }
+      .source-mark { width: 24px; height: 24px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 7px; color: var(--blue); background: var(--blue-soft); font-size: 9px; font-weight: 760; }
+
+      .documents-panel { padding: 20px; }
+      .documents-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 15px; }
+      .documents-head h2 { margin: 0; font-size: 17px; }
+      .documents-head p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+      .document-list { border: 1px solid var(--line); border-radius: 11px; overflow: hidden; }
+
+      .document-row {
+        display: grid;
+        grid-template-columns: minmax(240px, 1fr) 140px 150px auto;
+        align-items: center;
+        gap: 18px;
+        padding: 14px 16px;
+        border-top: 1px solid var(--soft-line);
+      }
+
+      .document-row:first-child { border-top: 0; }
+      .document-row:hover { background: #fbfcfe; }
+      .document-title { min-width: 0; gap: 11px; }
+      .pdf-icon { width: 34px; height: 40px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 7px; color: #c7574e; background: #fff0ee; font-size: 9px; font-weight: 800; }
+      .document-name { overflow: hidden; font-size: 13px; font-weight: 690; text-overflow: ellipsis; white-space: nowrap; }
+      .document-pages { margin-top: 4px; color: var(--muted); font-size: 10px; }
+      .status { width: fit-content; gap: 5px; padding: 5px 8px; border-radius: 7px; font-size: 10px; font-weight: 690; }
+      .status.merged, .status.ready { color: var(--green); background: var(--green-soft); }
+      .status.pending { color: var(--amber); background: var(--amber-soft); }
+      .status.none { color: #7b8492; background: #eff1f4; }
+      .document-actions { display: flex; gap: 7px; justify-content: flex-end; }
+
+      .empty-state { padding: 70px 25px; text-align: center; }
+      .empty-icon { width: 54px; height: 54px; display: grid; place-items: center; margin: 0 auto 15px; border-radius: 16px; color: var(--violet); background: var(--violet-soft); font-size: 24px; }
+      .empty-state h2 { margin: 0 0 7px; font-size: 19px; }
+      .empty-state p { max-width: 420px; margin: 0 auto 18px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(21, 31, 45, 0.46);
+        backdrop-filter: blur(3px);
+      }
+
+      .modal-backdrop.open { display: flex; }
+      .modal { width: min(560px, 100%); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid rgba(255, 255, 255, 0.35); border-radius: 16px; background: white; box-shadow: var(--shadow); }
+      .modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 21px 23px 16px; border-bottom: 1px solid var(--soft-line); }
+      .modal-header h2 { margin: 0; font-size: 19px; }
+      .modal-header p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+      .modal-close { width: 30px; height: 30px; border: 0; border-radius: 8px; color: #748092; background: #f3f5f7; }
+      .modal-body { padding: 20px 23px; }
+      .modal-footer { display: flex; justify-content: flex-end; gap: 9px; padding: 14px 23px 20px; }
+
+      .modal-file { gap: 12px; padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: #fafbfc; }
+      .modal-file .pdf-icon { width: 38px; height: 44px; }
+      .file-info { min-width: 0; flex: 1; }
+      .file-name { overflow: hidden; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+      .file-meta { margin-top: 4px; color: var(--muted); font-size: 10px; }
+      .file-change { border: 0; color: var(--blue); background: transparent; font-size: 11px; }
+
+      .option-group { margin-top: 19px; }
+      .option-group-title { margin-bottom: 7px; color: #737d8d; font-size: 11px; font-weight: 760; }
+      .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 11px 0; border-top: 1px solid var(--soft-line); }
+      .toggle-copy { align-items: flex-start; gap: 10px; }
+      .toggle-symbol { width: 29px; height: 29px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 8px; color: var(--violet); background: var(--violet-soft); }
+      .toggle-title { font-size: 12px; font-weight: 680; }
+      .toggle-description { margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+
+      .switch { position: relative; width: 38px; height: 22px; flex: 0 0 auto; }
+      .switch input { position: absolute; opacity: 0; pointer-events: none; }
+      .switch-track { position: absolute; inset: 0; border-radius: 20px; background: #cfd5de; transition: 0.18s ease; }
+      .switch-track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18); transition: 0.18s ease; }
+      .switch input:checked + .switch-track { background: var(--violet); }
+      .switch input:checked + .switch-track::after { transform: translateX(16px); }
+
+      .input-label { display: block; margin-bottom: 7px; color: #596475; font-size: 11px; font-weight: 690; }
+      .text-input { width: 100%; height: 40px; padding: 0 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: white; }
+      .folder-picker { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px dashed #cfd5df; border-radius: 10px; background: #fafbfc; }
+      .folder-picker.selected { border-style: solid; border-color: #acd3c7; background: var(--green-soft); }
+      .folder-path { color: var(--muted); font-size: 11px; }
+      .folder-picker.selected .folder-path { color: var(--green); }
+
+      .progress-list { display: grid; gap: 3px; margin-top: 3px; }
+      .progress-step { gap: 11px; padding: 11px 3px; color: #8a93a0; font-size: 12px; }
+      .step-dot { width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid #d9dee6; border-radius: 50%; background: white; font-size: 10px; }
+      .progress-step.active { color: var(--ink); font-weight: 660; }
+      .progress-step.active .step-dot { color: white; border-color: var(--violet); background: var(--violet); }
+      .progress-step.done { color: var(--green); }
+      .progress-step.done .step-dot { color: white; border-color: var(--green); background: var(--green); }
+      .progress-bar { height: 7px; margin: 15px 0 6px; overflow: hidden; border-radius: 10px; background: #edf0f4; }
+      .progress-fill { width: 0%; height: 100%; border-radius: 10px; background: linear-gradient(90deg, var(--violet), #8295ed); transition: width 0.35s ease; }
+      .progress-caption { color: var(--muted); font-size: 10px; text-align: right; }
+
+      .toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        z-index: 40;
+        max-width: 360px;
+        gap: 10px;
+        padding: 12px 15px;
+        border: 1px solid #c8e3da;
+        border-radius: 11px;
+        color: #285f50;
+        background: #f0faf6;
+        box-shadow: var(--shadow);
+        font-size: 12px;
+        opacity: 0;
+        transform: translateY(12px);
+        pointer-events: none;
+        transition: 0.22s ease;
+      }
+
+      .toast.show { opacity: 1; transform: translateY(0); }
+      .hidden { display: none !important; }
+
+      @media (max-width: 980px) {
+        .layout { grid-template-columns: 210px 1fr; }
+        .overview-strip { grid-template-columns: repeat(3, 1fr); }
+        .metric.wide { grid-column: 1 / -1; border-top: 1px solid var(--soft-line); }
+        .summary-layout, .mindmap-wrap { grid-template-columns: 1fr; }
+        .summary-article, .mindmap-main { border-right: 0; border-bottom: 1px solid var(--soft-line); }
+        .summary-aside, .map-detail { border-radius: 0 0 14px 14px; }
+        .document-row { grid-template-columns: minmax(220px, 1fr) 130px auto; }
+        .document-row > :nth-child(3) { display: none; }
+      }
+
+      @media (max-width: 720px) {
+        .top-nav { display: none; }
+        .layout { grid-template-columns: 1fr; }
+        .sidebar { min-height: auto; padding: 10px 14px; border-right: 0; border-bottom: 1px solid var(--line); }
+        .sidebar-title, .sidebar-storage { display: none; }
+        .course-list { display: flex; overflow: auto; }
+        .course-item { min-width: 180px; }
+        .workspace { padding: 18px 14px 34px; }
+        .workspace-head { display: block; }
+        .head-actions { justify-content: flex-start; margin-top: 16px; }
+        .overview-strip { grid-template-columns: 1fr 1fr; }
+        .metric:nth-child(2) { border-right: 0; }
+        .metric:nth-child(3) { border-top: 1px solid var(--soft-line); }
+        .summary-article { padding: 22px; }
+        .document-row { grid-template-columns: 1fr; gap: 9px; }
+        .document-row > :nth-child(2), .document-row > :nth-child(3) { display: flex; }
+        .document-actions { justify-content: flex-start; }
+        .folder-state { max-width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark">页</span><span>页语</span></div>
+        <nav class="top-nav" aria-label="主导航">
+          <button class="active" type="button">课程知识库</button>
+          <button type="button" id="readerNav">PDF 阅读器</button>
+        </nav>
+        <div class="top-actions">
+          <button class="icon-button" type="button" aria-label="帮助">?</button>
+          <button class="icon-button" type="button" aria-label="设置">⚙</button>
+        </div>
+      </header>
+
+      <div class="layout">
+        <aside class="sidebar">
+          <div class="sidebar-title">
+            <span>我的课程</span>
+            <button class="add-course" id="addCourseButton" type="button" aria-label="创建课程">+</button>
+          </div>
+          <div class="course-list" id="courseList"></div>
+          <div class="sidebar-storage">
+            <div class="storage-heading"><span class="storage-dot"></span>本地文件夹模式</div>
+            <p class="storage-copy">课程资料只写入你授权的本地目录。重新打开时可能需要再次确认权限。</p>
+          </div>
+        </aside>
+
+        <main class="workspace">
+          <div class="workspace-inner" id="workspace"></div>
+        </main>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="importModal" role="dialog" aria-modal="true" aria-labelledby="importTitle">
+      <div class="modal">
+        <div class="modal-header">
+          <div>
+            <h2 id="importTitle">导入 PDF</h2>
+            <p>文件会复制到当前课程文件夹，原文件不会被修改。</p>
+          </div>
+          <button class="modal-close" type="button" data-close="importModal" aria-label="关闭">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-file">
+            <span class="pdf-icon">PDF</span>
+            <div class="file-info">
+              <div class="file-name" id="importFileName">Deep Learning Optimization.pdf</div>
+              <div class="file-meta" id="importFileMeta">38 页 · 4.8 MB · 未重复</div>
+            </div>
+            <button class="file-change" id="changeFileButton" type="button">更换</button>
+            <input class="hidden" id="pdfFileInput" type="file" accept="application/pdf,.pdf" />
+          </div>
+
+          <div class="option-group">
+            <div class="option-group-title">生成这个 PDF 的学习成果</div>
+            <label class="toggle-row">
+              <span class="toggle-copy"><span class="toggle-symbol">Σ</span><span><span class="toggle-title">生成 PDF 总结</span><span class="toggle-description">生成客观内容总结与个性化学习重点</span></span></span>
+              <span class="switch"><input id="generateSummary" type="checkbox" checked /><span class="switch-track"></span></span>
+            </label>
+            <label class="toggle-row">
+              <span class="toggle-copy"><span class="toggle-symbol">⌘</span><span><span class="toggle-title">生成 PDF 脑图</span><span class="toggle-description">创建可追溯到页码的知识节点和关系</span></span></span>
+              <span class="switch"><input id="generateMindmap" type="checkbox" checked /><span class="switch-track"></span></span>
+            </label>
+          </div>
+
+          <div class="option-group">
+            <div class="option-group-title">更新课程知识库</div>
+            <label class="toggle-row">
+              <span class="toggle-copy"><span class="toggle-symbol">↗</span><span><span class="toggle-title">并入课程总总结和总脑图</span><span class="toggle-description">先生成内部摘要，再增量更新课程成果</span></span></span>
+              <span class="switch"><input id="mergeCourse" type="checkbox" checked /><span class="switch-track"></span></span>
+            </label>
+            <label class="toggle-row">
+              <span class="toggle-copy"><span class="toggle-symbol">✦</span><span><span class="toggle-title">提炼后续 AI 问答</span><span class="toggle-description">只加入有效洞察，不直接复制整段对话</span></span></span>
+              <span class="switch"><input id="includeInsights" type="checkbox" checked /><span class="switch-track"></span></span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="button" type="button" data-close="importModal">取消</button>
+          <button class="button primary" id="startImportButton" type="button">导入并处理</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="progressModal" role="dialog" aria-modal="true" aria-labelledby="progressTitle">
+      <div class="modal" style="width: min(470px, 100%)">
+        <div class="modal-header">
+          <div><h2 id="progressTitle">正在处理 PDF</h2><p id="progressSubtitle">Deep Learning Optimization.pdf</p></div>
+        </div>
+        <div class="modal-body">
+          <div class="progress-list" id="progressList"></div>
+          <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+          <div class="progress-caption" id="progressCaption">准备中</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="createCourseModal" role="dialog" aria-modal="true" aria-labelledby="createCourseTitle">
+      <div class="modal" style="width: min(500px, 100%)">
+        <div class="modal-header">
+          <div><h2 id="createCourseTitle">创建本地课程</h2><p>选择的文件夹将成为这门课程的唯一数据来源。</p></div>
+          <button class="modal-close" type="button" data-close="createCourseModal" aria-label="关闭">×</button>
+        </div>
+        <div class="modal-body">
+          <label class="input-label" for="courseNameInput">课程名称</label>
+          <input class="text-input" id="courseNameInput" value="线性代数" />
+          <div style="height: 17px"></div>
+          <span class="input-label">课程文件夹</span>
+          <div class="folder-picker" id="folderPicker">
+            <span class="folder-path" id="folderPath">尚未选择文件夹</span>
+            <button class="button small" id="chooseFolderButton" type="button">选择文件夹</button>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="button" type="button" data-close="createCourseModal">取消</button>
+          <button class="button primary" id="createCourseButton" type="button" disabled>创建课程</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" role="status"><span>✓</span><span id="toastText"></span></div>
+
+    <script>
+      (() => {
+        const state = {
+          activeCourseId: "ml",
+          activeTab: "summary",
+          selectedNodeId: "gradient",
+          folderChosen: false,
+          importFileName: "Deep Learning Optimization.pdf",
+          courses: [
+            {
+              id: "ml",
+              name: "机器学习",
+              description: "CS 485 · 2026 秋季",
+              folder: "学习资料 / 机器学习",
+              lastUpdate: "今天 21:30",
+              concepts: 42,
+              mergedCount: 2,
+              documents: [
+                { id: "lecture-01", name: "Lecture 01 - Foundations.pdf", pages: 32, merged: true, summary: true, mindmap: true },
+                { id: "lecture-02", name: "Lecture 02 - Linear Models.pdf", pages: 46, merged: true, summary: true, mindmap: true },
+                { id: "assignment-01", name: "Assignment 01.pdf", pages: 8, merged: false, summary: false, mindmap: false },
+              ],
+            },
+            {
+              id: "probability",
+              name: "概率论",
+              description: "MATH 301 · 2026 秋季",
+              folder: "学习资料 / 概率论",
+              lastUpdate: "昨天 17:20",
+              concepts: 28,
+              mergedCount: 3,
+              documents: [
+                { id: "prob-01", name: "Chapter 01 - Probability Space.pdf", pages: 28, merged: true, summary: true, mindmap: true },
+                { id: "prob-02", name: "Chapter 02 - Random Variables.pdf", pages: 41, merged: true, summary: true, mindmap: true },
+                { id: "prob-03", name: "Tutorial 02.pdf", pages: 12, merged: true, summary: false, mindmap: false },
+              ],
+            },
+          ],
+        };
+
+        const nodes = [
+          { id: "course", title: "机器学习", meta: "课程总脑图", type: "root", x: 340, y: 215, description: "课程的核心知识入口，当前汇总了 2 份 PDF 的结构化摘要。", sources: ["Lecture 01 · 全文", "Lecture 02 · 全文"] },
+          { id: "foundations", title: "学习问题基础", meta: "6 个概念", type: "pdf", x: 85, y: 90, description: "监督学习的任务定义、数据表示与经验风险。", sources: ["Lecture 01 · 第 3–12 页"] },
+          { id: "linear", title: "线性模型", meta: "9 个概念", type: "pdf", x: 85, y: 330, description: "线性回归、逻辑回归和决策边界的统一表示。", sources: ["Lecture 02 · 第 2–19 页"] },
+          { id: "optimization", title: "优化方法", meta: "8 个概念", type: "pdf", x: 595, y: 88, description: "训练模型时使用的目标函数、梯度与参数更新方法。", sources: ["Lecture 02 · 第 21–37 页"] },
+          { id: "generalization", title: "泛化与评估", meta: "7 个概念", type: "pdf", x: 595, y: 330, description: "训练误差、测试误差、过拟合和模型评估之间的关系。", sources: ["Lecture 01 · 第 19–30 页"] },
+          { id: "gradient", title: "梯度下降", meta: "你重点问过 3 次", type: "insight", x: 592, y: 196, description: "沿损失函数负梯度方向迭代更新参数。你重点关注学习率过大时产生震荡的原因。", sources: ["Lecture 02 · 第 24 页", "AI 对话 · 第 24 页 · 3 条"] },
+          { id: "unresolved", title: "凸性为什么重要？", meta: "尚未解决", type: "question", x: 340, y: 395, description: "当前资料说明了凸函数只有全局最优点，但尚未解释非凸情况下优化器的实际表现。", sources: ["Lecture 02 · 第 31 页", "AI 对话 · 第 31 页"] },
+        ];
+
+        const edges = [
+          ["course", "foundations"], ["course", "linear"], ["course", "optimization"],
+          ["course", "generalization"], ["optimization", "gradient"], ["course", "unresolved"],
+        ];
+
+        const $ = (selector) => document.querySelector(selector);
+        const courseById = (id) => state.courses.find((course) => course.id === id);
+
+        function showToast(message) {
+          $("#toastText").textContent = message;
+          $("#toast").classList.add("show");
+          window.setTimeout(() => $("#toast").classList.remove("show"), 2600);
+        }
+
+        function openModal(id) { document.getElementById(id).classList.add("open"); }
+        function closeModal(id) { document.getElementById(id).classList.remove("open"); }
+
+        function renderCourses() {
+          $("#courseList").innerHTML = state.courses.map((course) => `
+            <button class="course-item ${course.id === state.activeCourseId ? "active" : ""}" type="button" data-course-id="${course.id}">
+              <span class="course-icon">${course.name.slice(0, 1)}</span>
+              <span class="course-meta"><span class="course-name">${course.name}</span><span class="course-count">${course.documents.length} 份 PDF · 本地</span></span>
+            </button>
+          `).join("");
+        }
+
+        function statusMarkup(kind, label) {
+          const symbol = kind === "pending" ? "!" : kind === "none" ? "—" : "✓";
+          return `<span class="status ${kind}"><span>${symbol}</span>${label}</span>`;
+        }
+
+        function documentRows(course) {
+          return course.documents.map((doc) => `
+            <div class="document-row" data-document-id="${doc.id}">
+              <div class="document-title"><span class="pdf-icon">PDF</span><span><span class="document-name">${doc.name}</span><span class="document-pages">${doc.pages} 页 · 已复制到课程文件夹</span></span></div>
+              <div>${doc.merged ? statusMarkup("merged", "已纳入课程") : statusMarkup("pending", "尚未纳入课程知识库")}</div>
+              <div>${doc.summary && doc.mindmap ? statusMarkup("ready", "总结与脑图已生成") : statusMarkup("none", "未生成独立成果")}</div>
+              <div class="document-actions">
+                ${doc.merged ? `<button class="button small" type="button" data-open-doc="${doc.id}">查看</button>` : `<button class="button small primary" type="button" data-merge-doc="${doc.id}">并入课程</button>`}
+                ${!doc.summary ? `<button class="button small" type="button" data-generate-doc="${doc.id}">生成成果</button>` : ""}
+              </div>
+            </div>
+          `).join("");
+        }
+
+        function summaryPanel(course) {
+          if (course.documents.length === 0) {
+            return `<section class="tab-panel ${state.activeTab === "summary" ? "active" : ""}" data-panel="summary"><div class="empty-state"><div class="empty-icon">◇</div><h2>课程总结尚未包含资料</h2><p>导入第一份 PDF 后，可以生成它的独立成果，并将内部摘要合并到课程总总结和总脑图。</p><button class="button primary" type="button" data-open-import>导入第一份 PDF</button></div></section>`;
+          }
+
+          return `
+            <section class="tab-panel ${state.activeTab === "summary" ? "active" : ""}" data-panel="summary">
+              <div class="summary-layout">
+                <article class="summary-article">
+                  <div class="article-kicker">课程总总结</div>
+                  <h2>${course.name}知识框架</h2>
+                  <div class="summary-version">版本 7 · 汇总 ${course.mergedCount} 份 PDF · ${course.lastUpdate} 更新</div>
+
+                  <section class="summary-section">
+                    <h3>1. 核心学习问题</h3>
+                    <p>机器学习通过数据寻找输入与输出之间可泛化的关系。课程当前内容从学习问题的形式化定义出发，逐步连接模型表示、损失函数、优化方法和泛化评估。</p>
+                    <button class="source-link" type="button">Lecture 01 · 第 3–12 页</button>
+                  </section>
+
+                  <section class="summary-section">
+                    <h3>2. 线性模型与优化</h3>
+                    <p>线性回归和逻辑回归都可以表示为参数化预测函数。模型训练被转化为最小化损失函数的问题，梯度下降通过沿负梯度方向迭代更新参数。</p>
+                    <ul><li>学习率决定每次参数更新的步长。</li><li>过大的学习率可能越过最低点并产生震荡。</li><li>凸目标函数有助于保证局部最优也是全局最优。</li></ul>
+                    <button class="source-link" type="button">Lecture 02 · 第 21–31 页</button>
+                    <button class="source-link" type="button">AI 问答 · 第 24 页</button>
+                  </section>
+
+                  <section class="summary-section">
+                    <h3>3. 你的学习重点</h3>
+                    <p>你对梯度下降的学习率和收敛过程进行了 3 次追问，并使用“下山时步子过大”的类比理解震荡。凸性对实际优化结果的影响仍标记为待解决。</p>
+                  </section>
+                </article>
+
+                <aside class="summary-aside">
+                  <div class="aside-block"><div class="aside-title"><span>最近一次更新</span><span style="color: var(--green)">已保存本地</span></div><div class="change-item"><span class="change-type add">+ 新增</span>8 个知识节点</div><div class="change-item"><span class="change-type update">↻ 补充</span>3 个已有概念的来源</div><div class="change-item"><span class="change-type add">+ 新增</span>1 个对话学习洞察</div></div>
+                  <div class="aside-block"><div class="aside-title"><span>尚未解决</span><span style="color: var(--amber)">2</span></div><div class="question-item">凸性为什么对梯度下降很重要？<span class="question-source">Lecture 02 · 第 31 页</span></div><div class="question-item">训练误差和测试误差之间是否有确定关系？<span class="question-source">Lecture 01 · 第 27 页</span></div></div>
+                </aside>
+              </div>
+            </section>
+          `;
+        }
+
+        function mindmapPanel(course) {
+          if (course.mergedCount === 0) {
+            return `<section class="tab-panel ${state.activeTab === "mindmap" ? "active" : ""}" data-panel="mindmap"><div class="empty-state"><div class="empty-icon">⌘</div><h2>课程脑图还是空的</h2><p>至少将一份 PDF 纳入课程知识库后，这里才会出现带页码来源的概念节点和关系。</p><button class="button primary" type="button" data-open-import>导入并合并 PDF</button></div></section>`;
+          }
+          const node = nodes.find((item) => item.id === state.selectedNodeId) || nodes[0];
+          const nodeById = Object.fromEntries(nodes.map((item) => [item.id, item]));
+          const paths = edges.map(([from, to]) => {
+            const a = nodeById[from]; const b = nodeById[to];
+            const x1 = a.x + (a.type === "root" ? 75 : 69); const y1 = a.y + 25;
+            const x2 = b.x + (b.type === "root" ? 75 : 69); const y2 = b.y + 25;
+            const mx = (x1 + x2) / 2;
+            return `<path d="M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}" />`;
+          }).join("");
+
+          return `
+            <section class="tab-panel ${state.activeTab === "mindmap" ? "active" : ""}" data-panel="mindmap">
+              <div class="mindmap-wrap">
+                <div class="mindmap-main">
+                  <div class="mindmap-toolbar"><div class="mindmap-legend"><span class="legend-item"><i class="legend-dot" style="background: var(--blue)"></i>PDF 知识</span><span class="legend-item"><i class="legend-dot" style="background: var(--violet)"></i>对话洞察</span><span class="legend-item"><i class="legend-dot" style="background: var(--amber)"></i>待解决问题</span></div><button class="button small" id="fitMapButton" type="button">适应画布</button></div>
+                  <div class="map-viewport" id="mapViewport"><div class="map-stage" id="mapStage"><svg class="map-lines" viewBox="0 0 840 500" aria-hidden="true">${paths}</svg>${nodes.map((item) => `<button class="map-node ${item.type} ${item.id === state.selectedNodeId ? "selected" : ""}" style="left:${item.x}px;top:${item.y}px" type="button" data-node-id="${item.id}"><span class="map-node-title">${item.title}</span><span class="map-node-meta">${item.meta}</span></button>`).join("")}</div></div>
+                </div>
+                <aside class="map-detail"><div class="map-detail-label">选中节点</div><h3>${node.title}</h3><p>${node.description}</p><div class="detail-sources">${node.sources.map((source, index) => `<div class="detail-source"><span class="source-mark">${index + 1}</span><span>${source}<br /><button class="file-change" type="button" data-source-jump>跳转到来源 →</button></span></div>`).join("")}</div></aside>
+              </div>
+            </section>
+          `;
+        }
+
+        function documentsPanel(course) {
+          const content = course.documents.length > 0
+            ? `<div class="document-list">${documentRows(course)}</div>`
+            : `<div class="empty-state"><div class="empty-icon">▱</div><h2>还没有 PDF 资料</h2><p>导入后可以分别决定是否生成单 PDF 成果，以及是否并入课程总知识库。</p><button class="button primary" type="button" data-open-import>导入第一份 PDF</button></div>`;
+          return `<section class="tab-panel ${state.activeTab === "documents" ? "active" : ""}" data-panel="documents"><div class="documents-panel"><div class="documents-head"><div><h2>课程资料</h2><p>导入资料与课程总知识库的关系彼此独立。</p></div>${course.documents.length > 0 ? '<button class="button primary" type="button" data-open-import>＋ 导入 PDF</button>' : ""}</div>${content}</div></section>`;
+        }
+
+        function renderWorkspace() {
+          const course = courseById(state.activeCourseId);
+          const total = course.documents.length;
+          $("#workspace").innerHTML = `
+            <div class="workspace-head">
+              <div><div class="eyebrow">本地课程 / ${course.name}</div><h1>${course.name}</h1><p class="course-description">${course.description}</p></div>
+              <div class="head-actions"><div class="folder-state" title="${course.folder}"><span>▣</span><span>${course.folder}</span><strong style="color: var(--green)">已连接</strong></div><button class="button primary" type="button" data-open-import>＋ 导入 PDF</button></div>
+            </div>
+
+            <div class="overview-strip">
+              <div class="metric"><span class="metric-icon">▤</span><span><span class="metric-value">${total}</span><span class="metric-label">课程 PDF</span></span></div>
+              <div class="metric"><span class="metric-icon" style="color:var(--green);background:var(--green-soft)">✓</span><span><span class="metric-value">${course.mergedCount}</span><span class="metric-label">已纳入课程</span></span></div>
+              <div class="metric"><span class="metric-icon" style="color:var(--violet);background:var(--violet-soft)">⌘</span><span><span class="metric-value">${course.concepts}</span><span class="metric-label">知识节点</span></span></div>
+              <div class="metric wide"><span class="metric-icon" style="color:var(--amber);background:var(--amber-soft)">↻</span><span><span class="metric-value">课程成果已同步到本地文件夹</span><span class="metric-label">最近更新：${course.lastUpdate}</span></span></div>
+            </div>
+
+            <div class="section-shell">
+              <div class="tabs" role="tablist"><button class="tab-button ${state.activeTab === "summary" ? "active" : ""}" type="button" data-tab="summary">▤ 课程总结</button><button class="tab-button ${state.activeTab === "mindmap" ? "active" : ""}" type="button" data-tab="mindmap">⌘ 课程脑图</button><button class="tab-button ${state.activeTab === "documents" ? "active" : ""}" type="button" data-tab="documents">▱ PDF 资料 <span style="color:#9199a5">${total}</span></button></div>
+              ${summaryPanel(course)}${mindmapPanel(course)}${documentsPanel(course)}
+            </div>
+          `;
+        }
+
+        function renderAll() { renderCourses(); renderWorkspace(); }
+
+        function mergeDocument(documentId) {
+          const course = courseById(state.activeCourseId);
+          const doc = course.documents.find((item) => item.id === documentId);
+          if (!doc || doc.merged) return;
+          doc.merged = true; course.mergedCount += 1; course.concepts += 5; course.lastUpdate = "刚刚";
+          renderAll(); showToast(`“${doc.name}”已并入课程总结和脑图`);
+        }
+
+        function generateDocument(documentId) {
+          const course = courseById(state.activeCourseId);
+          const doc = course.documents.find((item) => item.id === documentId);
+          if (!doc) return;
+          doc.summary = true; doc.mindmap = true;
+          renderAll(); showToast(`已生成“${doc.name}”的总结和脑图`);
+        }
+
+        function progressSteps() {
+          const merge = $("#mergeCourse").checked;
+          const visibleArtifacts = $("#generateSummary").checked || $("#generateMindmap").checked;
+          return ["复制到课程文件夹", "提取文字并生成内部摘要", ...(visibleArtifacts ? ["生成单 PDF 学习成果"] : []), ...(merge ? ["增量更新课程总结与脑图"] : []), "保存本地版本"];
+        }
+
+        function startImport() {
+          closeModal("importModal");
+          $("#progressSubtitle").textContent = state.importFileName;
+          const steps = progressSteps();
+          $("#progressList").innerHTML = steps.map((step, index) => `<div class="progress-step" data-progress-index="${index}"><span class="step-dot">${index + 1}</span><span>${step}</span></div>`).join("");
+          $("#progressFill").style.width = "0%";
+          $("#progressCaption").textContent = "准备中";
+          openModal("progressModal");
+
+          let index = 0;
+          const tick = () => {
+            const rows = [...document.querySelectorAll("[data-progress-index]")];
+            rows.forEach((row, rowIndex) => {
+              row.classList.toggle("done", rowIndex < index);
+              row.classList.toggle("active", rowIndex === index);
+              if (rowIndex < index) row.querySelector(".step-dot").textContent = "✓";
+            });
+            $("#progressFill").style.width = `${Math.round((index / steps.length) * 100)}%`;
+            $("#progressCaption").textContent = index < steps.length ? steps[index] : "处理完成";
+            if (index < steps.length) { index += 1; window.setTimeout(tick, 430); return; }
+
+            window.setTimeout(() => {
+              closeModal("progressModal");
+              const course = courseById(state.activeCourseId);
+              const merged = $("#mergeCourse").checked;
+              course.documents.push({ id: `import-${Date.now()}`, name: state.importFileName, pages: 38, merged, summary: $("#generateSummary").checked, mindmap: $("#generateMindmap").checked });
+              if (merged) { course.mergedCount += 1; course.concepts += 8; }
+              course.lastUpdate = "刚刚"; state.activeTab = "documents";
+              renderAll(); showToast(merged ? "PDF 已导入，并已更新课程总结和脑图" : "PDF 已导入，暂未纳入课程知识库");
+            }, 280);
+          };
+          tick();
+        }
+
+        document.addEventListener("click", (event) => {
+          const target = event.target.closest("button");
+          if (!target) return;
+          if (target.dataset.close) closeModal(target.dataset.close);
+          if (target.dataset.courseId) { state.activeCourseId = target.dataset.courseId; state.activeTab = "summary"; renderAll(); }
+          if (target.dataset.tab) { state.activeTab = target.dataset.tab; renderWorkspace(); }
+          if (target.hasAttribute("data-open-import")) openModal("importModal");
+          if (target.dataset.mergeDoc) mergeDocument(target.dataset.mergeDoc);
+          if (target.dataset.generateDoc) generateDocument(target.dataset.generateDoc);
+          if (target.dataset.openDoc) showToast("原型中：这里将打开该 PDF 的阅读与独立总结页面");
+          if (target.dataset.nodeId) { state.selectedNodeId = target.dataset.nodeId; renderWorkspace(); }
+          if (target.hasAttribute("data-source-jump") || target.classList.contains("source-link")) showToast("原型中：这里将跳转到对应 PDF 页码或 AI 对话");
+          if (target.id === "fitMapButton") { $("#mapViewport").scrollTo({ left: 0, top: 0, behavior: "smooth" }); showToast("脑图已适应当前画布"); }
+        });
+
+        $("#addCourseButton").addEventListener("click", () => openModal("createCourseModal"));
+        $("#startImportButton").addEventListener("click", startImport);
+        $("#changeFileButton").addEventListener("click", () => $("#pdfFileInput").click());
+        $("#pdfFileInput").addEventListener("change", (event) => {
+          const file = event.target.files[0]; if (!file) return;
+          state.importFileName = file.name; $("#importFileName").textContent = file.name;
+          $("#importFileMeta").textContent = `${Math.max(1, Math.round(file.size / 130000))} 页 · ${(file.size / 1048576).toFixed(1)} MB · 未重复`;
+        });
+        $("#chooseFolderButton").addEventListener("click", () => {
+          state.folderChosen = true; $("#folderPicker").classList.add("selected");
+          $("#folderPath").textContent = "文档 / 学习资料 / 线性代数"; $("#createCourseButton").disabled = false;
+        });
+        $("#createCourseButton").addEventListener("click", () => {
+          const name = $("#courseNameInput").value.trim() || "未命名课程";
+          const id = `course-${Date.now()}`;
+          state.courses.push({ id, name, description: "本地课程 · 刚刚创建", folder: `学习资料 / ${name}`, lastUpdate: "尚未生成", concepts: 0, mergedCount: 0, documents: [] });
+          state.activeCourseId = id; state.activeTab = "summary"; closeModal("createCourseModal"); renderAll(); showToast(`课程“${name}”已在本地文件夹创建`);
+        });
+        $("#readerNav").addEventListener("click", () => showToast("原型中：这里返回现有 PDF 阅读器"));
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") document.querySelectorAll(".modal-backdrop.open").forEach((modal) => modal.classList.remove("open"));
+        });
+
+        renderAll();
+      })();
+    </script>
+  </body>
+</html>
