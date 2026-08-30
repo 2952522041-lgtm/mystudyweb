@@ -63,6 +63,7 @@ import {
   resolvePageTranslation,
   saveReaderSettings,
   TRANSLATION_PRESETS,
+  updateReaderApiKey,
   usingRemoteProvider,
   validateReaderSettings,
   type ReaderSettings,
@@ -1272,7 +1273,7 @@ export default function Home() {
                       type="password"
                       value={draftSettings.apiKey}
                       onChange={(event) =>
-                        setDraftSettings((previous) => ({ ...previous, apiKey: event.target.value }))
+                        setDraftSettings((previous) => updateReaderApiKey(previous, event.target.value))
                       }
                       placeholder="sk-…"
                     />
@@ -1306,7 +1307,7 @@ export default function Home() {
                     </label>
                   </div>
                   <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
-                    API Key 仅保存在本机浏览器中，请求由浏览器直接发往接口地址；请确保该地址允许跨域访问。
+                    每个推荐配置会分别保存自己的 API Key。Key 仅保存在本机浏览器中，请求由浏览器直接发往接口地址。
                   </p>
                 </>
               ) : null}

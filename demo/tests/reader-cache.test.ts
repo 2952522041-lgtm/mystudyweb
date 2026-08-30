@@ -11,6 +11,7 @@ import {
   readerServiceHost,
   resolvePageTranslation,
   saveReaderSettings,
+  updateReaderApiKey,
   usingRemoteProvider,
   validateReaderSettings,
   type CachedTranslation,
@@ -169,7 +170,10 @@ void test('reader settings fall back to defaults on missing or corrupt data', ()
   } satisfies Pick<Storage, 'getItem' | 'setItem'>;
 
   assert.deepEqual(loadReaderSettings(storage), DEFAULT_SETTINGS);
-  saveReaderSettings({ ...DEFAULT_SETTINGS, apiKey: 'sk-test', providerMode: 'openai-compatible' }, storage);
+  saveReaderSettings(
+    updateReaderApiKey({ ...DEFAULT_SETTINGS, providerMode: 'openai-compatible' }, 'sk-test'),
+    storage,
+  );
   assert.equal(loadReaderSettings(storage).apiKey, 'sk-test');
 
   backing.set('pdf-reader-settings', '{not json');
@@ -197,6 +201,44 @@ void test('recommended presets select current non-thinking translation models', 
   const deepseek = applyTranslationPreset(DEFAULT_SETTINGS, 'deepseek');
   assert.equal(deepseek.model, 'deepseek-v4-flash');
   assert.equal(deepseek.baseUrl, 'https://api.deepseek.com');
+});
+
+void test('recommended presets retain independent API keys', () => {
+  let settings = applyTranslationPreset(DEFAULT_SETTINGS, 'glm');
+  settings = updateReaderApiKey(settings, 'glm-free-key');
+  settings = applyTranslationPreset(settings, 'glmFast');
+  assert.equal(settings.apiKey, '');
+  settings = updateReaderApiKey(settings, 'glm-fast-key');
+  settings = applyTranslationPreset(settings, 'deepseek');
+  assert.equal(settings.apiKey, '');
+  settings = updateReaderApiKey(settings, 'deepseek-key');
+
+  settings = applyTranslationPreset(settings, 'glm');
+  assert.equal(settings.apiKey, 'glm-free-key');
+  settings = applyTranslationPreset(settings, 'glmFast');
+  assert.equal(settings.apiKey, 'glm-fast-key');
+  settings = applyTranslationPreset(settings, 'deepseek');
+  assert.equal(settings.apiKey, 'deepseek-key');
+});
+
+void test('legacy settings migrate their API key to the active preset only', () => {
+  const storage = {
+    getItem: () =>
+      JSON.stringify({
+        providerMode: 'openai-compatible',
+        baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+        apiKey: 'legacy-fast-key',
+        model: 'glm-4.7-flashx',
+        disableThinking: true,
+      }),
+    setItem: () => {},
+  } satisfies Pick<Storage, 'getItem' | 'setItem'>;
+
+  let settings = loadReaderSettings(storage);
+  settings = applyTranslationPreset(settings, 'deepseek');
+  assert.equal(settings.apiKey, '');
+  settings = applyTranslationPreset(settings, 'glmFast');
+  assert.equal(settings.apiKey, 'legacy-fast-key');
 });
 
 void test('reader settings validate URLs, keys, and model names safely', () => {

@@ -229,6 +229,7 @@ export interface ReaderSettings {
   providerMode: 'mock' | 'openai-compatible';
   baseUrl: string;
   apiKey: string;
+  apiKeys: Partial<Record<ReaderApiKeyProfileId, string>>;
   model: string;
   disableThinking: boolean;
 }
@@ -237,6 +238,7 @@ export const DEFAULT_SETTINGS: ReaderSettings = {
   providerMode: 'mock',
   baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
   apiKey: '',
+  apiKeys: {},
   model: 'glm-4.7-flash',
   disableThinking: true,
 };
@@ -260,13 +262,35 @@ export const TRANSLATION_PRESETS = {
 } as const;
 
 export type TranslationPresetId = keyof typeof TRANSLATION_PRESETS;
+export type ReaderApiKeyProfileId = TranslationPresetId | 'custom';
+
+export function readerApiKeyProfileId(settings: Pick<ReaderSettings, 'baseUrl' | 'model'>): ReaderApiKeyProfileId {
+  const baseUrl = settings.baseUrl.replace(/\/$/, '');
+  const match = (Object.entries(TRANSLATION_PRESETS) as Array<
+    [TranslationPresetId, (typeof TRANSLATION_PRESETS)[TranslationPresetId]]
+  >).find(([, preset]) => preset.baseUrl.replace(/\/$/, '') === baseUrl && preset.model === settings.model);
+  return match?.[0] ?? 'custom';
+}
+
+export function updateReaderApiKey(settings: ReaderSettings, apiKey: string): ReaderSettings {
+  const profileId = readerApiKeyProfileId(settings);
+  return {
+    ...settings,
+    apiKey,
+    apiKeys: { ...settings.apiKeys, [profileId]: apiKey },
+  };
+}
 
 export function applyTranslationPreset(settings: ReaderSettings, presetId: TranslationPresetId): ReaderSettings {
   const preset = TRANSLATION_PRESETS[presetId];
+  const currentProfileId = readerApiKeyProfileId(settings);
+  const apiKeys = { ...settings.apiKeys, [currentProfileId]: settings.apiKey };
   return {
     ...settings,
     providerMode: 'openai-compatible',
     baseUrl: preset.baseUrl,
+    apiKey: apiKeys[presetId] ?? '',
+    apiKeys,
     model: preset.model,
     disableThinking: true,
   };
@@ -295,7 +319,16 @@ export function loadReaderSettings(storage: Pick<Storage, 'getItem' | 'setItem'>
   try {
     const raw = storage.getItem(SETTINGS_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
-    return { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<ReaderSettings>) };
+    const parsed = JSON.parse(raw) as Partial<ReaderSettings>;
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      ...parsed,
+      apiKeys: { ...DEFAULT_SETTINGS.apiKeys, ...parsed.apiKeys },
+    };
+    if (parsed.apiKeys === undefined && settings.apiKey.length > 0) {
+      settings.apiKeys = { [readerApiKeyProfileId(settings)]: settings.apiKey };
+    }
+    return settings;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
