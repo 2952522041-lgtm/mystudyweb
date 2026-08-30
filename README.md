@@ -57,4 +57,10 @@ pnpm build      # 生产构建
 
 ## 部署为公开网站
 
-`demo/` 已配置 Cloudflare Workers（wrangler）。在 `demo/` 目录执行 `npx wrangler deploy` 即可发布（需要登录 Cloudflare 账号）。注意：公开部署时翻译与 AI 答疑请求仍由浏览器直接发往各自配置的服务；如需托管密钥的代理后端，见技术方案第 6.4 和 15.8 节。
+两种方式任选：
+
+**GitHub Pages（静态、免费）**：在 `demo/` 目录执行 `pnpm pages`，然后把 `dist/client/` 的内容发布到仓库的 `gh-pages` 分支根目录，并在仓库 Settings → Pages 里选择从 `gh-pages` 分支部署。站点地址为 `https://<用户名>.github.io/<仓库名>/`。`pnpm pages` 会生成静态导出并把资源引用改写到 `<仓库名>/` 子路径下（vinext 的 `basePath` 与静态导出不兼容，因此用后处理代替）。
+
+**Cloudflare Workers**：在 `demo/` 目录执行 `npx wrangler deploy` 即可发布（需要登录 Cloudflare 账号）。注意：国内访问 `*.workers.dev` 不稳定。
+
+注意：公开部署时翻译与 AI 答疑请求仍由浏览器直接发往各自配置的服务；如需托管密钥的代理后端，见技术方案第 6.4 和 15.8 节。
