@@ -1210,7 +1210,7 @@ export default function Home() {
             <div className="space-y-4">
               <div className="space-y-2">
                 <p className="text-xs font-medium text-slate-700">推荐配置</p>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                   {(Object.keys(TRANSLATION_PRESETS) as TranslationPresetId[]).map((presetId) => (
                     <Button
                       key={presetId}
@@ -1224,7 +1224,7 @@ export default function Home() {
                   ))}
                 </div>
                 <p className="text-[11px] leading-5 text-slate-500">
-                  两个推荐配置都会关闭深度思考。普通翻译无需推理，首段会明显更快。
+                  推荐配置都会关闭深度思考。普通翻译无需推理，首段会明显更快。
                 </p>
               </div>
               <div className="space-y-1.5">

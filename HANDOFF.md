@@ -87,6 +87,6 @@ python3 -m unittest discover tests   # 根目录文档完整性测试
 - **pdf.js worker 不要用 `?url` 导入**：会破坏 SSR（`window is not defined`）。当前方案是 predev/prebuild 脚本把 worker 复制进 `public/`，`workerSrc = '/pdf.worker.min.mjs'`。
 - **翻译 effect 不要依赖自己的状态输出**：曾导致无限"翻译→abort"循环。会话内状态放 `translationStatesRef`，effect 只依赖页码/语言/文档。
 - **react-compiler（oxlint）很严格**：effect 内同步 setState、渲染期写 ref、闭包引用判定都会报错，提交前必须 `pnpm lint` 清零。
-- 翻译应关闭深度思考。当前推荐 `glm-4.7-flash`（免费）或 `deepseek-v4-flash`；设置界面有一键配置并默认发送 `thinking: disabled`。
+- 翻译应关闭深度思考。当前推荐 `glm-4.7-flash`（免费）、`glm-4.7-flashx`（稳定低延迟）或 `deepseek-v4-flash`；设置界面有一键配置并默认发送 `thinking: disabled`。
 - **智谱返回的具体错误在 `error.message`**，应用已透传显示；排查用户问题先看译文面板的错误行。
 - 本地多实例调试时注意端口占用：`start.sh` 会自动跳过被占端口。

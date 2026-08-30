@@ -192,6 +192,8 @@ void test('recommended presets select current non-thinking translation models', 
   const glm = applyTranslationPreset(DEFAULT_SETTINGS, 'glm');
   assert.equal(glm.model, 'glm-4.7-flash');
   assert.equal(glm.disableThinking, true);
+  const glmFast = applyTranslationPreset(DEFAULT_SETTINGS, 'glmFast');
+  assert.equal(glmFast.model, 'glm-4.7-flashx');
   const deepseek = applyTranslationPreset(DEFAULT_SETTINGS, 'deepseek');
   assert.equal(deepseek.model, 'deepseek-v4-flash');
   assert.equal(deepseek.baseUrl, 'https://api.deepseek.com');
