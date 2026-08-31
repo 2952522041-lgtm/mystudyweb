@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   externalHttpUrl,
   isAppOrigin,
+  PACKAGED_APP_ORIGIN,
+  PACKAGED_APP_PORT,
   resolveDevTargetUrl,
 } from '../electron/navigation.ts';
 
@@ -73,15 +75,21 @@ void test('isAppOrigin matches protocol, host and port but not the path', () => 
   assert.equal(isAppOrigin('about:blank', appOrigin), false);
 });
 
+void test('packaged desktop origin is stable across launches', () => {
+  assert.equal(PACKAGED_APP_PORT, 47831);
+  assert.equal(PACKAGED_APP_ORIGIN, 'http://127.0.0.1:47831');
+  assert.equal(
+    isAppOrigin(`${PACKAGED_APP_ORIGIN}/`, PACKAGED_APP_ORIGIN),
+    true,
+  );
+});
+
 void test('externalHttpUrl only lets http and https through', () => {
   assert.equal(
     externalHttpUrl('https://example.com/page?x=1'),
     'https://example.com/page?x=1',
   );
-  assert.equal(
-    externalHttpUrl('http://example.com'),
-    'http://example.com/',
-  );
+  assert.equal(externalHttpUrl('http://example.com'), 'http://example.com/');
   const blocked = [
     'file:///etc/passwd',
     'yeyu://course/1',

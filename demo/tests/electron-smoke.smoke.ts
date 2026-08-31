@@ -13,7 +13,9 @@ import {
   SMOKE_CREATE_COURSE_ENV_VAR,
   SMOKE_COURSE_NAME,
   SMOKE_RESULT_MARKER,
+  SMOKE_STORAGE_VALUE_ENV_VAR,
 } from '../electron/smoke.ts';
+import { PACKAGED_APP_ORIGIN } from '../electron/navigation.ts';
 
 /**
  * 真实 Electron 启动冒烟测试（HANDOFF 13.1：不要再用"源码包含字符串"代替
@@ -54,7 +56,11 @@ function electronBinary(): string {
 }
 
 function launchEnvironment(workspaceRoot: string): NodeJS.ProcessEnv {
-  return { ...process.env, YEYU_SMOKE: '1', YEYU_WORKSPACE_ROOT: workspaceRoot };
+  return {
+    ...process.env,
+    YEYU_SMOKE: '1',
+    YEYU_WORKSPACE_ROOT: workspaceRoot,
+  };
 }
 
 function launchElectron(
@@ -63,7 +69,10 @@ function launchElectron(
   env: NodeJS.ProcessEnv,
 ): Promise<LaunchResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
@@ -99,6 +108,9 @@ interface SmokeProbePayload {
   popupDenied?: boolean;
   createdCourse?: string;
   courses?: string[];
+  origin?: string;
+  storedBefore?: string | null;
+  storedAfter?: string | null;
   error?: string;
 }
 
@@ -110,7 +122,9 @@ function parseSmokeResult(stdout: string): SmokeProbePayload {
     markerLine,
     `stdout 中没有 ${SMOKE_RESULT_MARKER} 标记行，应用可能没有启动成功。`,
   );
-  return JSON.parse(markerLine.slice(SMOKE_RESULT_MARKER.length + 1)) as SmokeProbePayload;
+  return JSON.parse(
+    markerLine.slice(SMOKE_RESULT_MARKER.length + 1),
+  ) as SmokeProbePayload;
 }
 
 async function launchAndProbe(
@@ -118,10 +132,14 @@ async function launchAndProbe(
   args: string[],
   workspaceRoot: string,
   createCourse: boolean,
+  storageValue?: string,
 ): Promise<SmokeProbePayload> {
   const env = launchEnvironment(workspaceRoot);
   if (createCourse) {
     env[SMOKE_CREATE_COURSE_ENV_VAR] = '1';
+  }
+  if (storageValue !== undefined) {
+    env[SMOKE_STORAGE_VALUE_ENV_VAR] = storageValue;
   }
   const { code, stdout, stderr } = await launchElectron(command, args, env);
   const result = parseSmokeResult(stdout);
@@ -142,22 +160,38 @@ async function launchAndProbe(
     result.workspace.coursesRoot,
     path.join(workspaceRoot, 'Courses'),
   );
-  assert.equal(code, 0, `Electron 进程异常退出（${code}）。\nstderr:\n${stderr}`);
+  assert.equal(
+    code,
+    0,
+    `Electron 进程异常退出（${code}）。\nstderr:\n${stderr}`,
+  );
   assert.deepEqual(
     (await readdir(workspaceRoot)).sort(),
     ['Cache', 'Courses', 'Settings'],
     '首次启动应幂等创建 Courses/Cache/Settings。',
   );
+  assert.equal(result.origin, PACKAGED_APP_ORIGIN);
   return result;
 }
 
-async function assertCourseLifecycle(command: string, args: string[]): Promise<void> {
+async function assertCourseLifecycle(
+  command: string,
+  args: string[],
+): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'yeyu-smoke-'));
+  const storageMarker = `saved-${path.basename(workspaceRoot)}`;
   try {
     // 第一次启动：通过真实桥接创建课程并写入 course.json。
-    const created = await launchAndProbe(command, args, workspaceRoot, true);
+    const created = await launchAndProbe(
+      command,
+      args,
+      workspaceRoot,
+      true,
+      storageMarker,
+    );
     assert.equal(created.createdCourse, SMOKE_COURSE_NAME);
     assert.ok(created.courses?.includes(SMOKE_COURSE_NAME));
+    assert.equal(created.storedAfter, storageMarker);
 
     // 关闭应用后重新启动：课程必须从磁盘自动恢复。
     const restarted = await launchAndProbe(command, args, workspaceRoot, false);
@@ -166,6 +200,11 @@ async function assertCourseLifecycle(command: string, args: string[]): Promise<v
       `重启后应恢复课程，实际：${JSON.stringify(restarted.courses)}`,
     );
     assert.equal(restarted.createdCourse, undefined);
+    assert.equal(
+      restarted.storedBefore,
+      storageMarker,
+      '重启后应从同一 origin 恢复 localStorage 中的接口设置。',
+    );
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }

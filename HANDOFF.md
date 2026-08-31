@@ -122,6 +122,7 @@ python3 -m unittest discover tests   # 根目录文档完整性测试
 - **react-compiler（oxlint）很严格**：effect 内同步 setState、渲染期写 ref、闭包引用判定都会报错，提交前必须 `pnpm lint` 清零。
 - 翻译应关闭深度思考。当前推荐 `glm-4.7-flashx`（稳定低延迟）或 `deepseek-v4-flash`；设置界面有一键配置并默认发送 `thinking: disabled`。
 - 两个推荐配置分别保存自己的 API Key；旧版单 Key 设置加载时只迁移到当前匹配的配置，不会复制到其他配置。
+- 桌面生产版固定使用 `http://127.0.0.1:47831` 作为应用 origin，并持有 Electron 单实例锁。不要改回随机端口：localStorage/IndexedDB 按 origin 隔离，随机端口会导致每次启动都丢失接口设置、Key、翻译缓存和阅读进度。
 - **智谱返回的具体错误在 `error.message`**，应用已透传显示；排查用户问题先看译文面板的错误行。
 - 本地多实例调试时注意端口占用：`start.sh` 会自动跳过被占端口。
 

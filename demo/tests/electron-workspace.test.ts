@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -61,7 +70,10 @@ void test('YEYU_WORKSPACE_ROOT override replaces the default root', () => {
 });
 
 void test('course directory names are sanitized like stored PDF names', () => {
-  assert.equal(sanitizeCourseDirectoryName('课程/一:第二章?'), '课程_一_第二章_');
+  assert.equal(
+    sanitizeCourseDirectoryName('课程/一:第二章?'),
+    '课程_一_第二章_',
+  );
   assert.equal(sanitizeCourseDirectoryName('MAT 3007...'), 'MAT 3007');
   assert.equal(sanitizeCourseDirectoryName('a\nb'), 'a_b');
   assert.equal(sanitizeCourseDirectoryName('..'), '未命名课程');
@@ -72,10 +84,7 @@ void test('course directory names are sanitized like stored PDF names', () => {
 
 void test('duplicate course directories get numbered suffixes', () => {
   assert.equal(uniqueCourseDirectoryName([], 'MAT3007'), 'MAT3007');
-  assert.equal(
-    uniqueCourseDirectoryName(['MAT3007'], 'MAT3007'),
-    'MAT3007-2',
-  );
+  assert.equal(uniqueCourseDirectoryName(['MAT3007'], 'MAT3007'), 'MAT3007-2');
   assert.equal(
     uniqueCourseDirectoryName(['MAT3007', 'MAT3007-2'], 'MAT3007'),
     'MAT3007-3',
@@ -161,11 +170,12 @@ void test('course file IO round-trips and blocks path escapes', async () => {
     );
 
     const payload = new TextEncoder().encode('{"hello":"页语"}');
-    await writeCourseFile(layout.coursesRoot, directoryName, [
-      'Documents',
-      'doc-1',
-      'document.json',
-    ], payload);
+    await writeCourseFile(
+      layout.coursesRoot,
+      directoryName,
+      ['Documents', 'doc-1', 'document.json'],
+      payload,
+    );
     assert.deepEqual(
       await readCourseFile(layout.coursesRoot, directoryName, [
         'Documents',
@@ -192,37 +202,48 @@ void test('course file IO round-trips and blocks path escapes', async () => {
 
     await assert.rejects(
       () =>
-        writeCourseFile(layout.coursesRoot, directoryName, [
-          '..',
-          'evil.txt',
-        ], payload),
+        writeCourseFile(
+          layout.coursesRoot,
+          directoryName,
+          ['..', 'evil.txt'],
+          payload,
+        ),
       WorkspacePathError,
     );
     await assert.rejects(
       () =>
-        writeCourseFile(layout.coursesRoot, directoryName, [
-          'PDFs',
-          '..',
-          'evil.txt',
-        ], payload),
+        writeCourseFile(
+          layout.coursesRoot,
+          directoryName,
+          ['PDFs', '..', 'evil.txt'],
+          payload,
+        ),
       WorkspacePathError,
     );
     await assert.rejects(
       () =>
-        writeCourseFile(layout.coursesRoot, directoryName, [
-          'C:',
-          'evil.txt',
-        ], payload),
+        writeCourseFile(
+          layout.coursesRoot,
+          directoryName,
+          ['C:', 'evil.txt'],
+          payload,
+        ),
       WorkspacePathError,
     );
     await assert.rejects(
       () =>
-        writeCourseFile(layout.coursesRoot, 'not-a-course-directory', [
-          'a.txt',
-        ], payload),
+        writeCourseFile(
+          layout.coursesRoot,
+          'not-a-course-directory',
+          ['a.txt'],
+          payload,
+        ),
       WorkspacePathError,
     );
-    assert.equal(await readdir(layout.coursesRoot).then((names) => names.length), 1);
+    assert.equal(
+      await readdir(layout.coursesRoot).then((names) => names.length),
+      1,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -243,21 +264,24 @@ void test('symlinked entries inside a course directory are rejected', async () =
 
     const courseRoot = path.join(layout.coursesRoot, directoryName);
     await symlink(outside, path.join(courseRoot, 'link-dir'));
-    await symlink(path.join(outside, 'secret.txt'), path.join(courseRoot, 'link-file.pdf'));
+    await symlink(
+      path.join(outside, 'secret.txt'),
+      path.join(courseRoot, 'link-file.pdf'),
+    );
 
     await assert.rejects(
       () =>
-        writeCourseFile(layout.coursesRoot, directoryName, [
-          'link-dir',
-          'escape.txt',
-        ], new TextEncoder().encode('data')),
+        writeCourseFile(
+          layout.coursesRoot,
+          directoryName,
+          ['link-dir', 'escape.txt'],
+          new TextEncoder().encode('data'),
+        ),
       WorkspacePathError,
     );
     await assert.rejects(
       () =>
-        readCourseFile(layout.coursesRoot, directoryName, [
-          'link-file.pdf',
-        ]),
+        readCourseFile(layout.coursesRoot, directoryName, ['link-file.pdf']),
       WorkspacePathError,
     );
     await assert.rejects(
@@ -317,16 +341,24 @@ void test('electron main and preload keep the secure process boundary', async ()
     'contextIsolation: true',
     'nodeIntegration: false',
     'sandbox: true',
-    "server.listen(0, '127.0.0.1'",
+    "server.listen(PACKAGED_APP_PORT, '127.0.0.1'",
+    'app.requestSingleInstanceLock()',
+    'window.webContents.session.flushStorageData()',
     'applyNavigationGuards(window)',
     'setWindowOpenHandler',
     'will-navigate',
-    'resolveDevTargetUrl(process.env.YEYU_DEV_URL, app.isPackaged)',
+    'resolveDevTargetUrl',
   ]) {
-    assert.match(main, new RegExp(requirement.replaceAll('(', '\\(').replaceAll(')', '\\)')));
+    assert.match(
+      main,
+      new RegExp(requirement.replaceAll('(', '\\(').replaceAll(')', '\\)')),
+    );
   }
   assert.doesNotMatch(main, /https:\/\//);
-  assert.match(preload, /contextBridge\.exposeInMainWorld\('yeyuDesktop', api\)/);
+  assert.match(
+    preload,
+    /contextBridge\.exposeInMainWorld\('yeyuDesktop', api\)/,
+  );
   assert.doesNotMatch(preload, /ipcRenderer\.send|nodeIntegration/);
 });
 
@@ -366,7 +398,10 @@ void test('windows squirrel metadata is complete', async () => {
   // electron-winstaller 的 NuGet manifest 必需项（HANDOFF 13.2）。
   assert.match(forgeConfig, /title: '页语'/);
   assert.match(forgeConfig, /authors: '余思诚'/);
-  assert.match(forgeConfig, /description: '本地课程知识库、PDF 随页翻译与 AI 答疑阅读器'/);
+  assert.match(
+    forgeConfig,
+    /description: '本地课程知识库、PDF 随页翻译与 AI 答疑阅读器'/,
+  );
   assert.match(forgeConfig, /name: 'yeyu'/);
 });
 
@@ -374,7 +409,10 @@ void test('debian maker is configured for the Ubuntu install', async () => {
   const require = createRequire(import.meta.url);
   const forgeConfig = require('../forge.config.cjs') as {
     packagerConfig: { ignore: RegExp[] };
-    makers: Array<{ name: string; config: { options?: Record<string, unknown> } }>;
+    makers: Array<{
+      name: string;
+      config: { options?: Record<string, unknown> };
+    }>;
   };
 
   const deb = forgeConfig.makers.find(
@@ -403,15 +441,22 @@ void test('debian maker is configured for the Ubuntu install', async () => {
       `yeyu-${resolution.split('x')[0]}.png`,
     );
   }
-  const template = await stat(options.desktopTemplate as string).catch(() => null);
+  const template = await stat(options.desktopTemplate as string).catch(
+    () => null,
+  );
   assert.ok(template?.isFile(), '自定义 .desktop 模板不存在。');
-  const templateText = await readFile(options.desktopTemplate as string, 'utf8');
+  const templateText = await readFile(
+    options.desktopTemplate as string,
+    'utf8',
+  );
   assert.match(templateText, /Name=<%=? productName %>/);
   assert.match(templateText, /Exec=<%=? name %> %U/);
 
   // 图标是构建期资产，不需要打进应用包。
   assert.ok(
-    forgeConfig.packagerConfig.ignore.some((pattern) => pattern.test('/assets/')),
+    forgeConfig.packagerConfig.ignore.some((pattern) =>
+      pattern.test('/assets/'),
+    ),
     'packagerConfig.ignore 应排除 /assets。',
   );
 });
@@ -439,7 +484,10 @@ void test('packaging wires main, preload and the static client bundle', async ()
 
   // sandbox preload 只能加载内置模块：preload.ts 及其依赖必须被 esbuild
   // 打包成单个自包含 CommonJS 文件（HANDOFF 13.1）。
-  assert.match(buildScript, /entryPoints: \[path\.join\(electronDir, 'preload\.ts'\)\]/);
+  assert.match(
+    buildScript,
+    /entryPoints: \[path\.join\(electronDir, 'preload\.ts'\)\]/,
+  );
   assert.match(buildScript, /bundle: true/);
   assert.match(buildScript, /format: 'cjs'/);
   assert.match(buildScript, /outfile: path\.join\(distDir, 'preload\.js'\)/);

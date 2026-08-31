@@ -14,6 +14,13 @@ export interface DevTargetDecision {
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 /**
+ * 桌面生产版必须使用稳定 origin：localStorage、IndexedDB 和缓存都按 origin
+ * 隔离。随机端口会让每次启动都像首次访问，导致接口设置和 API Key 丢失。
+ */
+export const PACKAGED_APP_PORT = 47831;
+export const PACKAGED_APP_ORIGIN = `http://127.0.0.1:${PACKAGED_APP_PORT}`;
+
+/**
  * 解析 YEYU_DEV_URL：只在应用未打包时生效，且只接受 localhost、
  * 127.0.0.1 或 IPv6 回环地址的 http URL。配置非法时抛错，启动即失败，
  * 避免静默回退到生产产物掩盖配置错误。
@@ -37,9 +44,7 @@ export function resolveDevTargetUrl(
     throw new Error(`YEYU_DEV_URL 不是合法 URL：${raw}`);
   }
   if (parsed.protocol !== 'http:') {
-    throw new Error(
-      `YEYU_DEV_URL 只允许 http 协议，收到：${parsed.protocol}`,
-    );
+    throw new Error(`YEYU_DEV_URL 只允许 http 协议，收到：${parsed.protocol}`);
   }
   if (!LOOPBACK_HOSTNAMES.has(parsed.hostname)) {
     throw new Error(

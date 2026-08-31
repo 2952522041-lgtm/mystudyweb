@@ -3,10 +3,7 @@ import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 
-import {
-  DESKTOP_CHANNELS,
-  type WorkspaceInfo,
-} from './api.ts';
+import { DESKTOP_CHANNELS, type WorkspaceInfo } from './api.ts';
 import {
   createCourseDirectory,
   courseFileExists,
@@ -21,7 +18,13 @@ import {
   WorkspacePathError,
   type WorkspaceLayout,
 } from './workspace-paths.ts';
-import { externalHttpUrl, isAppOrigin, resolveDevTargetUrl } from './navigation.ts';
+import {
+  externalHttpUrl,
+  isAppOrigin,
+  PACKAGED_APP_ORIGIN,
+  PACKAGED_APP_PORT,
+  resolveDevTargetUrl,
+} from './navigation.ts';
 import { isSmokeRun, probePreloadBridge } from './smoke.ts';
 import { handleSquirrelStartup } from './squirrel.ts';
 
@@ -140,16 +143,10 @@ function startStaticServer(clientDirectory: string): Promise<string> {
       }
     });
     server.once('error', reject);
-    // 只监听本机回环地址的随机端口，不暴露工作区，也不对外提供服务。
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port =
-        typeof address === 'object' && address ? address.port : undefined;
-      if (!port) {
-        reject(new Error('本地静态服务器未能获得端口。'));
-        return;
-      }
-      resolve(`http://127.0.0.1:${port}/`);
+    // 固定回环 origin 让 localStorage / IndexedDB 跨启动保留。单实例锁避免
+    // 第二个页语进程与此端口竞争；端口被其他程序占用时直接启动失败。
+    server.listen(PACKAGED_APP_PORT, '127.0.0.1', () => {
+      resolve(`${PACKAGED_APP_ORIGIN}/`);
     });
   });
 }
@@ -189,17 +186,20 @@ function registerDesktopIpc(layout: WorkspaceLayout): void {
       throw toIpcError(error);
     }
   });
-  ipcMain.handle(DESKTOP_CHANNELS.exists, async (_event, courseDirectory, relativePath) => {
-    try {
-      return await courseFileExists(
-        layout.coursesRoot,
-        assertString(courseDirectory, '课程目录名不合法。'),
-        Array.isArray(relativePath) ? relativePath : [],
-      );
-    } catch (error) {
-      throw toIpcError(error);
-    }
-  });
+  ipcMain.handle(
+    DESKTOP_CHANNELS.exists,
+    async (_event, courseDirectory, relativePath) => {
+      try {
+        return await courseFileExists(
+          layout.coursesRoot,
+          assertString(courseDirectory, '课程目录名不合法。'),
+          Array.isArray(relativePath) ? relativePath : [],
+        );
+      } catch (error) {
+        throw toIpcError(error);
+      }
+    },
+  );
   ipcMain.handle(
     DESKTOP_CHANNELS.ensureDirectory,
     async (_event, courseDirectory, relativePath) => {
@@ -214,17 +214,20 @@ function registerDesktopIpc(layout: WorkspaceLayout): void {
       }
     },
   );
-  ipcMain.handle(DESKTOP_CHANNELS.readFile, async (_event, courseDirectory, relativePath) => {
-    try {
-      return await readCourseFile(
-        layout.coursesRoot,
-        assertString(courseDirectory, '课程目录名不合法。'),
-        Array.isArray(relativePath) ? relativePath : [],
-      );
-    } catch (error) {
-      throw toIpcError(error);
-    }
-  });
+  ipcMain.handle(
+    DESKTOP_CHANNELS.readFile,
+    async (_event, courseDirectory, relativePath) => {
+      try {
+        return await readCourseFile(
+          layout.coursesRoot,
+          assertString(courseDirectory, '课程目录名不合法。'),
+          Array.isArray(relativePath) ? relativePath : [],
+        );
+      } catch (error) {
+        throw toIpcError(error);
+      }
+    },
+  );
   ipcMain.handle(
     DESKTOP_CHANNELS.writeFile,
     async (_event, courseDirectory, relativePath, data) => {
@@ -254,7 +257,10 @@ function registerDesktopIpc(layout: WorkspaceLayout): void {
 
 async function createWindow(): Promise<BrowserWindow> {
   // YEYU_DEV_URL 只指向本机开发服务器且仅在未打包时生效；产品代码没有任何线上地址。
-  const devDecision = resolveDevTargetUrl(process.env.YEYU_DEV_URL, app.isPackaged);
+  const devDecision = resolveDevTargetUrl(
+    process.env.YEYU_DEV_URL,
+    app.isPackaged,
+  );
   if (devDecision.warning) {
     console.warn(`[页语] ${devDecision.warning}`);
   }
@@ -282,32 +288,47 @@ async function createWindow(): Promise<BrowserWindow> {
   return window;
 }
 
-void app.whenReady()
-  .then(async () => {
-    const layout = resolveWorkspaceLayout(
-      app.getPath('documents'),
-      process.env.YEYU_WORKSPACE_ROOT,
-    );
-    await ensureWorkspace(layout);
-    registerDesktopIpc(layout);
-    const window = await createWindow();
-    if (isSmokeRun()) {
-      // YEYU_SMOKE=1：探测完 preload 桥接后立即退出，供自动化冒烟测试断言。
-      const result = await probePreloadBridge(window);
-      process.exitCode = result.api ? 0 : 1;
-      app.quit();
-      return;
-    }
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        void createWindow();
-      }
-    });
-  })
-  .catch((error: unknown) => {
-    console.error('[页语] 启动失败：', error);
-    app.exit(1);
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
   });
+
+  void app
+    .whenReady()
+    .then(async () => {
+      const layout = resolveWorkspaceLayout(
+        app.getPath('documents'),
+        process.env.YEYU_WORKSPACE_ROOT,
+      );
+      await ensureWorkspace(layout);
+      registerDesktopIpc(layout);
+      const window = await createWindow();
+      if (isSmokeRun()) {
+        // YEYU_SMOKE=1：探测完 preload 桥接后立即退出，供自动化冒烟测试断言。
+        const result = await probePreloadBridge(window);
+        window.webContents.session.flushStorageData();
+        process.exitCode = result.api ? 0 : 1;
+        app.quit();
+        return;
+      }
+      app.on('activate', () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+          void createWindow();
+        }
+      });
+    })
+    .catch((error: unknown) => {
+      console.error('[页语] 启动失败：', error);
+      app.exit(1);
+    });
+}
 
 app.on('window-all-closed', () => {
   app.quit();

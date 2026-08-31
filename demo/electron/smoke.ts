@@ -11,6 +11,9 @@ export const SMOKE_ENV_VAR = 'YEYU_SMOKE';
 /** 置为 1 时探测还会通过真实桥接创建一门冒烟课程并写 course.json。 */
 export const SMOKE_CREATE_COURSE_ENV_VAR = 'YEYU_SMOKE_CREATE_COURSE';
 
+/** 首次冒烟启动写入 localStorage，第二次启动读取，验证 origin 稳定。 */
+export const SMOKE_STORAGE_VALUE_ENV_VAR = 'YEYU_SMOKE_STORAGE_VALUE';
+
 export const SMOKE_COURSE_NAME = '冒烟课程';
 
 export interface SmokeProbeResult {
@@ -23,6 +26,9 @@ export interface SmokeProbeResult {
   createdCourse?: string;
   /** listCourses() 返回的课程目录名（只有含合法 course.json 的目录）。 */
   courses?: string[];
+  origin?: string;
+  storedBefore?: string | null;
+  storedAfter?: string | null;
   error?: string;
 }
 
@@ -39,14 +45,20 @@ export async function probePreloadBridge(
   window: BrowserWindow,
 ): Promise<SmokeProbeResult> {
   const createCourse = process.env[SMOKE_CREATE_COURSE_ENV_VAR] === '1';
+  const storageValue = process.env[SMOKE_STORAGE_VALUE_ENV_VAR];
   const courseName = SMOKE_COURSE_NAME;
   let result: SmokeProbeResult;
   try {
     result = await window.webContents.executeJavaScript(
-      `(async (createCourse, courseName) => {
+      `(async (createCourse, courseName, storageValue) => {
         const api = window.yeyuDesktop;
         if (!api) return { api: false, error: 'window.yeyuDesktop 不存在' };
         try {
+          const storageKey = 'yeyu-smoke-persistent-settings';
+          const storedBefore = localStorage.getItem(storageKey);
+          if (typeof storageValue === 'string') {
+            localStorage.setItem(storageKey, storageValue);
+          }
           // setWindowOpenHandler 默认 deny：被拒绝的 window.open 返回 null。
           const popup = window.open('about:blank');
           let createdCourse;
@@ -80,11 +92,14 @@ export async function probePreloadBridge(
             workspace: await api.getWorkspaceInfo(),
             createdCourse,
             courses,
+            origin: location.origin,
+            storedBefore,
+            storedAfter: localStorage.getItem(storageKey),
           };
         } catch (error) {
           return { api: false, error: String(error) };
         }
-      })(${JSON.stringify(createCourse)}, ${JSON.stringify(courseName)})`,
+      })(${JSON.stringify(createCourse)}, ${JSON.stringify(courseName)}, ${JSON.stringify(storageValue)})`,
     );
   } catch (error) {
     result = {
