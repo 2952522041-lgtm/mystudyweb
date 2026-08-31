@@ -8,6 +8,11 @@ import {
   type WorkspaceInfo,
 } from './api.ts';
 import {
+  externalHttpUrl,
+  isAppOriginUrl,
+  resolveDevUrl,
+} from './nav-policy.ts';
+import {
   createCourseDirectory,
   courseFileExists,
   ensureCourseDirectory,
@@ -204,10 +209,36 @@ function registerDesktopIpc(layout: WorkspaceLayout): void {
   });
 }
 
+/**
+ * 窗口导航隔离：
+ * - 主窗口只允许停留在应用自己的本地 origin，离开即拒绝；
+ * - 被拒绝的 http/https 外链转交系统浏览器打开，其他协议直接丢弃；
+ * - 所有 window.open 一律 deny，应用内不产生任何新窗口。
+ * 这样外部页面永远拿不到 preload 暴露的 window.yeyuDesktop。
+ */
+function attachNavigationGuards(window: BrowserWindow, appOrigin: string): void {
+  const openExternal = (rawUrl: string): void => {
+    const external = externalHttpUrl(rawUrl);
+    if (external) {
+      void shell.openExternal(external).catch(() => undefined);
+    }
+  };
+  window.webContents.on('will-navigate', (event, url) => {
+    if (isAppOriginUrl(url, appOrigin)) return;
+    event.preventDefault();
+    openExternal(url);
+  });
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    openExternal(url);
+    return { action: 'deny' };
+  });
+}
+
 async function createWindow(): Promise<void> {
-  // YEYU_DEV_URL 只指向本机开发服务器；产品代码没有任何线上地址。
-  const devUrl = process.env.YEYU_DEV_URL?.trim();
-  const target = devUrl || (await startStaticServer(staticClientDirectory()));
+  // YEYU_DEV_URL 只指向本机开发服务器；打包环境一律忽略，产品代码没有任何线上地址。
+  const devUrl = resolveDevUrl(process.env.YEYU_DEV_URL, app.isPackaged);
+  const target = devUrl ?? (await startStaticServer(staticClientDirectory()));
+  const appOrigin = new URL(target).origin;
   const window = new BrowserWindow({
     width: 1360,
     height: 900,
@@ -221,6 +252,7 @@ async function createWindow(): Promise<void> {
       sandbox: true,
     },
   });
+  attachNavigationGuards(window, appOrigin);
   window.once('ready-to-show', () => window.show());
   await window.loadURL(target);
 }

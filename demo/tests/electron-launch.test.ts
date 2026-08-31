@@ -61,23 +61,7 @@ async function compileElectronIfNeeded(): Promise<void> {
   await execFileAsync(process.execPath, ['scripts/bundle-preload.mjs'], { cwd: demoRoot });
 }
 
-/**
- * 启动一次真实 Electron：harness 页面调用桌面 API 后把结果 POST 回来。
- * 返回 renderer 报告；Electron 进程在报告到达后由本函数负责结束。
- */
-function launchElectron(options: {
-  workspaceRoot?: string;
-  timeoutMs?: number;
-}): Promise<{ report: Record<string, unknown>; stderr: string }> {
-  const { workspaceRoot, timeoutMs = 60_000 } = options;
-  const electronBinary = require('electron') as string;
-  assert.equal(typeof electronBinary, 'string', 'electron 包应导出二进制路径');
-
-  return new Promise((resolve, reject) => {
-    const server = http.createServer((request, response) => {
-      if (request.url?.startsWith('/page')) {
-        response.setHeader('Content-Type', 'text/html; charset=utf-8');
-        response.end(`<!doctype html><meta charset="utf-8"><title>yeyu smoke</title><script>
+const DEFAULT_HARNESS_PAGE = `<!doctype html><meta charset="utf-8"><title>yeyu smoke</title><script>
 (async () => {
   const result = {};
   try {
@@ -97,7 +81,26 @@ function launchElectron(options: {
   }
   await fetch('/report', { method: 'POST', body: JSON.stringify(result) });
 })();
-</script>`);
+</script>`;
+
+/**
+ * 启动一次真实 Electron：harness 页面调用桌面 API 后把结果 POST 回来。
+ * 返回 renderer 报告；Electron 进程在报告到达后由本函数负责结束。
+ */
+function launchElectron(options: {
+  workspaceRoot?: string;
+  timeoutMs?: number;
+  pageHtml?: string;
+}): Promise<{ report: Record<string, unknown>; stderr: string }> {
+  const { workspaceRoot, timeoutMs = 60_000, pageHtml = DEFAULT_HARNESS_PAGE } = options;
+  const electronBinary = require('electron') as string;
+  assert.equal(typeof electronBinary, 'string', 'electron 包应导出二进制路径');
+
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((request, response) => {
+      if (request.url?.startsWith('/page')) {
+        response.setHeader('Content-Type', 'text/html; charset=utf-8');
+        response.end(pageHtml);
         return;
       }
       if (request.url?.startsWith('/report')) {
@@ -107,6 +110,7 @@ function launchElectron(options: {
         });
         request.on('end', () => {
           response.end('ok');
+          stop();
           resolve({ report: JSON.parse(body), stderr: stderrOutput });
         });
         return;
@@ -211,6 +215,90 @@ void test(
     assert.equal(path.basename(workspaceRoot), '页语工作区');
     const entries = (await readdir(workspaceRoot)).sort();
     assert.deepEqual(entries, ['Cache', 'Courses', 'Settings']);
+  },
+);
+
+void test(
+  'external navigation is blocked and handed to the system browser',
+  { skip: smokeSkipReason, timeout: 90_000 },
+  async () => {
+    // 第二个本地服务器扮演“外部网站”：若 openExternal 生效，
+    // 默认浏览器（而非应用窗口）会请求它。
+    let externalHit = false;
+    let externalHitResolve: (() => void) | null = null;
+    const externalHitPromise = new Promise<void>((resolve) => {
+      externalHitResolve = resolve;
+    });
+    const externalServer = http.createServer((request, response) => {
+      if (request.url?.startsWith('/external-target')) {
+        externalHit = true;
+        externalHitResolve?.();
+        response.setHeader('Content-Type', 'text/html; charset=utf-8');
+        response.end('<meta charset="utf-8"><title>外部链接已在系统浏览器打开</title>');
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve) => {
+      externalServer.listen(0, '127.0.0.1', () => resolve());
+    });
+    const externalPort =
+      typeof externalServer.address() === 'object' && externalServer.address()
+        ? (externalServer.address() as { port: number }).port
+        : 0;
+    assert.ok(externalPort > 0);
+
+    const navPage = `<!doctype html><meta charset="utf-8"><title>yeyu nav smoke</title><script>
+(async () => {
+  const result = {};
+  try {
+    if (!window.yeyuDesktop) throw new Error('外部页面绝不该拿到 yeyuDesktop，但当前页也应有它');
+    result.appOrigin = location.origin;
+    // 尝试整页跳去外部网站：应当被 will-navigate 拦截，脚本存活。
+    location.href = 'https://example.com/yeyu-escape-attempt';
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    result.stillOnAppOrigin = location.origin === result.appOrigin;
+    // 尝试 window.open 外部网站：setWindowOpenHandler 应返回 deny（window.open 得到 null）。
+    const popup = window.open('https://example.com/yeyu-popup-attempt');
+    result.windowOpenDenied = popup === null;
+    // 尝试跳到另一个 origin：应被拒绝并转交系统浏览器。
+    location.href = 'http://127.0.0.1:${externalPort}/external-target';
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    result.survivedExternalAttempt = location.origin === result.appOrigin;
+    result.error = null;
+  } catch (error) {
+    result.error = error instanceof Error ? error.message : String(error);
+  }
+  await fetch('/report', { method: 'POST', body: JSON.stringify(result) });
+})();
+</script>`;
+
+    const tempRoot = path.join(os.tmpdir(), `yeyu-nav-smoke-${Date.now()}`);
+    try {
+      const { report } = await launchElectron({
+        workspaceRoot: tempRoot,
+        pageHtml: navPage,
+        timeoutMs: 80_000,
+      });
+      assert.equal(report.error, null, `renderer 报错：${JSON.stringify(report)}`);
+      assert.equal(report.stillOnAppOrigin, true, '外部整页导航必须被拦截');
+      assert.equal(report.windowOpenDenied, true, 'window.open 外部页面必须被 deny');
+      assert.equal(report.survivedExternalAttempt, true, '应用页面必须留在本机 origin');
+      // 等待默认浏览器真正请求“外部网站”。
+      await Promise.race([
+        externalHitPromise,
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error('外部链接未在 20 秒内由系统浏览器打开')),
+          20_000,
+        )),
+      ]);
+      assert.equal(externalHit, true);
+    } finally {
+      externalServer.closeAllConnections?.();
+      externalServer.close(() => undefined);
+      await rmQuiet(tempRoot);
+    }
   },
 );
 
