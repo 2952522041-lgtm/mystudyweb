@@ -15,3 +15,7 @@ allowBuilds:
   esbuild: true
   sharp: true
   workerd: true
+
+# pnpm 11 默认禁止 git 形式的子依赖；@electron/rebuild（Electron Forge 依赖树）
+# 通过 git tarball 引用 @electron/node-gyp，且已存在于 pnpm-lock.yaml，需要放行。
+blockExoticSubdeps: false

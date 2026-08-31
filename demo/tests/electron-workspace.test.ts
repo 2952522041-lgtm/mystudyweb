@@ -325,9 +325,10 @@ void test('electron main and preload keep the secure process boundary', async ()
 });
 
 void test('packaging wires main, preload and the static client bundle', async () => {
-  const [packageJson, forgeConfig] = await Promise.all([
+  const [packageJson, forgeConfig, buildScript] = await Promise.all([
     readFile(new URL('../package.json', import.meta.url), 'utf8'),
     readFile(new URL('../forge.config.cjs', import.meta.url), 'utf8'),
+    readFile(new URL('../scripts/build-electron.mjs', import.meta.url), 'utf8'),
   ]);
   const pkg = JSON.parse(packageJson) as {
     main: string;
@@ -336,9 +337,20 @@ void test('packaging wires main, preload and the static client bundle', async ()
 
   assert.equal(pkg.main, 'electron/dist/main.js');
   assert.match(pkg.scripts['desktop:web'], /VINEXT_EXPORT=1/);
-  assert.match(pkg.scripts['desktop:compile'], /electron\/tsconfig\.json/);
+  assert.match(pkg.scripts['desktop:compile'], /build-electron\.mjs/);
   assert.match(pkg.scripts['desktop:build'], /electron-forge package/);
   assert.match(pkg.scripts['desktop:make'], /electron-forge make/);
+  assert.match(
+    pkg.scripts['desktop:test'],
+    /desktop:compile[\s\S]*electron-smoke\.smoke\.ts/,
+  );
+
+  // sandbox preload 只能加载内置模块：preload.ts 及其依赖必须被 esbuild
+  // 打包成单个自包含 CommonJS 文件（HANDOFF 13.1）。
+  assert.match(buildScript, /entryPoints: \[path\.join\(electronDir, 'preload\.ts'\)\]/);
+  assert.match(buildScript, /bundle: true/);
+  assert.match(buildScript, /format: 'cjs'/);
+  assert.match(buildScript, /outfile: path\.join\(distDir, 'preload\.js'\)/);
 
   assert.match(forgeConfig, /extraResource: \['dist\/client'\]/);
   assert.match(forgeConfig, /maker-squirrel/);

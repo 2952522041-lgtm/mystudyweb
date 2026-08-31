@@ -21,6 +21,12 @@ import {
   WorkspacePathError,
   type WorkspaceLayout,
 } from './workspace-paths.ts';
+import { isSmokeRun, probePreloadBridge } from './smoke.ts';
+
+// 冒烟测试在无 GPU/显示器的环境下也要能启动，禁用硬件加速只影响该模式。
+if (isSmokeRun()) {
+  app.disableHardwareAcceleration();
+}
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -204,7 +210,7 @@ function registerDesktopIpc(layout: WorkspaceLayout): void {
   });
 }
 
-async function createWindow(): Promise<void> {
+async function createWindow(): Promise<BrowserWindow> {
   // YEYU_DEV_URL 只指向本机开发服务器；产品代码没有任何线上地址。
   const devUrl = process.env.YEYU_DEV_URL?.trim();
   const target = devUrl || (await startStaticServer(staticClientDirectory()));
@@ -221,8 +227,11 @@ async function createWindow(): Promise<void> {
       sandbox: true,
     },
   });
-  window.once('ready-to-show', () => window.show());
+  if (!isSmokeRun()) {
+    window.once('ready-to-show', () => window.show());
+  }
   await window.loadURL(target);
+  return window;
 }
 
 void app.whenReady().then(async () => {
@@ -232,7 +241,14 @@ void app.whenReady().then(async () => {
   );
   await ensureWorkspace(layout);
   registerDesktopIpc(layout);
-  await createWindow();
+  const window = await createWindow();
+  if (isSmokeRun()) {
+    // YEYU_SMOKE=1：探测完 preload 桥接后立即退出，供自动化冒烟测试断言。
+    const result = await probePreloadBridge(window);
+    process.exitCode = result.api ? 0 : 1;
+    app.quit();
+    return;
+  }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       void createWindow();

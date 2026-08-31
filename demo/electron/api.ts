@@ -28,6 +28,18 @@ export const DESKTOP_CHANNELS = {
   revealWorkspace: 'yeyu:reveal-workspace',
 } as const;
 
+/** 桌面 API 的全部方法名；冒烟测试用它校验 preload 的暴露面。 */
+export const DESKTOP_METHOD_NAMES = [
+  'createCourseDirectory',
+  'ensureDirectory',
+  'exists',
+  'getWorkspaceInfo',
+  'listCourses',
+  'readFile',
+  'revealWorkspace',
+  'writeFile',
+] as const;
+
 export interface WorkspaceInfo {
   root: string;
   coursesRoot: string;
