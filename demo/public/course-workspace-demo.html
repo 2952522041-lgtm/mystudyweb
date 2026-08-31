@@ -493,6 +493,111 @@
       .doc-map-node small { display: block; margin-top: 3px; color: #8a93a1; font-size: 8px; }
       .doc-map-node.root small { color: #cbd6e2; }
 
+      body.reader-mode .app-shell { display: block; min-height: 100vh; }
+      body.reader-mode .topbar { display: none; }
+      body.reader-mode .layout { display: block; }
+      body.reader-mode .workspace { height: 100vh; padding: 0; overflow: hidden; }
+
+      .existing-reader-demo {
+        height: 100vh;
+        min-height: 680px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        color: #293443;
+        background: #faf9f5;
+      }
+
+      .existing-toolbar {
+        height: 64px;
+        flex: 0 0 auto;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        align-items: center;
+        gap: 16px;
+        padding: 0 20px;
+        border-bottom: 1px solid #e2e5e9;
+        background: #fffdf9;
+        box-shadow: 0 1px 0 rgba(15, 23, 42, 0.02);
+      }
+
+      .existing-toolbar-left, .existing-toolbar-right, .existing-page-control,
+      .existing-reader-brand, .existing-tool-group, .existing-pane-heading,
+      .existing-mode-tabs, .existing-status-bar { display: flex; align-items: center; }
+      .existing-toolbar-left { min-width: 0; gap: 10px; }
+      .existing-reader-brand { min-width: 0; gap: 11px; }
+      .existing-book-mark { width: 36px; height: 36px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 9px; color: #f5c65f; background: #172130; box-shadow: 0 2px 5px rgba(15,23,42,.16); font-size: 17px; }
+      .existing-brand-copy { min-width: 0; }
+      .existing-brand-kicker { display: block; color: #a45f20; font-size: 10px; font-weight: 760; letter-spacing: .18em; }
+      .existing-brand-file { display: block; max-width: 340px; overflow: hidden; color: #485465; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+      .existing-back { width: 31px; height: 31px; flex: 0 0 auto; border: 1px solid #e0e4e9; border-radius: 8px; color: #667183; background: white; }
+
+      .existing-page-control { gap: 3px; padding: 4px; border: 1px solid #dfe3e8; border-radius: 9px; background: white; box-shadow: 0 2px 6px rgba(15,23,42,.05); }
+      .existing-icon-tool { width: 29px; height: 29px; display: grid; place-items: center; border: 0; border-radius: 7px; color: #657082; background: transparent; }
+      .existing-icon-tool:hover { background: #f3f4f6; }
+      .existing-page-readout { display: flex; align-items: center; gap: 7px; padding: 0 7px; color: #667181; font-size: 11px; }
+      .existing-page-input { width: 29px; height: 25px; border: 1px solid transparent; border-radius: 5px; color: #1f2937; background: transparent; font-weight: 720; text-align: center; }
+      .existing-page-divider { color: #d2d6dc; }
+
+      .existing-toolbar-right { justify-content: flex-end; gap: 8px; }
+      .existing-tool-group { gap: 5px; padding: 4px; border: 1px solid #dfe3e8; border-radius: 9px; background: white; }
+      .existing-language { display: flex; align-items: center; gap: 6px; color: #8a93a1; font-size: 10px; }
+      .existing-select { height: 31px; padding: 0 25px 0 9px; border: 1px solid #dfe3e8; border-radius: 7px; color: #4b5667; background: white; font-size: 11px; }
+      .existing-zoom { width: 40px; color: #626d7d; font-size: 11px; text-align: center; }
+      .existing-outline-button { height: 34px; display: flex; align-items: center; gap: 6px; padding: 0 11px; border: 1px solid #dfe3e8; border-radius: 8px; color: #4f5969; background: white; font-size: 11px; font-weight: 640; }
+
+      .existing-reading-area { min-height: 0; flex: 1; display: grid; grid-template-columns: 55% 45%; }
+      .existing-original-pane, .existing-assist-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+      .existing-original-pane { background: linear-gradient(180deg,#e9ecef,#e4e7ea); }
+      .existing-assist-pane { border-left: 1px solid #d7dbe1; background: #fffdf9; }
+      .existing-pane-heading { height: 58px; flex: 0 0 auto; justify-content: space-between; gap: 14px; padding: 0 20px; }
+      .existing-pane-eyebrow { margin: 0; color: #46515f; font-size: 10px; font-weight: 790; letter-spacing: .16em; }
+      .existing-pane-meta { margin: 4px 0 0; color: #788291; font-size: 10px; }
+      .existing-reading-chip { padding: 5px 9px; border: 1px solid rgba(255,255,255,.85); border-radius: 999px; color: #75808f; background: rgba(255,255,255,.72); box-shadow: 0 2px 5px rgba(15,23,42,.04); font-size: 9px; }
+
+      .existing-reader-workspace { min-height: 0; flex: 1; display: flex; border-top: 1px solid #cfd4da; }
+      .existing-thumbnails { width: 118px; flex: 0 0 auto; display: flex; flex-direction: column; border-right: 1px solid #cbd1d8; background: rgba(244,246,248,.86); }
+      .existing-thumbnail-head { height: 36px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid #d2d6dc; color: #7a8491; font-size: 9px; font-weight: 690; letter-spacing: .1em; }
+      .existing-thumbnail-scroll { min-height: 0; flex: 1; overflow: auto; padding: 8px 0; }
+      .existing-page-thumb { width: 100%; display: flex; flex-direction: column; align-items: center; padding: 8px; border: 0; border-left: 3px solid transparent; color: #7c8693; background: transparent; }
+      .existing-page-thumb.active { border-color: #d89a35; color: #8a5619; background: #fff7e7; }
+      .existing-thumb-paper { width: 72px; aspect-ratio: .707; display: block; padding: 10px 8px; border: 1px solid #cfd4da; background: white; box-shadow: 0 2px 5px rgba(15,23,42,.06); }
+      .existing-page-thumb.active .existing-thumb-paper { border-color: #dda348; box-shadow: 0 4px 10px rgba(15,23,42,.1); }
+      .existing-thumb-line { display: block; height: 3px; margin-bottom: 6px; background: #e2e5e9; }
+      .existing-thumb-line.title { width: 70%; height: 5px; margin-bottom: 9px; background: #7c8795; }
+      .existing-thumb-line.accent { width: 28%; height: 4px; background: #e0a540; }
+      .existing-thumb-number { margin-top: 6px; font-size: 9px; }
+
+      .existing-document-stage { min-width: 0; min-height: 0; flex: 1; overflow: auto; padding: 12px; background: linear-gradient(180deg,#e5e8eb,#dfe3e7); }
+      .existing-document-pages { width: max-content; min-width: 100%; display: grid; justify-items: center; gap: 10px; }
+      .existing-pdf-sheet { width: min(510px, calc(55vw - 180px)); min-width: 380px; min-height: 720px; padding: 54px 56px; border: 2px solid rgba(231,169,70,.45); background: white; box-shadow: 0 6px 20px rgba(15,23,42,.2); font-family: Georgia,"Times New Roman",serif; }
+      .existing-pdf-sheet .paper-course { color:#77818d; font-family:Inter,sans-serif; font-size:9px; letter-spacing:.08em; }
+      .existing-pdf-sheet h2 { margin:15px 0 7px; font-size:22px; font-weight:500; }
+      .existing-pdf-sheet .paper-rule { width:38px; height:2px; margin:15px 0 22px; background:#dba13e; }
+      .existing-pdf-sheet h3 { margin:22px 0 8px; font-size:15px; }
+      .existing-pdf-sheet p { margin:0 0 12px; color:#323b47; font-size:11px; line-height:1.7; }
+      .existing-pdf-sheet .equation { margin:18px 0; border-left-color:#dfa23c; background:#fff9ed; }
+      .existing-pdf-sheet .paper-figure { height:90px; margin:18px 0 7px; }
+      .existing-pdf-sheet .paper-page-number { margin-top:34px; }
+
+      .existing-assist-heading { border-bottom: 1px solid #e1e4e8; }
+      .existing-assist-heading-left { min-width: 0; }
+      .existing-mode-tabs { width: fit-content; gap: 2px; padding: 3px; border-radius: 8px; background: #f0f1f3; }
+      .existing-mode-tab { height: 28px; padding: 0 9px; border: 0; border-radius: 6px; color: #6d7786; background: transparent; font-size: 10px; font-weight: 650; }
+      .existing-mode-tab.active { color: #293544; background: white; box-shadow: 0 1px 4px rgba(15,23,42,.1); }
+      .existing-assist-actions { display: flex; gap: 3px; }
+      .existing-assist-body { min-height: 0; flex: 1; overflow: auto; }
+      .existing-assist-body .reader-pane { padding: 26px clamp(24px,4vw,54px) 50px; }
+      .existing-assist-body .translation-block { max-width: 680px; font-size: 14px; line-height: 1.95; }
+      .existing-assist-body .doc-summary-title { font-family: Georgia,serif; font-size: 24px; }
+      .existing-assist-body .doc-summary-section p,
+      .existing-assist-body .doc-summary-section li { font-size: 13px; line-height: 1.8; }
+      .existing-assist-body .doc-map { height: 470px; }
+
+      .existing-status-bar { height: 28px; flex: 0 0 auto; justify-content: space-between; gap: 18px; padding: 0 16px; border-top: 1px solid #e0e3e7; color: #7b8592; background: #fffdf9; font-size: 9px; }
+      .existing-status-left { display:flex; align-items:center; gap:7px; }
+      .existing-status-dot { width:6px; height:6px; border-radius:50%; background:#48a17f; }
+
       .empty-state { padding: 70px 25px; text-align: center; }
       .empty-icon { width: 54px; height: 54px; display: grid; place-items: center; margin: 0 auto 15px; border-radius: 16px; color: var(--violet); background: var(--violet-soft); font-size: 24px; }
       .empty-state h2 { margin: 0 0 7px; font-size: 19px; }
@@ -593,6 +698,11 @@
         .document-row > :nth-child(3) { display: none; }
         .reader-grid { grid-template-columns: 110px minmax(380px, 1fr) 340px; }
         .pdf-paper { padding: 50px 45px; }
+        .existing-toolbar { grid-template-columns: minmax(0,1fr) auto; padding:0 12px; }
+        .existing-toolbar > .existing-page-control { display:none; }
+        .existing-language { display:none; }
+        .existing-reading-area { grid-template-columns:52% 48%; }
+        .existing-mode-tab { padding:0 6px; font-size:9px; }
       }
 
       @media (max-width: 720px) {
@@ -620,6 +730,13 @@
         .page-sidebar { display: none; }
         .pdf-stage { max-height: 620px; border-bottom: 1px solid var(--line); }
         .reader-panel { min-height: 620px; border-left: 0; }
+        .existing-reader-demo { min-height:0; height:auto; overflow:visible; }
+        .existing-toolbar { height:auto; min-height:64px; grid-template-columns:1fr; gap:8px; padding:10px 12px; }
+        .existing-toolbar-right { justify-content:flex-start; overflow:auto; }
+        .existing-reading-area { display:block; }
+        .existing-original-pane { min-height:620px; }
+        .existing-assist-pane { min-height:620px; border-top:1px solid #d7dbe1; border-left:0; }
+        .existing-pdf-sheet { min-width:360px; width:calc(100vw - 150px); }
       }
     </style>
   </head>
@@ -1015,21 +1132,53 @@
 
         function renderDocumentReader(course, doc) {
           const pages = readerPageNumbers(doc);
+          const modeMeta = state.readerTab === "translation"
+            ? `第 ${state.currentPage} 页 · 简体中文 · 演示模式`
+            : state.readerTab === "chat"
+              ? `第 ${state.currentPage} 页 · 文字与视觉上下文`
+              : state.readerTab === "summary"
+                ? `整份 PDF · ${doc.summary ? "已结合学习对话" : "尚未生成"}`
+                : `整份 PDF · ${doc.mindmap ? "可追溯来源" : "尚未生成"}`;
           return `
-            <div class="reader-head">
-              <div class="reader-title-wrap"><button class="reader-back" type="button" data-back-course aria-label="返回课程">←</button><span><span class="reader-file-name">${doc.name}</span><span class="reader-file-meta">${course.name} · ${doc.pages} 页 · 已复制到课程文件夹</span></span></div>
-              <div class="reader-head-actions">${doc.merged ? statusMarkup("merged", "已纳入课程") : statusMarkup("pending", "尚未纳入课程知识库")}<button class="button small" type="button" data-back-course>返回课程</button></div>
-            </div>
-            <div class="reader-grid">
-              <aside class="page-sidebar"><div class="page-sidebar-label">页面缩略图</div>${pages.map((page) => `<button class="page-thumb ${page === state.currentPage ? "active" : ""}" type="button" data-page="${page}"><span class="thumb-paper"><i class="thumb-line"></i><i class="thumb-line short"></i><i class="thumb-line"></i><i class="thumb-line"></i><i class="thumb-line short"></i></span><span class="thumb-number">${page}</span></button>`).join("")}</aside>
-              <section class="pdf-stage">
-                <div class="pdf-toolbar"><button type="button" data-prev-page>‹</button><span>第 ${state.currentPage} / ${doc.pages} 页</span><button type="button" data-next-page>›</button><span style="color:#9aa2ae">100%</span></div>
-                <article class="pdf-paper"><div class="paper-course">CS 485 · MACHINE LEARNING</div><h2>Gradient Descent and Learning Rate</h2><div class="paper-rule"></div><p>Gradient descent is an iterative optimization algorithm for finding a local minimum of a differentiable function. The method updates model parameters in the direction opposite to the gradient.</p><div class="equation">θ<sub>t+1</sub> = θ<sub>t</sub> − η ∇L(θ<sub>t</sub>)</div><h3>Choosing the learning rate</h3><p>The learning rate η controls the size of each update. A small value produces stable but slow progress. A large value can overshoot the minimum and cause the loss to oscillate.</p><div class="paper-figure">${[34, 48, 65, 88, 64, 44, 30].map((height) => `<span class="figure-bar" style="height:${height}px"></span>`).join("")}</div><div class="figure-caption">Figure 4. Loss oscillation caused by an excessive learning rate</div><h3>Convergence</h3><p>For a convex and smooth objective, an appropriate step size gives a predictable convergence behavior. For non-convex objectives, the optimization landscape may contain saddle points and multiple local minima.</p><div class="paper-page-number">${state.currentPage}</div></article>
+            <div class="existing-reader-demo">
+              <header class="existing-toolbar">
+                <div class="existing-toolbar-left">
+                  <button class="existing-back" type="button" data-back-course aria-label="返回课程">←</button>
+                  <div class="existing-reader-brand"><span class="existing-book-mark">▤</span><span class="existing-brand-copy"><span class="existing-brand-kicker">页语</span><span class="existing-brand-file">${doc.name}</span></span></div>
+                </div>
+                <div class="existing-page-control">
+                  <button class="existing-icon-tool" type="button" data-prev-page aria-label="上一页">‹</button>
+                  <label class="existing-page-readout"><input class="existing-page-input" value="${state.currentPage}" inputmode="numeric" aria-label="当前页码" readonly /><span class="existing-page-divider">/</span><span>${doc.pages}</span></label>
+                  <button class="existing-icon-tool" type="button" data-next-page aria-label="下一页">›</button>
+                </div>
+                <div class="existing-toolbar-right">
+                  <div class="existing-language"><span>◎</span><span>自动识别 →</span><select class="existing-select" aria-label="目标语言"><option>简体中文</option><option>繁體中文</option><option>日本語</option></select></div>
+                  <div class="existing-tool-group"><button class="existing-icon-tool" type="button" aria-label="缩小">−</button><span class="existing-zoom">100%</span><button class="existing-icon-tool" type="button" aria-label="放大">＋</button></div>
+                  <button class="existing-icon-tool" type="button" data-reader-settings aria-label="阅读服务设置">⚙</button>
+                  <button class="existing-outline-button" type="button" data-open-import>▤ 更换 PDF</button>
+                  <button class="existing-outline-button" type="button" data-back-course>返回课程</button>
+                </div>
+              </header>
+
+              <section class="existing-reading-area">
+                <section class="existing-original-pane" aria-label="PDF 原文阅读区">
+                  <div class="existing-pane-heading"><div><p class="existing-pane-eyebrow">原文</p><p class="existing-pane-meta">${doc.pages} 页 · 文字型 PDF</p></div><span class="existing-reading-chip">第 ${state.currentPage} 页正在阅读</span></div>
+                  <div class="existing-reader-workspace">
+                    <nav class="existing-thumbnails" aria-label="PDF 页面预览"><div class="existing-thumbnail-head"><span>页面</span><span>${doc.pages}</span></div><div class="existing-thumbnail-scroll">${pages.map((page) => `<button class="existing-page-thumb ${page === state.currentPage ? "active" : ""}" type="button" data-page="${page}"><span class="existing-thumb-paper"><i class="existing-thumb-line accent"></i><i class="existing-thumb-line title"></i><i class="existing-thumb-line"></i><i class="existing-thumb-line"></i><i class="existing-thumb-line"></i><i class="existing-thumb-line"></i></span><span class="existing-thumb-number">${page}</span></button>`).join("")}</div></nav>
+                    <div class="existing-document-stage" aria-label="PDF 连续阅读画布"><div class="existing-document-pages"><article class="existing-pdf-sheet"><div class="paper-course">CS 485 · MACHINE LEARNING</div><h2>Gradient Descent and Learning Rate</h2><div class="paper-rule"></div><p>Gradient descent is an iterative optimization algorithm for finding a local minimum of a differentiable function. The method updates model parameters in the direction opposite to the gradient.</p><div class="equation">θ<sub>t+1</sub> = θ<sub>t</sub> − η ∇L(θ<sub>t</sub>)</div><h3>Choosing the learning rate</h3><p>The learning rate η controls the size of each update. A small value produces stable but slow progress. A large value can overshoot the minimum and cause the loss to oscillate.</p><div class="paper-figure">${[30, 44, 60, 78, 58, 40, 27].map((height) => `<span class="figure-bar" style="height:${height}px"></span>`).join("")}</div><div class="figure-caption">Figure 4. Loss oscillation caused by an excessive learning rate</div><h3>Convergence</h3><p>For a convex and smooth objective, an appropriate step size gives a predictable convergence behavior. For non-convex objectives, the optimization landscape may contain saddle points and multiple local minima.</p><div class="paper-page-number">${state.currentPage}</div></article></div></div>
+                  </div>
+                </section>
+
+                <aside class="existing-assist-pane" aria-label="当前页阅读辅助区">
+                  <div class="existing-pane-heading existing-assist-heading">
+                    <div class="existing-assist-heading-left"><div class="existing-mode-tabs"><button class="existing-mode-tab ${state.readerTab === "translation" ? "active" : ""}" type="button" data-reader-tab="translation">◎ 页面翻译</button><button class="existing-mode-tab ${state.readerTab === "chat" ? "active" : ""}" type="button" data-reader-tab="chat">◌ AI 答疑</button><button class="existing-mode-tab ${state.readerTab === "summary" ? "active" : ""}" type="button" data-reader-tab="summary">▤ PDF 总结</button><button class="existing-mode-tab ${state.readerTab === "mindmap" ? "active" : ""}" type="button" data-reader-tab="mindmap">⌘ PDF 脑图</button></div><p class="existing-pane-meta">${modeMeta}</p></div>
+                    <div class="existing-assist-actions"><button class="existing-icon-tool" type="button" data-copy-result aria-label="复制">▣</button><button class="existing-icon-tool" type="button" data-refresh-result aria-label="重新生成">↻</button><button class="existing-icon-tool" type="button" data-collapse-assist aria-label="收起阅读辅助区">⇥</button></div>
+                  </div>
+                  <div class="existing-assist-body">${translationPane()}${chatPane()}${documentSummaryPane(doc)}${documentMindmapPane(doc)}</div>
+                </aside>
               </section>
-              <aside class="reader-panel">
-                <div class="reader-tabs"><button class="reader-tab ${state.readerTab === "translation" ? "active" : ""}" type="button" data-reader-tab="translation">页面翻译</button><button class="reader-tab ${state.readerTab === "chat" ? "active" : ""}" type="button" data-reader-tab="chat">AI 答疑</button><button class="reader-tab ${state.readerTab === "summary" ? "active" : ""}" type="button" data-reader-tab="summary">PDF 总结</button><button class="reader-tab ${state.readerTab === "mindmap" ? "active" : ""}" type="button" data-reader-tab="mindmap">PDF 脑图</button></div>
-                <div class="reader-panel-body">${translationPane()}${chatPane()}${documentSummaryPane(doc)}${documentMindmapPane(doc)}</div>
-              </aside>
+
+              <footer class="existing-status-bar"><span class="existing-status-left"><i class="existing-status-dot"></i>${state.readerTab === "chat" ? `AI 答疑已绑定第 ${state.currentPage} 页` : state.readerTab === "translation" ? "译文已完成" : state.readerTab === "summary" ? "PDF 总结已保存到课程文件夹" : "PDF 脑图已保存到课程文件夹"}</span><span>第 ${Math.min(doc.pages, state.currentPage + 1)} 页已预加载　·　PDF、译文与对话仅保存在本地</span></footer>
             </div>`;
         }
 
@@ -1169,6 +1318,10 @@
           }
           if (target.hasAttribute("data-source-jump") || target.hasAttribute("data-page-source")) showToast(`已定位到第 ${state.currentPage} 页的相关来源`);
           if (target.hasAttribute("data-send-chat")) showToast("原型中：问题会发送给当前页 AI 答疑");
+          if (target.hasAttribute("data-reader-settings")) showToast("原型中：这里打开现有的阅读服务设置");
+          if (target.hasAttribute("data-copy-result")) showToast("当前结果已复制");
+          if (target.hasAttribute("data-refresh-result")) showToast(state.readerTab === "translation" ? "正在重新翻译当前页" : "正在重新生成当前成果");
+          if (target.hasAttribute("data-collapse-assist")) showToast("原型中：这里收起右侧阅读辅助区");
           if (target.id === "fitMapButton") { $("#mapViewport").scrollTo({ left: 0, top: 0, behavior: "smooth" }); showToast("脑图已适应当前画布"); }
         });
 

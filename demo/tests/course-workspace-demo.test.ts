@@ -38,12 +38,30 @@ void test('each PDF opens a reader with its own summary and mindmap', async () =
   for (const requirement of [
     'function openDocument',
     'data-open-doc',
-    '页面缩略图',
+    'PDF 页面预览',
     '页面翻译',
     'AI 答疑',
     '单 PDF 总结',
     '本 PDF 知识脑图',
     'data-back-course',
+  ]) {
+    assert.match(html, new RegExp(requirement));
+  }
+});
+
+void test('PDF reader demo preserves the existing reader structure', async () => {
+  const html = await readFile(demoUrl, 'utf8');
+
+  for (const requirement of [
+    'existing-toolbar',
+    'existing-page-control',
+    '自动识别 →',
+    '更换 PDF',
+    'existing-pane-eyebrow">原文',
+    '文字型 PDF',
+    'existing-thumbnails',
+    'existing-document-stage',
+    'PDF、译文与对话仅保存在本地',
   ]) {
     assert.match(html, new RegExp(requirement));
   }
