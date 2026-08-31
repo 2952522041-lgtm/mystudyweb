@@ -5,6 +5,7 @@ import unittest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TECHNICAL_SOLUTION = PROJECT_ROOT / "docs" / "TECHNICAL_SOLUTION.md"
 PRODUCT_DESIGN = PROJECT_ROOT / "PRODUCT_DESIGN.md"
+HANDOFF = PROJECT_ROOT / "HANDOFF.md"
 
 
 class TechnicalSolutionDocumentTest(unittest.TestCase):
@@ -156,6 +157,37 @@ class ProductDesignDocumentTest(unittest.TestCase):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, content)
 
+
+class HandoffDocumentTest(unittest.TestCase):
+    def test_desktop_handoff_is_actionable(self) -> None:
+        content = HANDOFF.read_text(encoding="utf-8")
+
+        for requirement in (
+            "## 七、最新诊断与用户最终决定（桌面迁移的背景）",
+            "## 八、推荐桌面架构（Electron）",
+            "path.join(app.getPath('documents'), '页语工作区')",
+            "YEYU_WORKSPACE_ROOT=/home/yusicheng/Documents/1",
+            "contextIsolation: true",
+            "DesktopCourseStorage",
+            "build-windows-desktop.yml",
+            "## 十、测试与验收清单",
+            "0927988 feat: add visual OCR for scanned PDFs",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, content)
+
+    def test_handoff_keeps_web_and_desktop_responsibilities_separate(self) -> None:
+        content = HANDOFF.read_text(encoding="utf-8")
+
+        for requirement in (
+            "浏览器版本继续使用 `BrowserDirectoryStorage`",
+            "桌面版本使用 `DesktopCourseStorage`",
+            "不要覆盖它。桌面工作流与 Pages 工作流分开",
+            "不要开启 `nodeIntegration: true`",
+            "API Key 不出现在课程目录、日志、提交或安装包中",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, content)
 
 if __name__ == "__main__":
     unittest.main()
