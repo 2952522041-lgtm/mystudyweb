@@ -190,6 +190,7 @@ class HandoffDocumentTest(unittest.TestCase):
                 self.assertIn(requirement, content)
 
     def test_handoff_records_desktop_runtime_blockers(self) -> None:
+        """第十三节保留原始问题记录，避免后人重蹈覆辙。"""
         content = HANDOFF.read_text(encoding="utf-8")
 
         for requirement in (
@@ -198,8 +199,41 @@ class HandoffDocumentTest(unittest.TestCase):
             "把 `preload.ts` 及 `api.ts` 打包成单个 CommonJS `preload.js`",
             "Windows Squirrel 安装器缺少必填元数据",
             "setWindowOpenHandler",
-            "外部导航隔离：尚未实现",
             "不要关闭 Electron sandbox",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, content)
+
+    def test_handoff_records_desktop_runtime_fixes_and_remaining_work(self) -> None:
+        """阻断项修复后，HANDOFF 必须给出解决状态与剩余平台验收清单。"""
+        content = HANDOFF.read_text(encoding="utf-8")
+
+        for requirement in (
+            "## 十四、2026-08-31 桌面阻断项修复记录（GLM）",
+            "### 13.1 阻断：sandbox preload 不能加载拆分的本地 CommonJS 模块",
+            "已修复（提交 `6dac911`）",
+            "已修复（提交 `ce3d6ef`）",
+            "外部导航隔离：已实现",
+            "tests/electron-smoke.smoke.ts",
+            "yeyu_0.1.0_amd64.deb",
+            "Windows Squirrel make：尚未执行（需 windows-latest runner）",
+            "Ubuntu DEB 实机安装：构建产物已核对",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, content)
+
+    def test_readme_documents_desktop_install_and_boundaries(self) -> None:
+        content = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+        for requirement in (
+            "## 桌面版（Electron）",
+            "sudo apt install ./out/make/deb/x64/yeyu_0.1.0_amd64.deb",
+            "GNOME 应用菜单出现「页语」",
+            "~/Documents/页语工作区",
+            "build-windows-desktop.yml",
+            "sandbox: true",
+            "setWindowOpenHandler` 默认 deny",
+            "pnpm desktop:test",
         ):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, content)

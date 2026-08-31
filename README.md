@@ -2,6 +2,9 @@
 
 把多份 PDF 组织为本地课程知识库，生成带页码来源的总结与脑图；阅读时左侧显示原文，右侧可在随页翻译、AI 视觉答疑、PDF 总结和 PDF 脑图之间切换。
 
+- **桌面版**（Electron）：完整课程知识库，固定使用系统「文档/页语工作区」，见下方「桌面版」章节
+- **网页 Demo**：继续部署在 GitHub Pages，作为临时 PDF 阅读器与演示（受浏览器目录授权限制）
+
 ## 日常使用
 
 ```bash
@@ -69,6 +72,53 @@ pnpm build      # 生产构建
 - `demo/components/course-library.tsx` — 正式课程工作台与课程/阅读器衔接
 
 产品与架构文档见 `PRODUCT_DESIGN.md` 和 `docs/TECHNICAL_SOLUTION.md`。
+
+## 桌面版（Electron）
+
+桌面版是课程知识库的完整载体：启动即使用系统「文档」目录下的 `页语工作区`（自动创建 `Courses/Cache/Settings`），不需要每次授权目录；课程列表从磁盘扫描，关闭重启后自动恢复。
+
+### Ubuntu 安装
+
+```bash
+cd demo
+pnpm install
+pnpm desktop:make          # 生成 out/make/deb/x64/yeyu_0.1.0_amd64.deb
+sudo apt install ./out/make/deb/x64/yeyu_0.1.0_amd64.deb
+```
+
+安装后：
+
+- GNOME 应用菜单出现「页语」（类别：Education），命令行入口为 `yeyu`
+- 数据目录：`~/Documents/页语工作区/`；卸载：`sudo apt remove yeyu`
+- 包名/可执行名/图标名为 `yeyu`，图标安装到 hicolor 各尺寸
+
+仅构建不安装：`pnpm desktop:build` 产出打包目录 `out/Yeyu-linux-x64/`，可直接运行其中的 `yeyu`。ZIP 产物保留在 `out/make/zip/linux/x64/`。
+
+### Windows 安装包
+
+`.github/workflows/build-windows-desktop.yml`（手动触发或推送 `v*` tag）在 windows-latest 上测试并执行 `electron-forge make`，上传 Squirrel 安装程序（Setup.exe、.nupkg、RELEASES）为 Actions artifact。构建未签名，首次运行会触发 SmartScreen 提示。
+
+### 安全边界
+
+- `sandbox: true`、`contextIsolation: true`、`nodeIntegration: false`；preload 及其依赖被 esbuild 打包成单个自包含 CommonJS 文件（sandbox preload 不能加载拆分的本地模块）
+- 主窗口只允许唯一的应用 origin（本地回环上的只读静态产物服务器）；离开该 origin 的导航一律拒绝，外部 http/https 链接改用系统浏览器打开；`setWindowOpenHandler` 默认 deny；未知协议拒绝
+- renderer 只能通过 `window.yeyuDesktop` 的白名单方法访问课程文件；所有相对路径都做穿越/符号链接检查，写入采用「临时文件 → rename」
+- API Key 不写入工作区，也不出现在日志和安装包中
+
+### 桌面开发与测试
+
+```bash
+cd demo
+pnpm desktop:web        # 构建 vinext 静态产物（dist/client）
+pnpm desktop:compile    # tsc 编译主进程 + esbuild 打包 preload（scripts/build-electron.mjs）
+pnpm desktop:build      # web + compile + electron-forge package
+pnpm desktop:make       # web + compile + electron-forge make（Linux 产出 deb + zip）
+pnpm desktop:test       # electron 单元测试 + 真实启动冒烟测试（需要 DISPLAY）
+```
+
+`desktop:test` 会真实启动编译产物与 Linux 打包产物各两次，断言 `window.yeyuDesktop` 存在、`getWorkspaceInfo()` 完成真实 IPC 往返、创建课程并写入 `course.json` 后关闭重启仍能扫出该课程。环境缺少 DISPLAY 时冒烟会跳过并说明原因（也可配置 Xvfb）。
+
+仅供开发/测试的环境变量（不会写入任何产物）：`YEYU_WORKSPACE_ROOT` 覆盖工作区根目录；`YEYU_DEV_URL` 只在未打包时生效，且只接受 `localhost`/`127.0.0.1`/IPv6 回环；`YEYU_SMOKE=1` 由自动化冒烟测试使用。
 
 ## 部署为公开网站
 

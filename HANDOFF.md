@@ -9,7 +9,7 @@
 
 ## 二、当前状态（Web MVP 已可用，下一步迁移 Windows 桌面端）
 
-> **接手者先看这里：** 2026-08-31 起，Windows 桌面端的主体代码已按第七至第十节落地（Electron 外壳、固定工作区、安全文件桥接、DesktopCourseStorage、Windows 打包工作流，提交 `18a9488` → `592ec31` 及后续状态更新）。但 Codex 的真实 Electron 启动复核发现 preload 当前加载失败，因此桌面端尚未达到可交付状态。请先完成第十三节的阻断项，再做 Windows 安装包验收。在线网页继续保留为 Demo/临时 PDF 阅读器。
+> **接手者先看这里：** 2026-08-31 起，Windows 桌面端的主体代码已按第七至第十节落地（Electron 外壳、固定工作区、安全文件桥接、DesktopCourseStorage、Windows 打包工作流，提交 `18a9488` → `592ec31` 及后续状态更新）。第十三节记录的运行时阻断项已于同日由 GLM 修复并通过真实启动验证（第十四节有完整记录）：sandbox preload 已打包为单个 CommonJS 文件、导航隔离已实现、Squirrel 元数据已补齐、新增 Ubuntu DEB 与真实 Electron 启动冒烟测试。剩余工作集中在 Windows runner 验证（`pnpm desktop:make` 产出 Setup.exe 并按 10.3 安装验收）与 Ubuntu 图形会话里的 DEB 实机安装。在线网页继续保留为 Demo/临时 PDF 阅读器。
 
 已实现并经过真实浏览器端到端验证的能力：
 
@@ -105,7 +105,7 @@ python3 -m unittest discover tests   # 根目录文档完整性测试
 按优先级（对应技术方案的分阶段规划）：
 
 1. **浏览器目录访问是当前主要阻塞项**。File System Access API 必须由用户触发系统目录选择器，不能稳定做到“启动即使用固定工作区”；Codex 内置浏览器的系统选择器也不适合自动化。不要继续用浏览器内部存储模拟一个看似真实的系统目录。
-2. **桌面主体已落地，但存在阻断问题**。阶段 A–D 的代码均已加入：`demo/electron/`（main/preload/工作区文件层/路径安全纯函数）、`demo/lib/course-storage/desktop-course-storage.ts`、`.github/workflows/build-windows-desktop.yml`（workflow_dispatch + v* tag 触发）。`pnpm desktop:build` 能产出 Linux 打包目录，但真实启动日志显示 preload 无法加载 `./api.js`，导致 `window.yeyuDesktop` 不存在。Windows 安装器元数据与导航隔离也需要补齐，详见第十三节。pnpm 注意事项：demo 使用 `nodeLinker: hoisted`（Electron Forge 的依赖遍历器要求 npm 式布局）。
+2. **桌面主体已落地，运行时阻断项已修复**。阶段 A–D 的代码均已加入：`demo/electron/`（main/preload/工作区文件层/路径安全纯函数/导航隔离）、`demo/lib/course-storage/desktop-course-storage.ts`、`.github/workflows/build-windows-desktop.yml`（workflow_dispatch + v* tag 触发）。曾阻断交付的 preload 加载失败与导航隔离缺失已在 2026-08-31 修复（见第十三、十四节）：`window.yeyuDesktop` 经真实 Electron 启动验证可用，Ubuntu DEB（`out/make/deb/x64/yeyu_0.1.0_amd64.deb`）可构建并已核对包元数据与内容清单。pnpm 注意事项：demo 使用 `nodeLinker: hoisted`（Electron Forge 的依赖遍历器要求 npm 式布局）；pnpm 11 需要 `pnpm-workspace.yaml` 里的 `blockExoticSubdeps: false`（Forge 依赖树含 git 形式子依赖，lockfile 已存在，CI 的 pnpm 10 不受影响）。
 3. **浏览器 E2E 测试缺失**。现有 GitHub Actions 已执行 test + lint + tsc + Pages build，不要重复创建相同 CI。桌面迁移后应新增 Electron 主进程文件系统测试和一条 Windows 启动冒烟测试。
 4. **无托管密钥的薄后端代理**。当前翻译和答疑 Key 存本地浏览器、浏览器直连供应商（已在设置界面告知）。公开运营前需按技术方案 6.4 和 15.8 建代理。
 5. **源语言固定为 auto**，未做语言检测展示。
@@ -353,7 +353,10 @@ python3 -m unittest discover tests
 cd demo
 pnpm desktop:build
 pnpm desktop:test
+pnpm desktop:make   # Linux 上额外产出 deb + zip 安装包
 ```
+
+`pnpm desktop:test` 先执行 `desktop:compile`，再跑 electron 单元测试与真实启动冒烟测试（`tests/electron-smoke.smoke.ts`）：启动编译产物与 Linux 打包产物，断言 `window.yeyuDesktop` 存在且方法面完整、`getWorkspaceInfo()` 完成真实 IPC 往返、`window.open` 被拒绝，并通过真实桥接创建课程写入 `course.json` 后重启恢复。冒烟需要图形会话（DISPLAY）；无显示环境时会跳过并打印原因。
 
 Windows 安装包必须由 Windows runner 验证，Linux 上“配置能解析”不能等同于 `.exe` 已可运行。
 
@@ -397,7 +400,11 @@ Windows 安装包必须由 Windows runner 验证，Linux 上“配置能解析�
 
 本节记录 2026-08-31 对 GLM 桌面实现的二次验收。不要只看单元测试和 `electron-forge package` 成功；真实 Electron 运行时暴露了单元测试未覆盖的问题。
 
+> **状态更新（2026-08-31，GLM）：** 13.1 与 13.3 已修复并通过真实启动验证，13.2 的元数据与 Squirrel 事件处理已补齐（Windows 上的 make 与安装验收仍需在 windows-latest 执行）。逐项记录见第十四节。
+
 ### 13.1 阻断：sandbox preload 不能加载拆分的本地 CommonJS 模块
+
+**已修复（提交 `6dac911`）。** 以下为原始问题记录：
 
 已在 Linux 上真实启动打包后的 `out/Yeyu-linux-x64/yeyu`，日志稳定复现：
 
@@ -417,6 +424,10 @@ Error: module not found: ./api.js
 
 ### 13.2 阻断：Windows Squirrel 安装器缺少必填元数据
 
+**元数据与事件处理已补齐（提交 `6bea9a1`）：`package.json` 增加真实 `productName`（页语）、`author`、`description`；maker-squirrel 配置显式设置 `name`/`title`/`authors`/`description`；`electron/squirrel.ts` 在主进程最早期处理 electron-squirrel-startup。** 尚未完成的部分：在 `windows-latest` 上实际执行 `pnpm desktop:make`，确认产出 `Setup.exe`、`.nupkg` 和 `RELEASES`，不能只验证 Linux `package`。
+
+以下为原始问题记录：
+
 当前 `demo/package.json` 没有 `author` 和 `description`，`demo/forge.config.cjs` 也没有用 `authors`/`description` 覆盖。Squirrel.Windows 的 NuGet manifest 需要这些元数据，Windows `electron-forge make` 可能因此失败。
 
 修复要求：
@@ -426,6 +437,10 @@ Error: module not found: ./api.js
 - 在 `windows-latest` 上实际执行 `pnpm desktop:make`，确认产出 `Setup.exe`、`.nupkg` 和 `RELEASES`，不能只验证 Linux `package`。
 
 ### 13.3 高风险：窗口导航后仍会保留本地文件桥接
+
+**已修复（提交 `ce3d6ef`）。外部导航隔离：已实现。** `electron/navigation.ts` 提供纯函数规则，`main.ts` 注册 `will-navigate`（拒绝离开应用 origin，外部 http/https 改走 `shell.openExternal`）、`setWindowOpenHandler`（默认 deny）、`will-attach-webview`（阻止）；`YEYU_DEV_URL` 只在未打包时生效且只接受 localhost/127.0.0.1/IPv6 回环，配置非法时启动即失败。冒烟测试断言真实 renderer 中 `window.open('about:blank')` 返回 null。
+
+以下为原始问题记录：
 
 当前主进程没有注册 `will-navigate` 或 `setWindowOpenHandler`。如果用户点击页面/AI Markdown 中的外部链接，当前 BrowserWindow 可能导航到外部站点，而同一个 preload 仍会给该页面暴露 `window.yeyuDesktop`。这会把课程列表和工作区文件读写能力交给非应用页面。
 
@@ -440,24 +455,28 @@ Error: module not found: ./api.js
 
 ### 13.4 当前已通过与未通过的验证
 
-已通过：
+已通过（2026-08-31 更新，Linux）：
 
 ```text
-pnpm test                 16/16 suites passed
-pnpm lint                 passed
-pnpm exec tsc --noEmit    passed
-python3 -m unittest discover tests   11/11 passed
-pnpm pages                passed（需允许预渲染监听本机回环端口）
+pnpm test                 108/108 通过（含导航规则、Squirrel 元数据、deb 配置测试）
+pnpm lint                 通过
+pnpm exec tsc --noEmit    通过
+pnpm pages                通过（需允许预渲染监听本机回环端口）
+pnpm desktop:test         17/17 通过，含 4 次真实 Electron 启动（编译产物/打包产物
+                          各做一次"创建课程→重启恢复"生命周期）
 pnpm desktop:build        打包步骤通过
+pnpm desktop:make         产出 deb + zip；dpkg-deb 元数据与内容清单已核对
+python3 -m unittest discover tests   12/12 通过
+真实 Electron preload     通过：打包产物日志确认 window.yeyuDesktop 存在，
+                          getWorkspaceInfo() 完成真实 IPC 往返
 ```
 
-未通过/未完成：
+未通过/未完成（只能在对应平台完成）：
 
 ```text
-真实 Electron preload：失败（module not found: ./api.js）
-Windows Squirrel make：尚未执行
+Windows Squirrel make：尚未执行（需 windows-latest runner）
 Windows Setup.exe 安装与重启恢复：尚未执行
-外部导航隔离：尚未实现
+Ubuntu DEB 实机安装：构建产物已核对；图形会话内的安装与菜单启动需协调者执行
 ```
 
 ### 13.5 Windows 接手者建议的第一条任务提示词
@@ -465,3 +484,22 @@ Windows Setup.exe 安装与重启恢复：尚未执行
 ```text
 先阅读 HANDOFF.md 第十三节。不要关闭 Electron sandbox。把 preload 和 api 打包成单个 CommonJS 文件，补齐导航隔离与 Squirrel 元数据；新增真实 Electron 启动冒烟测试，确认 window.yeyuDesktop 可调用。随后在 Windows 上运行全部测试、pnpm pages、pnpm desktop:make，安装生成的 Setup.exe，并按 10.3 完成课程创建、PDF 导入、关闭重启恢复验收。每组改动单独 git commit。
 ```
+
+> 2026-08-31 更新：这段提示词中的 Linux 可完成部分（preload 单文件打包、导航隔离、Squirrel 元数据、冒烟测试）已完成；Windows 接手者可直接从“在 Windows 上运行全部测试与 desktop:make、安装 Setup.exe、按 10.3 验收”开始。
+
+## 十四、2026-08-31 桌面阻断项修复记录（GLM）
+
+在 Ubuntu x64 开发机上完成，真实启动验证均针对本机构建产物：
+
+| 提交 | 内容 |
+| ---- | ---- |
+| `6dac911` | sandbox preload 修复：`scripts/build-electron.mjs`（tsc 主进程 + esbuild 把 `preload.ts` 及 `api.ts` 打包成单个自包含 CommonJS `preload.js`），接入 desktop:build/make/test；新增真实 Electron 启动冒烟测试 |
+| `ce3d6ef` | 导航隔离：`electron/navigation.ts` 纯函数 + `applyNavigationGuards`（will-navigate/setWindowOpenHandler/will-attach-webview）、YEYU_DEV_URL 校验、5 项规则单元测试 |
+| `6bea9a1` | Squirrel 元数据（productName/author/description/title/authors）+ `electron/squirrel.ts` 最早期处理 electron-squirrel-startup（仅 win32 延迟加载） |
+| `02f1e39` | Ubuntu DEB：maker-deb 配置（包名/可执行名 `yeyu`、菜单名「页语」、Education 类别、真实维护者/主页）、favicon.svg 矢量重绘的 8 尺寸 hicolor 图标、自定义 .desktop 模板（StartupWMClass=yeyu） |
+| `f2a32fb` | 冒烟增强：通过真实桥接创建课程并写 course.json，关闭重启后 `listCourses()` 恢复（编译产物与打包产物各验证一轮） |
+| （本次提交） | 文档更新：README 桌面版章节、本节记录、技术方案附记、根目录文档测试同步 |
+
+已验证（Linux）：第十三节 13.4 清单所列全部命令；`YEYU_SMOKE=1` 直接启动 `out/Yeyu-linux-x64/yeyu` 确认 preload 桥接、弹窗拒绝与课程生命周期；DEB 绝对路径 `demo/out/make/deb/x64/yeyu_0.1.0_amd64.deb`，`dpkg-deb -I` 元数据（Package: yeyu、Section: education、Maintainer、Homepage、Depends 自动补齐 libgtk-3-0 等）与内容清单（/usr/bin/yeyu 符号链接、/usr/share/applications/yeyu.desktop、hicolor 8 尺寸图标）核对无误。系统权限不允许免 sudo 安装 DEB，实机安装与 GNOME 菜单点击验收交由协调者执行。
+
+桌面架构补充说明：preload 构建管线在 `scripts/build-electron.mjs`（tsc + esbuild bundle），图标再生成命令为 `./node_modules/.bin/electron scripts/render-app-icons.cjs`（需图形会话）。

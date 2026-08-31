@@ -846,3 +846,16 @@ AI 生成 Markdown 应明确标记为可再生成成果。用户需要长期编�
 课程知识库扩展第一版只采用浏览器绑定本地课程文件夹的模式，并以课程目录中的结构化文件作为唯一可信业务数据。IndexedDB 退回到目录句柄、缓存和恢复辅助职责。`CourseStorage` 隔离文件权限与业务逻辑，为后续 Tauri、浏览器内部存储或云端方案预留实现位置，但当前不同时维护多套用户工作流。
 
 课程汇总以可追溯的 PDF 内部摘要和对话洞察为输入，不能连续压缩旧总结。课程总总结和总脑图是结构化课程知识库的派生成果；所有 AI 节点保留 PDF、页码或消息来源，用户笔记和人工节点不被自动覆盖。
+
+## 18. 附记：桌面容器落地为 Electron（2026-08-31 更新）
+
+本文件早期的桌面选型是 Tauri 2；实际实施课程知识库桌面端时改用 Electron（决策过程见 `HANDOFF.md` 第七、八节）：现有 UI 与业务逻辑全部是 TypeScript/React，`CourseStorage` 已经是明确的存储边界，主进程用 `node:fs/promises` 通过受限 IPC 暴露课程文件能力即可绕开浏览器的 `showDirectoryPicker()` 目录授权瓶颈。Tauri 方案保留在本文档中作为历史选型记录，不再指导桌面实施。
+
+已落地的桌面安全边界（详见 `HANDOFF.md` 第八、十四节）：
+
+- `sandbox: true`、`contextIsolation: true`、`nodeIntegration: false`；sandbox preload 及其依赖由 esbuild 打包成单个自包含 CommonJS 文件（sandbox preload 的 `require` 只能加载内置模块）。
+- 主窗口只加载本地回环上的只读静态产物服务器提供的唯一应用 origin；离开该 origin 的导航被拒绝，外部 http/https 链接经 `shell.openExternal` 在系统浏览器打开；`setWindowOpenHandler` 默认 deny；未知协议拒绝；`YEYU_DEV_URL` 仅在未打包时生效且只接受本机回环地址。
+- renderer 只能通过 `window.yeyuDesktop` 白名单 API 访问课程文件；课程目录名清洗、相对路径穿越/符号链接检查、"临时文件 → rename" 写入与 `CourseStorage` 语义保持一致。
+- 打包：Windows 使用 Squirrel（元数据与 electron-squirrel-startup 已配置，`.exe` 安装验收需 windows-latest runner）；Ubuntu 使用 Electron Forge 的 deb maker（包名/可执行名 `yeyu`，GNOME 菜单显示「页语」，Education 类别，hicolor 全尺寸图标）。
+- 桌面存储使用 `DesktopCourseStorage`（经 preload 桥接），浏览器 Demo 继续使用 `BrowserDirectoryStorage`；工作区固定为系统「文档/页语工作区」，首次启动幂等创建 `Courses/Cache/Settings`。
+- 真实 Electron 启动冒烟测试（`pnpm desktop:test`）验证 preload 桥接、`getWorkspaceInfo()`、弹窗拒绝，以及"通过桥接创建课程并写 course.json 后关闭重启仍能恢复"。
