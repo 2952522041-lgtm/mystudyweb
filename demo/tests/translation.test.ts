@@ -9,21 +9,30 @@ import {
   parseParagraphList,
   recommendedMaxOutputTokens,
   shouldAutoRetry,
+  splitTranslationChunks,
   translateWithRetry,
   translationCacheKey,
 } from '../lib/translation.ts';
 
 void test('cache keys change with language, provider, model, and prompt version', () => {
-  const base = { sourceHash: 'abc', targetLanguage: '简体中文', provider: 'p', model: 'm' };
-  assert.equal(translationCacheKey(base), 'abc:简体中文:p:m:v3');
+  const base = {
+    sourceHash: 'abc',
+    targetLanguage: '简体中文',
+    provider: 'p',
+    model: 'm',
+  };
+  assert.equal(translationCacheKey(base), 'abc:简体中文:p:m:v4');
   assert.notEqual(
     translationCacheKey(base),
     translationCacheKey({ ...base, targetLanguage: '日本語' }),
   );
-  assert.notEqual(translationCacheKey(base), translationCacheKey({ ...base, model: 'm2' }));
   assert.notEqual(
     translationCacheKey(base),
-    translationCacheKey({ ...base, promptVersion: 4 }),
+    translationCacheKey({ ...base, model: 'm2' }),
+  );
+  assert.notEqual(
+    translationCacheKey(base),
+    translationCacheKey({ ...base, promptVersion: 5 }),
   );
 });
 
@@ -56,7 +65,12 @@ void test('translateWithRetry retries transient failures and then succeeds', asy
       return { paragraphs: ['ok'], provider: 'test', model: 'test' };
     },
   };
-  const result = await translateWithRetry(provider, { text: 't', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 });
+  const result = await translateWithRetry(provider, {
+    text: 't',
+    sourceLanguage: 'auto',
+    targetLanguage: '简体中文',
+    pageNumber: 1,
+  });
   assert.deepEqual(result.paragraphs, ['ok']);
   assert.equal(calls, 3);
 });
@@ -72,30 +86,53 @@ void test('translateWithRetry does not retry deterministic failures', async () =
     },
   };
   await assert.rejects(
-    translateWithRetry(provider, { text: 't', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 }),
+    translateWithRetry(provider, {
+      text: 't',
+      sourceLanguage: 'auto',
+      targetLanguage: '简体中文',
+      pageNumber: 1,
+    }),
     /bad key/,
   );
   assert.equal(calls, 1);
 });
 
 /** Builds a fetch stub that answers with an SSE chat-completions stream. */
-function stubStreamFetch(content: string, chunksSize = 8) {
+function streamResponse(
+  content: string,
+  chunksSize = 8,
+  finishReason = 'stop',
+): Response {
+  const chunks =
+    content.match(new RegExp(`[\\s\\S]{1,${chunksSize}}`, 'g')) ?? [];
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        const data = JSON.stringify({
+          choices: [{ delta: { content: chunk } }],
+        });
+        controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+      }
+      const final = JSON.stringify({
+        choices: [{ delta: {}, finish_reason: finishReason }],
+      });
+      controller.enqueue(encoder.encode(`data: ${final}\n\ndata: [DONE]\n\n`));
+      controller.close();
+    },
+  });
+  return new Response(stream, { status: 200 });
+}
+
+function stubStreamFetch(
+  content: string,
+  chunksSize = 8,
+  finishReason = 'stop',
+) {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const fetchImpl = (async (url: string | URL, init: RequestInit = {}) => {
     calls.push({ url: String(url), init });
-    const chunks = content.match(new RegExp(`[\\s\\S]{1,${chunksSize}}`, 'g')) ?? [];
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      start(controller) {
-        for (const chunk of chunks) {
-          const data = JSON.stringify({ choices: [{ delta: { content: chunk } }] });
-          controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-        }
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
-      },
-    });
-    return new Response(stream, { status: 200 });
+    return streamResponse(content, chunksSize, finishReason);
   }) as typeof fetch;
   return { fetchImpl, calls };
 }
@@ -110,7 +147,9 @@ function stubStatusFetch(status: number, body: unknown) {
 }
 
 void test('openai-compatible provider streams paragraphs progressively', async () => {
-  const { fetchImpl, calls } = stubStreamFetch('第一段。\n\n第二段。\n\n第三段。');
+  const { fetchImpl, calls } = stubStreamFetch(
+    '第一段。\n\n第二段。\n\n第三段。',
+  );
   const provider = createOpenAICompatibleProvider({
     baseUrl: 'https://api.example.com/v1/',
     apiKey: 'sk-test',
@@ -120,7 +159,12 @@ void test('openai-compatible provider streams paragraphs progressively', async (
 
   const snapshots: string[][] = [];
   const result = await provider.translate(
-    { text: 'Hello.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 3 },
+    {
+      text: 'Hello.',
+      sourceLanguage: 'auto',
+      targetLanguage: '简体中文',
+      pageNumber: 3,
+    },
     { onPartial: (paragraphs) => snapshots.push([...paragraphs]) },
   );
 
@@ -128,7 +172,9 @@ void test('openai-compatible provider streams paragraphs progressively', async (
   assert.ok(snapshots.length >= 2, 'onPartial should fire while streaming');
   assert.deepEqual(snapshots.at(-1), result.paragraphs);
   for (let index = 1; index < snapshots.length; index += 1) {
-    const growth = snapshots[index].join('|').startsWith(snapshots[index - 1].join('|'));
+    const growth = snapshots[index]
+      .join('|')
+      .startsWith(snapshots[index - 1].join('|'));
     assert.equal(growth, true, 'partial paragraphs must only grow');
   }
 
@@ -147,6 +193,93 @@ void test('translation output limit scales with page length and stays bounded', 
   assert.equal(recommendedMaxOutputTokens('x'.repeat(20000)), 8192);
 });
 
+void test('dense pages are split into bounded translation chunks without losing text', () => {
+  const paragraphs = Array.from({ length: 8 }, (_, index) =>
+    `Paragraph ${index + 1}. ${'source text '.repeat(70)}`.trim(),
+  );
+  const source = paragraphs.join('\n\n');
+  const chunks = splitTranslationChunks(source, 1800);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => chunk.length <= 1800));
+  assert.equal(chunks.join('\n\n'), source);
+
+  const oversized = Array.from(
+    { length: 40 },
+    (_, index) => `Sentence ${index + 1} keeps its source words intact.`,
+  ).join(' ');
+  const sentenceChunks = splitTranslationChunks(oversized, 240);
+  assert.ok(sentenceChunks.length > 1);
+  assert.ok(sentenceChunks.every((chunk) => chunk.length <= 240));
+  assert.equal(sentenceChunks.join(' '), oversized);
+});
+
+void test('provider translates a dense page in multiple sequential requests', async () => {
+  const calls: Array<{ init: RequestInit }> = [];
+  const fetchImpl = (async (_url: string | URL, init: RequestInit = {}) => {
+    calls.push({ init });
+    return streamResponse(`译文分块 ${calls.length}。`);
+  }) as typeof fetch;
+  const provider = createOpenAICompatibleProvider({
+    baseUrl: 'https://api.example.com/v1',
+    apiKey: 'sk-test',
+    model: 'glm-test',
+    fetchImpl,
+  });
+  const source = Array.from({ length: 10 }, (_, index) =>
+    `Source paragraph ${index + 1}. ${'dense journal content '.repeat(35)}`.trim(),
+  ).join('\n\n');
+  const result = await provider.translate({
+    text: source,
+    sourceLanguage: 'auto',
+    targetLanguage: '简体中文',
+    pageNumber: 4,
+  });
+
+  assert.ok(calls.length >= 2);
+  assert.equal(result.paragraphs.length, calls.length);
+  for (const call of calls) {
+    const body = JSON.parse(call.init.body as string);
+    const userText = body.messages[1].content.split('\n---\n')[1];
+    assert.ok(userText.length <= 3000);
+    assert.match(body.messages[0].content, /Translate every sentence/);
+  }
+});
+
+void test('length-truncated output is discarded and retried as smaller chunks', async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    return calls === 1
+      ? streamResponse('这是一段残缺译文', 8, 'length')
+      : streamResponse(`完整译文 ${calls - 1}。`);
+  }) as typeof fetch;
+  const provider = createOpenAICompatibleProvider({
+    baseUrl: 'https://api.example.com/v1',
+    apiKey: 'sk-test',
+    model: 'glm-test',
+    fetchImpl,
+  });
+  const source = Array.from(
+    { length: 18 },
+    (_, index) =>
+      `Sentence ${index + 1} contains enough words to exercise retry splitting.`,
+  ).join(' ');
+  const result = await provider.translate({
+    text: source,
+    sourceLanguage: 'auto',
+    targetLanguage: '简体中文',
+    pageNumber: 4,
+  });
+
+  assert.ok(calls >= 3);
+  assert.equal(result.paragraphs.length, calls - 1);
+  assert.deepEqual(
+    result.paragraphs,
+    Array.from({ length: calls - 1 }, (_, index) => `完整译文 ${index + 1}。`),
+  );
+  assert.doesNotMatch(result.paragraphs.join(''), /残缺/);
+});
+
 void test('disableThinking adds the thinking-off flag to the request body', async () => {
   const { fetchImpl, calls } = stubStreamFetch('x');
   const provider = createOpenAICompatibleProvider({
@@ -156,7 +289,12 @@ void test('disableThinking adds the thinking-off flag to the request body', asyn
     disableThinking: true,
     fetchImpl,
   });
-  await provider.translate({ text: 'Hi.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 });
+  await provider.translate({
+    text: 'Hi.',
+    sourceLanguage: 'auto',
+    targetLanguage: '简体中文',
+    pageNumber: 1,
+  });
   const body = JSON.parse(calls[0].init.body as string);
   assert.deepEqual(body.thinking, { type: 'disabled' });
 
@@ -166,13 +304,20 @@ void test('disableThinking adds the thinking-off flag to the request body', asyn
     model: 'gpt-4o-mini',
     fetchImpl,
   });
-  await without.translate({ text: 'Hi.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 });
+  await without.translate({
+    text: 'Hi.',
+    sourceLanguage: 'auto',
+    targetLanguage: '简体中文',
+    pageNumber: 1,
+  });
   const body2 = JSON.parse(calls[1].init.body as string);
   assert.equal(body2.thinking, undefined);
 });
 
 void test('openai-compatible provider surfaces auth errors without retrying', async () => {
-  const { fetchImpl } = stubStatusFetch(401, { error: { message: '令牌已过期或验证不正确' } });
+  const { fetchImpl } = stubStatusFetch(401, {
+    error: { message: '令牌已过期或验证不正确' },
+  });
   const provider = createOpenAICompatibleProvider({
     baseUrl: 'https://api.example.com/v1',
     apiKey: 'sk-bad',
@@ -180,7 +325,12 @@ void test('openai-compatible provider surfaces auth errors without retrying', as
     fetchImpl,
   });
   await assert.rejects(
-    provider.translate({ text: 'Hello.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 }),
+    provider.translate({
+      text: 'Hello.',
+      sourceLanguage: 'auto',
+      targetLanguage: '简体中文',
+      pageNumber: 1,
+    }),
     (error: unknown) =>
       error instanceof TranslationError &&
       error.code === 'auth' &&
@@ -199,8 +349,14 @@ void test('openai-compatible provider reports network failures', async () => {
     fetchImpl,
   });
   await assert.rejects(
-    provider.translate({ text: 'Hello.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 }),
-    (error: unknown) => error instanceof TranslationError && error.code === 'network',
+    provider.translate({
+      text: 'Hello.',
+      sourceLanguage: 'auto',
+      targetLanguage: '简体中文',
+      pageNumber: 1,
+    }),
+    (error: unknown) =>
+      error instanceof TranslationError && error.code === 'network',
   );
 });
 
@@ -217,15 +373,17 @@ void test('mock provider mirrors the source paragraph count offline', async () =
 });
 
 void test('paragraph parsing handles blank-line text, JSON fallback, and lines', () => {
-  assert.deepEqual(
-    parseParagraphList('第一段。\n\n第二段。', 'src'),
-    ['第一段。', '第二段。'],
-  );
+  assert.deepEqual(parseParagraphList('第一段。\n\n第二段。', 'src'), [
+    '第一段。',
+    '第二段。',
+  ]);
   assert.deepEqual(
     parseParagraphList('{"paragraphs": ["来自 JSON。"]}', 'src'),
     ['来自 JSON。'],
   );
-  assert.deepEqual(parseParagraphList('第一行。\n第二行。', 'src'), ['第一行。\n第二行。']);
+  assert.deepEqual(parseParagraphList('第一行。\n第二行。', 'src'), [
+    '第一行。\n第二行。',
+  ]);
   assert.deepEqual(
     parseParagraphList('``` translation\n第一段。\n\n第二段。\n```', 'src'),
     ['第一段。', '第二段。'],

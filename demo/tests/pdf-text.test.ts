@@ -10,21 +10,27 @@ import {
   splitIntoColumns,
 } from '../lib/pdf-text.ts';
 
-function item(str: string, x: number, y: number, width = str.length * 5, height = 10) {
+function item(
+  str: string,
+  x: number,
+  y: number,
+  width = str.length * 5,
+  height = 10,
+) {
   return { str, x, y, width, height };
 }
 
 void test('pages with little or no text are detected as non-extractable', () => {
   assert.equal(pageHasText([]), false);
   assert.equal(pageHasText([item('img', 0, 0)]), false);
-  assert.equal(pageHasText([item('The quick brown fox jumps over the lazy dog.', 0, 0)]), true);
+  assert.equal(
+    pageHasText([item('The quick brown fox jumps over the lazy dog.', 0, 0)]),
+    true,
+  );
 });
 
 void test('items on the same baseline merge into one line ordered left to right', () => {
-  const lines = groupLines([
-    item('world', 50, 100),
-    item('Hello', 0, 100),
-  ]);
+  const lines = groupLines([item('world', 50, 100), item('Hello', 0, 100)]);
   assert.equal(lines.length, 1);
   assert.equal(lines[0].text, 'Hello world');
 });
@@ -39,7 +45,8 @@ void test('words with a visual gap get a space, tight fragments do not', () => {
 });
 
 void test('normalizePage rebuilds paragraphs from gaps and sentence ends', () => {
-  const line = (text: string, y: number, x = 0, width = 200) => item(text, x, y, width);
+  const line = (text: string, y: number, x = 0, width = 200) =>
+    item(text, x, y, width);
   const page = normalizePage([
     line('Learning is a continuous process that happens in small moments.', 0),
     line('and grows through attention and comparison over time.', 14),
@@ -56,7 +63,10 @@ void test('normalizePage rejoins hyphenated words across line breaks', () => {
     item('The reader continues the transla-', 0, 0, 200),
     item('tion without interruption.', 0, 14, 200),
   ]);
-  assert.equal(page.paragraphs[0], 'The reader continues the translation without interruption.');
+  assert.equal(
+    page.paragraphs[0],
+    'The reader continues the translation without interruption.',
+  );
 });
 
 void test('normalizePage keeps CJK text joined without inserted spaces', () => {
@@ -81,14 +91,66 @@ void test('two-column pages are read left column first, then right column', () =
   assert.ok(page.text.startsWith('left body text'));
 });
 
+void test('dense journal columns with a narrow gutter are not interleaved', () => {
+  const items = [
+    item('214', 51, 10, 14),
+    item('Journal Name (2023) 47:211–228', 390, 10, 154),
+    item('left line one.', 51, 80, 238),
+    item('right line one.', 306, 80, 238),
+    item('left line two.', 51, 94, 238),
+    item('right line two.', 306, 94, 238),
+    item('left line three.', 51, 108, 238),
+    item('right line three.', 306, 108, 238),
+    item('123', 292, 760, 14),
+  ];
+
+  const columns = splitIntoColumns(items);
+  assert.equal(columns.length, 2);
+  const page = normalizePage(items);
+  assert.equal(
+    page.text,
+    'left line one. left line two. left line three.\n\nright line one. right line two. right line three.',
+  );
+  assert.doesNotMatch(page.text, /214|Journal Name|123/);
+});
+
+void test('full-width title blocks stay before two-column body text', () => {
+  const items = [
+    item('A full-width paper title', 51, 30, 493),
+    item('Abstract line spanning both columns.', 51, 50, 493),
+    item('left body one.', 51, 100, 238),
+    item('right body one.', 306, 100, 238),
+    item('left body two.', 51, 114, 238),
+    item('right body two.', 306, 114, 238),
+    item('left body three.', 51, 128, 238),
+    item('right body three.', 306, 128, 238),
+  ];
+
+  const page = normalizePage(items);
+  assert.ok(
+    page.text.indexOf('A full-width paper title') <
+      page.text.indexOf('left body one.'),
+  );
+  assert.ok(
+    page.text.indexOf('left body three.') <
+      page.text.indexOf('right body one.'),
+  );
+});
+
 void test('single-column pages are not split by splitIntoColumns', () => {
-  const items = [item('full width line one', 0, 0, 160), item('full width line two', 0, 14, 160)];
+  const items = [
+    item('full width line one', 0, 0, 160),
+    item('full width line two', 0, 14, 160),
+  ];
   assert.equal(splitIntoColumns(items).length, 1);
 });
 
 void test('sha256Hex produces a stable hex digest for strings and buffers', async () => {
   const fromString = await sha256Hex('hello');
-  assert.equal(fromString, '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
+  assert.equal(
+    fromString,
+    '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',
+  );
   const fromBuffer = await sha256Hex(new TextEncoder().encode('hello').buffer);
   assert.equal(fromBuffer, fromString);
 });
@@ -96,13 +158,26 @@ void test('sha256Hex produces a stable hex digest for strings and buffers', asyn
 void test('itemsFromPdfJs flips PDF coordinates to top-origin and drops blanks', () => {
   const items = itemsFromPdfJs(
     [
-      { str: 'second', transform: [10, 0, 0, 10, 0, 700], width: 40, height: 10 },
-      { str: 'first', transform: [10, 0, 0, 10, 0, 712], width: 30, height: 10 },
+      {
+        str: 'second',
+        transform: [10, 0, 0, 10, 0, 700],
+        width: 40,
+        height: 10,
+      },
+      {
+        str: 'first',
+        transform: [10, 0, 0, 10, 0, 712],
+        width: 30,
+        height: 10,
+      },
       { str: '   ', transform: [10, 0, 0, 10, 0, 690], width: 10, height: 10 },
     ],
     792,
   );
   assert.equal(items.length, 2);
-  assert.ok(items[0].y < items[1].y, 'text near the page top should have a smaller y');
+  assert.ok(
+    items[0].y < items[1].y,
+    'text near the page top should have a smaller y',
+  );
   assert.equal(items[0].str, 'first');
 });

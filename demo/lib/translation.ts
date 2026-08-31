@@ -35,8 +35,10 @@ export class TranslationError extends Error {
   }
 }
 
-export const PROMPT_VERSION = 3;
+export const PROMPT_VERSION = 4;
 export const MAX_AUTO_RETRIES = 2;
+export const MAX_TRANSLATION_CHUNK_CHARACTERS = 3000;
+const MAX_TRUNCATION_SPLITS = 3;
 
 export interface TranslateOptions {
   signal?: AbortSignal;
@@ -47,7 +49,10 @@ export interface TranslateOptions {
 export interface TranslationProvider {
   id: string;
   model: string;
-  translate(request: TranslationRequest, options?: TranslateOptions): Promise<TranslationResult>;
+  translate(
+    request: TranslationRequest,
+    options?: TranslateOptions,
+  ): Promise<TranslationResult>;
 }
 
 export interface TranslationCacheKeyParts {
@@ -78,7 +83,10 @@ export function classifyHttpError(status: number): TranslationErrorCode {
 }
 
 /** Only transient failures are retried automatically, at most twice. */
-export function shouldAutoRetry(code: TranslationErrorCode, completedAttempts: number): boolean {
+export function shouldAutoRetry(
+  code: TranslationErrorCode,
+  completedAttempts: number,
+): boolean {
   if (completedAttempts >= MAX_AUTO_RETRIES) return false;
   return code === 'network' || code === 'rate_limit' || code === 'server';
 }
@@ -120,7 +128,8 @@ const SYSTEM_PROMPT = [
   'You are a professional document translator.',
   'Translate the user text directly into the requested target language without analysis.',
   'Rules:',
-  '- Output only the translation, no summaries or explanations.',
+  '- Translate every sentence. Never omit, shorten, merge away, or summarize any source content.',
+  '- Output only the complete translation, no summaries or explanations.',
   '- Keep the paragraph order and paragraph count.',
   '- Separate paragraphs with one blank line.',
   '- Preserve formulas, code, citation numbers, and proper nouns.',
@@ -130,6 +139,55 @@ const SYSTEM_PROMPT = [
 /** Keeps one-page translations bounded without truncating normal dense pages. */
 export function recommendedMaxOutputTokens(text: string): number {
   return Math.min(Math.max(Math.ceil(text.length * 1.2), 1024), 8192);
+}
+
+function splitOversizedPart(part: string, maxCharacters: number): string[] {
+  const pieces: string[] = [];
+  let remaining = part.trim();
+  while (remaining.length > maxCharacters) {
+    const window = remaining.slice(0, maxCharacters + 1);
+    const minimumCut = Math.floor(maxCharacters * 0.55);
+    let cut = -1;
+    for (const match of window.matchAll(/[.!?。！？](?:["'”’\])}]*)?\s+/gu)) {
+      const candidate = (match.index ?? 0) + match[0].length;
+      if (candidate >= minimumCut) cut = candidate;
+    }
+    if (cut < minimumCut) cut = window.lastIndexOf(' ', maxCharacters);
+    if (cut < minimumCut) cut = maxCharacters;
+    pieces.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
+  }
+  if (remaining.length > 0) pieces.push(remaining);
+  return pieces;
+}
+
+/**
+ * Keeps dense journal pages below provider output limits. Paragraphs remain
+ * intact when possible; only a single oversized paragraph is split at a
+ * sentence or word boundary.
+ */
+export function splitTranslationChunks(
+  text: string,
+  maxCharacters = MAX_TRANSLATION_CHUNK_CHARACTERS,
+): string[] {
+  if (maxCharacters < 1) throw new RangeError('maxCharacters must be positive');
+  const parts = text
+    .split(/\n{2,}/)
+    .flatMap((part) => splitOversizedPart(part, maxCharacters))
+    .filter((part) => part.length > 0);
+  const chunks: string[] = [];
+  let current = '';
+  for (const part of parts) {
+    const candidate = current.length === 0 ? part : `${current}\n\n${part}`;
+    if (candidate.length <= maxCharacters) {
+      current = candidate;
+      continue;
+    }
+    if (current.length > 0) chunks.push(current);
+    current = part;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
 }
 
 export interface OpenAICompatibleConfig {
@@ -142,10 +200,12 @@ export interface OpenAICompatibleConfig {
 }
 
 /**
- * Adapter for any OpenAI-compatible chat completions endpoint. The prompt
- * asks for a JSON array so paragraphs stay separable for display and copy.
+ * Adapter for any OpenAI-compatible chat completions endpoint. Dense pages
+ * are translated in bounded chunks and combined only after every chunk ends.
  */
-export function createOpenAICompatibleProvider(config: OpenAICompatibleConfig): TranslationProvider {
+export function createOpenAICompatibleProvider(
+  config: OpenAICompatibleConfig,
+): TranslationProvider {
   const doFetch = config.fetchImpl ?? fetch;
   return {
     id: 'openai-compatible',
@@ -155,56 +215,65 @@ export function createOpenAICompatibleProvider(config: OpenAICompatibleConfig): 
         throw new TranslationError('empty_text', '当前页没有可提取的文字。');
       }
 
-      let response: Response;
-      try {
-        response = await doFetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-          method: 'POST',
-          signal: options?.signal,
-          headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${config.apiKey}`,
+      const completedParagraphs: string[] = [];
+      const pending = splitTranslationChunks(request.text).map((text) => ({
+        text,
+        splitDepth: 0,
+      }));
+      for (let index = 0; index < pending.length;) {
+        const chunk = pending[index];
+        const completion = await requestTranslationChunk(
+          doFetch,
+          config,
+          request,
+          chunk.text,
+          options?.signal,
+          (content) => {
+            if (!options?.onPartial) return;
+            options.onPartial([
+              ...completedParagraphs,
+              ...splitStreamParagraphs(content),
+            ]);
           },
-          body: JSON.stringify({
-            model: config.model,
-            temperature: 0.1,
-            stream: true,
-            max_tokens: recommendedMaxOutputTokens(request.text),
-            ...(config.disableThinking ? { thinking: { type: 'disabled' } } : {}),
-            messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              {
-                role: 'user',
-                content: [
-                  `Source language: ${request.sourceLanguage}`,
-                  `Target language: ${request.targetLanguage}`,
-                  `Page number: ${request.pageNumber}`,
-                  '---',
-                  request.text,
-                ].join('\n'),
-              },
-            ],
-          }),
-        });
-      } catch (error) {
-        if (options?.signal?.aborted) throw error;
-        throw new TranslationError('network', '网络不可用或请求超时。', undefined);
-      }
-
-      if (!response.ok) {
-        const detail = await extractErrorDetail(response);
-        throw new TranslationError(
-          classifyHttpError(response.status),
-          detail ? `翻译服务返回 ${response.status}：${detail}` : `翻译服务返回 ${response.status}。`,
-          response.status,
         );
-      }
-
-      const content = await readStreamingContent(response, options);
-      if (content.length === 0) {
-        throw new TranslationError('server', '翻译服务未返回译文内容。');
+        if (completion.finishReason === 'length') {
+          if (chunk.splitDepth >= MAX_TRUNCATION_SPLITS) {
+            throw new TranslationError(
+              'invalid_input',
+              '翻译输出多次达到上限，已停止并且不会缓存残缺译文。',
+            );
+          }
+          const smaller = splitTranslationChunks(
+            chunk.text,
+            Math.max(400, Math.floor(chunk.text.length / 2)),
+          );
+          if (smaller.length < 2) {
+            throw new TranslationError(
+              'invalid_input',
+              '翻译输出达到上限，已停止并且不会缓存残缺译文。',
+            );
+          }
+          pending.splice(
+            index,
+            1,
+            ...smaller.map((text) => ({
+              text,
+              splitDepth: chunk.splitDepth + 1,
+            })),
+          );
+          continue;
+        }
+        if (completion.content.length === 0) {
+          throw new TranslationError('server', '翻译服务未返回译文内容。');
+        }
+        completedParagraphs.push(
+          ...parseParagraphList(completion.content, chunk.text),
+        );
+        options?.onPartial?.([...completedParagraphs]);
+        index += 1;
       }
       return {
-        paragraphs: parseParagraphList(content, request.text),
+        paragraphs: completedParagraphs,
         provider: 'openai-compatible',
         model: config.model,
       };
@@ -212,27 +281,111 @@ export function createOpenAICompatibleProvider(config: OpenAICompatibleConfig): 
   };
 }
 
-/** Reads an SSE chat-completions stream, reporting paragraphs as they arrive. */
-async function readStreamingContent(response: Response, options?: TranslateOptions): Promise<string> {
+interface CompletionResult {
+  content: string;
+  finishReason?: string;
+}
+
+async function requestTranslationChunk(
+  doFetch: typeof fetch,
+  config: OpenAICompatibleConfig,
+  request: TranslationRequest,
+  text: string,
+  signal: AbortSignal | undefined,
+  onPartial: ((content: string) => void) | undefined,
+): Promise<CompletionResult> {
+  let response: Response;
+  try {
+    response = await doFetch(
+      `${config.baseUrl.replace(/\/$/, '')}/chat/completions`,
+      {
+        method: 'POST',
+        signal,
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: config.model,
+          temperature: 0.1,
+          stream: true,
+          max_tokens: recommendedMaxOutputTokens(text),
+          ...(config.disableThinking ? { thinking: { type: 'disabled' } } : {}),
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            {
+              role: 'user',
+              content: [
+                `Source language: ${request.sourceLanguage}`,
+                `Target language: ${request.targetLanguage}`,
+                `Page number: ${request.pageNumber}`,
+                '---',
+                text,
+              ].join('\n'),
+            },
+          ],
+        }),
+      },
+    );
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new TranslationError('network', '网络不可用或请求超时。', undefined);
+  }
+
+  if (!response.ok) {
+    const detail = await extractErrorDetail(response);
+    throw new TranslationError(
+      classifyHttpError(response.status),
+      detail
+        ? `翻译服务返回 ${response.status}：${detail}`
+        : `翻译服务返回 ${response.status}。`,
+      response.status,
+    );
+  }
+  return readStreamingCompletion(response, onPartial);
+}
+
+/** Reads an SSE chat-completions stream and retains its completion reason. */
+async function readStreamingCompletion(
+  response: Response,
+  onPartial?: (content: string) => void,
+): Promise<CompletionResult> {
   const body = response.body;
   if (!body) {
     const payload = await response.json();
-    return extractChoiceContent(payload);
+    return extractChoice(payload);
   }
 
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let content = '';
+  let finishReason: string | undefined;
   let reported = '';
 
   const report = () => {
-    if (!options?.onPartial) return;
-    const paragraphs = splitStreamParagraphs(content);
-    const joined = paragraphs.join('\n\n');
-    if (joined !== reported) {
-      reported = joined;
-      options.onPartial(paragraphs);
+    if (!onPartial || content === reported) return;
+    reported = content;
+    onPartial(content);
+  };
+  const consumeLine = (rawLine: string) => {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) return;
+    const data = line.slice(5).trim();
+    if (data === '[DONE]' || data.length === 0) return;
+    try {
+      const chunk = JSON.parse(data) as {
+        choices?: Array<{
+          delta?: { content?: string };
+          finish_reason?: string | null;
+        }>;
+      };
+      const choice = chunk.choices?.[0];
+      content += choice?.delta?.content ?? '';
+      if (typeof choice?.finish_reason === 'string')
+        finishReason = choice.finish_reason;
+    } catch {
+      // Ignore malformed events; complete SSE events are newline delimited.
     }
   };
 
@@ -243,31 +396,38 @@ async function readStreamingContent(response: Response, options?: TranslateOptio
 
     let boundary = buffer.indexOf('\n');
     while (boundary !== -1) {
-      const line = buffer.slice(0, boundary).trim();
+      const line = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 1);
       boundary = buffer.indexOf('\n');
-      if (!line.startsWith('data:')) continue;
-      const data = line.slice(5).trim();
-      if (data === '[DONE]') continue;
-      try {
-        const chunk = JSON.parse(data) as {
-          choices?: Array<{ delta?: { content?: string } }>;
-        };
-        content += chunk.choices?.[0]?.delta?.content ?? '';
-      } catch {
-        // partial JSON line; the next chunk completes it
-      }
+      consumeLine(line);
     }
     report();
   }
+  buffer += decoder.decode();
+  if (buffer.trim().length > 0) consumeLine(buffer);
   report();
-  return content;
+  return { content, finishReason };
 }
 
-function extractChoiceContent(payload: unknown): string {
-  const content = (payload as { choices?: Array<{ message?: { content?: string } }> })
-    ?.choices?.[0]?.message?.content;
-  return typeof content === 'string' ? content : '';
+function extractChoice(payload: unknown): CompletionResult {
+  const choice = (
+    payload as {
+      choices?: Array<{
+        message?: { content?: string };
+        finish_reason?: string | null;
+      }>;
+    }
+  )?.choices?.[0];
+  return {
+    content:
+      typeof choice?.message?.content === 'string'
+        ? choice.message.content
+        : '',
+    finishReason:
+      typeof choice?.finish_reason === 'string'
+        ? choice.finish_reason
+        : undefined,
+  };
 }
 
 /** Same paragraph rule as the final parse, safe to run mid-stream. */
@@ -309,7 +469,10 @@ async function extractErrorDetail(response: Response): Promise<string> {
  * blank-line-separated plain text (streaming friendly); JSON arrays from
  * older prompts or chatty models are still recognized as a fallback.
  */
-export function parseParagraphList(content: string, sourceText: string): string[] {
+export function parseParagraphList(
+  content: string,
+  sourceText: string,
+): string[] {
   const cleaned = stripCodeFences(content.trim());
 
   const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
@@ -318,7 +481,9 @@ export function parseParagraphList(content: string, sourceText: string): string[
       const parsed = JSON.parse(jsonMatch[0]) as { paragraphs?: unknown };
       if (Array.isArray(parsed.paragraphs)) {
         const paragraphs = parsed.paragraphs
-          .filter((paragraph): paragraph is string => typeof paragraph === 'string')
+          .filter(
+            (paragraph): paragraph is string => typeof paragraph === 'string',
+          )
           .map((paragraph) => paragraph.trim())
           .filter((paragraph) => paragraph.length > 0);
         if (paragraphs.length > 0) return paragraphs;
@@ -351,7 +516,9 @@ export function createMockTranslationProvider(): TranslationProvider {
     id: 'mock',
     model: 'demo',
     async translate(request) {
-      const sourceParagraphs = request.text.split(/\n{2,}/).filter((part) => part.trim().length > 0);
+      const sourceParagraphs = request.text
+        .split(/\n{2,}/)
+        .filter((part) => part.trim().length > 0);
       return {
         paragraphs: sourceParagraphs.map(
           (paragraph, index) =>
