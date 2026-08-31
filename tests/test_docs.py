@@ -189,5 +189,20 @@ class HandoffDocumentTest(unittest.TestCase):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, content)
 
+    def test_handoff_records_desktop_runtime_blockers(self) -> None:
+        content = HANDOFF.read_text(encoding="utf-8")
+
+        for requirement in (
+            "## 十三、Windows 机器接手前的 Codex 复核结论（必须先处理）",
+            "Error: module not found: ./api.js",
+            "把 `preload.ts` 及 `api.ts` 打包成单个 CommonJS `preload.js`",
+            "Windows Squirrel 安装器缺少必填元数据",
+            "setWindowOpenHandler",
+            "外部导航隔离：尚未实现",
+            "不要关闭 Electron sandbox",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, content)
+
 if __name__ == "__main__":
     unittest.main()
