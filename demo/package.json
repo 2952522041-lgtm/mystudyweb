@@ -1,6 +1,9 @@
 {
   "name": "sites-project",
+  "productName": "页语",
   "version": "0.1.0",
+  "description": "本地课程知识库、PDF 随页翻译与 AI 答疑阅读器",
+  "author": "余思诚 <2952522041@qq.com>",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -29,6 +32,7 @@
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
     "date-fns": "4.1.0",
+    "electron-squirrel-startup": "^1.0.1",
     "embla-carousel-react": "8.5.2",
     "input-otp": "1.4.2",
     "katex": "^0.18.4",

@@ -20,6 +20,7 @@ import {
   scanCourses,
   writeCourseFile,
 } from '../electron/workspace.ts';
+import { handleSquirrelStartup } from '../electron/squirrel.ts';
 
 function temporaryDirectory(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'yeyu-workspace-'));
@@ -326,6 +327,46 @@ void test('electron main and preload keep the secure process boundary', async ()
   assert.doesNotMatch(main, /https:\/\//);
   assert.match(preload, /contextBridge\.exposeInMainWorld\('yeyuDesktop', api\)/);
   assert.doesNotMatch(preload, /ipcRenderer\.send|nodeIntegration/);
+});
+
+void test('squirrel startup is a no-op off Windows and wired early in main', async () => {
+  assert.equal(handleSquirrelStartup('linux'), false);
+  assert.equal(handleSquirrelStartup('darwin'), false);
+  // win32 分支会 require('electron-squirrel-startup')（其内部 require('electron')），
+  // 单元测试不触发真实加载；主进程接线用结构断言覆盖。
+  const main = await readFile(
+    new URL('../electron/main.ts', import.meta.url),
+    'utf8',
+  );
+  const wiringIndex = main.indexOf('handleSquirrelStartup()');
+  const firstWindowUse = main.indexOf('app.disableHardwareAcceleration()');
+  assert.ok(wiringIndex >= 0, 'main.ts 应在最早期处理 Squirrel 事件。');
+  assert.ok(
+    wiringIndex < firstWindowUse,
+    'Squirrel 处理必须先于窗口/加速设置。',
+  );
+});
+
+void test('windows squirrel metadata is complete', async () => {
+  const [packageJson, forgeConfig] = await Promise.all([
+    readFile(new URL('../package.json', import.meta.url), 'utf8'),
+    readFile(new URL('../forge.config.cjs', import.meta.url), 'utf8'),
+  ]);
+  const pkg = JSON.parse(packageJson) as {
+    productName?: string;
+    description?: string;
+    author?: string;
+  };
+
+  assert.equal(pkg.productName, '页语');
+  assert.ok(pkg.description, 'package.json 需要真实 description。');
+  assert.ok(pkg.author, 'package.json 需要真实 author。');
+
+  // electron-winstaller 的 NuGet manifest 必需项（HANDOFF 13.2）。
+  assert.match(forgeConfig, /title: '页语'/);
+  assert.match(forgeConfig, /authors: '余思诚'/);
+  assert.match(forgeConfig, /description: '本地课程知识库、PDF 随页翻译与 AI 答疑阅读器'/);
+  assert.match(forgeConfig, /name: 'yeyu'/);
 });
 
 void test('packaging wires main, preload and the static client bundle', async () => {

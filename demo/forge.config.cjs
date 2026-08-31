@@ -30,7 +30,15 @@ module.exports = {
     {
       name: '@electron-forge/maker-squirrel',
       platforms: ['win32'],
-      config: { name: 'yeyu' },
+      // electron-winstaller（Squirrel.Windows）的 NuGet manifest 必须有
+      // authors 与 description；name 是 nupkg 包 ID（ASCII），title 是
+      // 面向用户的显示名。
+      config: {
+        name: 'yeyu',
+        title: '页语',
+        authors: '余思诚',
+        description: '本地课程知识库、PDF 随页翻译与 AI 答疑阅读器',
+      },
     },
     {
       name: '@electron-forge/maker-zip',

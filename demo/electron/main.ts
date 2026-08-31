@@ -23,6 +23,12 @@ import {
 } from './workspace-paths.ts';
 import { externalHttpUrl, isAppOrigin, resolveDevTargetUrl } from './navigation.ts';
 import { isSmokeRun, probePreloadBridge } from './smoke.ts';
+import { handleSquirrelStartup } from './squirrel.ts';
+
+// Windows Squirrel 安装/更新/卸载事件必须在最早期处理（HANDOFF 13.2）。
+if (handleSquirrelStartup()) {
+  app.quit();
+}
 
 // 冒烟测试在无 GPU/显示器的环境下也要能启动，禁用硬件加速只影响该模式。
 if (isSmokeRun()) {
