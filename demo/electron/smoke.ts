@@ -12,6 +12,8 @@ export interface SmokeProbeResult {
   api: boolean;
   methods?: string[];
   workspace?: WorkspaceInfo;
+  /** setWindowOpenHandler 运行时确实拒绝弹窗时为 true。 */
+  popupDenied?: boolean;
   error?: string;
 }
 
@@ -34,8 +36,11 @@ export async function probePreloadBridge(
         const api = window.yeyuDesktop;
         if (!api) return { api: false, error: 'window.yeyuDesktop 不存在' };
         try {
+          // setWindowOpenHandler 默认 deny：被拒绝的 window.open 返回 null。
+          const popup = window.open('about:blank');
           return {
             api: true,
+            popupDenied: popup === null,
             methods: Object.keys(api).sort(),
             workspace: await api.getWorkspaceInfo(),
           };

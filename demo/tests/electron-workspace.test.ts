@@ -316,6 +316,10 @@ void test('electron main and preload keep the secure process boundary', async ()
     'nodeIntegration: false',
     'sandbox: true',
     "server.listen(0, '127.0.0.1'",
+    'applyNavigationGuards(window)',
+    'setWindowOpenHandler',
+    'will-navigate',
+    'resolveDevTargetUrl(process.env.YEYU_DEV_URL, app.isPackaged)',
   ]) {
     assert.match(main, new RegExp(requirement.replaceAll('(', '\\(').replaceAll(')', '\\)')));
   }

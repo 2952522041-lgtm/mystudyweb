@@ -90,6 +90,7 @@ interface SmokeProbePayload {
   api: boolean;
   methods?: string[];
   workspace?: { root: string; coursesRoot: string };
+  popupDenied?: boolean;
   error?: string;
 }
 
@@ -122,6 +123,11 @@ async function assertDesktopBridgeLaunch(
       `preload 桥接不可用：${result.error ?? '未知原因'}\nstderr:\n${stderr}`,
     );
     assert.deepEqual(result.methods, EXPECTED_METHODS);
+    assert.equal(
+      result.popupDenied,
+      true,
+      'window.open 应被 setWindowOpenHandler 拒绝（返回 null）。',
+    );
     assert.ok(result.workspace, 'getWorkspaceInfo() 没有返回工作区信息。');
     assert.equal(result.workspace.root, workspaceRoot);
     assert.equal(

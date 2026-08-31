@@ -21,11 +21,47 @@ import {
   WorkspacePathError,
   type WorkspaceLayout,
 } from './workspace-paths.ts';
+import { externalHttpUrl, isAppOrigin, resolveDevTargetUrl } from './navigation.ts';
 import { isSmokeRun, probePreloadBridge } from './smoke.ts';
 
 // 冒烟测试在无 GPU/显示器的环境下也要能启动，禁用硬件加速只影响该模式。
 if (isSmokeRun()) {
   app.disableHardwareAcceleration();
+}
+
+/**
+ * 本地静态服务器（或开发服务器）启动后得到的唯一应用 origin；
+ * 主窗口的所有导航检查都以它为准。
+ */
+let appOrigin = '';
+
+/** 外部 http/https 交给系统浏览器；其他协议保持拒绝。 */
+function openExternalIfHttp(url: string): void {
+  const external = externalHttpUrl(url);
+  if (external) {
+    shell.openExternal(external).catch(() => undefined);
+  }
+}
+
+/**
+ * 导航隔离（HANDOFF 13.3）：主窗口永远停在应用 origin 上，preload 暴露的
+ * 文件桥接不会泄露给其他页面；外部链接在系统浏览器打开；弹窗默认拒绝。
+ */
+function applyNavigationGuards(window: BrowserWindow): void {
+  window.webContents.on('will-navigate', (event, url) => {
+    if (isAppOrigin(url, appOrigin)) return;
+    event.preventDefault();
+    openExternalIfHttp(url);
+  });
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (!isAppOrigin(url, appOrigin)) {
+      openExternalIfHttp(url);
+    }
+    return { action: 'deny' };
+  });
+  window.webContents.on('will-attach-webview', (event) => {
+    event.preventDefault();
+  });
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -211,9 +247,14 @@ function registerDesktopIpc(layout: WorkspaceLayout): void {
 }
 
 async function createWindow(): Promise<BrowserWindow> {
-  // YEYU_DEV_URL 只指向本机开发服务器；产品代码没有任何线上地址。
-  const devUrl = process.env.YEYU_DEV_URL?.trim();
-  const target = devUrl || (await startStaticServer(staticClientDirectory()));
+  // YEYU_DEV_URL 只指向本机开发服务器且仅在未打包时生效；产品代码没有任何线上地址。
+  const devDecision = resolveDevTargetUrl(process.env.YEYU_DEV_URL, app.isPackaged);
+  if (devDecision.warning) {
+    console.warn(`[页语] ${devDecision.warning}`);
+  }
+  const target =
+    devDecision.url ?? (await startStaticServer(staticClientDirectory()));
+  appOrigin = new URL(target).origin;
   const window = new BrowserWindow({
     width: 1360,
     height: 900,
@@ -227,6 +268,7 @@ async function createWindow(): Promise<BrowserWindow> {
       sandbox: true,
     },
   });
+  applyNavigationGuards(window);
   if (!isSmokeRun()) {
     window.once('ready-to-show', () => window.show());
   }
@@ -234,27 +276,32 @@ async function createWindow(): Promise<BrowserWindow> {
   return window;
 }
 
-void app.whenReady().then(async () => {
-  const layout = resolveWorkspaceLayout(
-    app.getPath('documents'),
-    process.env.YEYU_WORKSPACE_ROOT,
-  );
-  await ensureWorkspace(layout);
-  registerDesktopIpc(layout);
-  const window = await createWindow();
-  if (isSmokeRun()) {
-    // YEYU_SMOKE=1：探测完 preload 桥接后立即退出，供自动化冒烟测试断言。
-    const result = await probePreloadBridge(window);
-    process.exitCode = result.api ? 0 : 1;
-    app.quit();
-    return;
-  }
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      void createWindow();
+void app.whenReady()
+  .then(async () => {
+    const layout = resolveWorkspaceLayout(
+      app.getPath('documents'),
+      process.env.YEYU_WORKSPACE_ROOT,
+    );
+    await ensureWorkspace(layout);
+    registerDesktopIpc(layout);
+    const window = await createWindow();
+    if (isSmokeRun()) {
+      // YEYU_SMOKE=1：探测完 preload 桥接后立即退出，供自动化冒烟测试断言。
+      const result = await probePreloadBridge(window);
+      process.exitCode = result.api ? 0 : 1;
+      app.quit();
+      return;
     }
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        void createWindow();
+      }
+    });
+  })
+  .catch((error: unknown) => {
+    console.error('[页语] 启动失败：', error);
+    app.exit(1);
   });
-});
 
 app.on('window-all-closed', () => {
   app.quit();
