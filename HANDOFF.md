@@ -398,6 +398,7 @@ Windows 安装包必须由 Windows runner 验证，Linux 上“配置能解析�
   - `feat: complete Windows Squirrel installer metadata and lifecycle`（13.2 前半）
   - `fix: make vinext-based builds run on Windows`（pnpm pages/desktop:build 的 Windows 兼容）
   - `fix: ship electron-squirrel-startup as a production dependency`（13.2 收尾，安装版启动崩溃修复）
+  - `feat: add desktop-only course deletion via recycle bin`（v0.1.1：桌面端新增“删除课程”，整目录移入回收站，仅桌面模式提供）
   - HANDOFF 更新：13.1–13.5 记录修复与实测结论
 
 ## 十三、Windows 机器接手前的 Codex 复核结论（已于 2026-08-31 全部修复）
