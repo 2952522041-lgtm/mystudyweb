@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=<%= productName %>
+StartupWMClass=<%= name %>
+<% if (description) { %>Comment=<%= description %>
+<% } %><% if (genericName) { %>GenericName=<%= genericName %>
+<% } %><% if (name) { %>Exec=<%= name %> %U
+Icon=<%= name %>
+<% } %>Type=Application
+Terminal=false
+StartupNotify=true
+<% if (categories && categories.length) { %>Categories=<%= categories.join(';') %>;
+<% } %><% if (mimeType && mimeType.length) { %>MimeType=<%= mimeType.join(';') %>;
+<% } %>

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { createRequire } from 'node:module';
 
 import {
   assertSafeRelativeSegments,
@@ -367,6 +368,52 @@ void test('windows squirrel metadata is complete', async () => {
   assert.match(forgeConfig, /authors: '余思诚'/);
   assert.match(forgeConfig, /description: '本地课程知识库、PDF 随页翻译与 AI 答疑阅读器'/);
   assert.match(forgeConfig, /name: 'yeyu'/);
+});
+
+void test('debian maker is configured for the Ubuntu install', async () => {
+  const require = createRequire(import.meta.url);
+  const forgeConfig = require('../forge.config.cjs') as {
+    packagerConfig: { ignore: RegExp[] };
+    makers: Array<{ name: string; config: { options?: Record<string, unknown> } }>;
+  };
+
+  const deb = forgeConfig.makers.find(
+    (maker) => maker.name === '@electron-forge/maker-deb',
+  );
+  assert.ok(deb, '必须配置 @electron-forge/maker-deb。');
+  const options = deb.config.options ?? {};
+
+  // 包名、可执行名与图标名一致（yeyu），菜单显示名是「页语」。
+  assert.equal(options.name, 'yeyu');
+  assert.equal(options.bin, 'yeyu');
+  assert.equal(options.productName, '页语');
+  assert.equal(options.maintainer, '余思诚 <2952522041@qq.com>');
+  assert.ok(options.homepage);
+  assert.deepEqual(options.categories, ['Education']);
+  assert.equal(options.section, 'education');
+  assert.ok(options.description, 'deb 包需要 description。');
+
+  // 图标与 .desktop 模板都必须真实存在，否则 make 阶段才报错。
+  const icons = options.icon as Record<string, string>;
+  for (const [resolution, iconPath] of Object.entries(icons)) {
+    const info = await stat(iconPath).catch(() => null);
+    assert.ok(info?.isFile(), `图标 ${resolution} 不存在：${iconPath}`);
+    assert.equal(
+      path.basename(iconPath),
+      `yeyu-${resolution.split('x')[0]}.png`,
+    );
+  }
+  const template = await stat(options.desktopTemplate as string).catch(() => null);
+  assert.ok(template?.isFile(), '自定义 .desktop 模板不存在。');
+  const templateText = await readFile(options.desktopTemplate as string, 'utf8');
+  assert.match(templateText, /Name=<%=? productName %>/);
+  assert.match(templateText, /Exec=<%=? name %> %U/);
+
+  // 图标是构建期资产，不需要打进应用包。
+  assert.ok(
+    forgeConfig.packagerConfig.ignore.some((pattern) => pattern.test('/assets/')),
+    'packagerConfig.ignore 应排除 /assets。',
+  );
 });
 
 void test('packaging wires main, preload and the static client bundle', async () => {
