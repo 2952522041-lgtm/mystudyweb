@@ -16,10 +16,10 @@
     "test": "node --test --experimental-strip-types tests/*.test.ts",
     "lint": "oxlint app lib tests electron",
     "desktop:web": "node scripts/copy-pdf-worker.mjs && VINEXT_EXPORT=1 vinext build",
-    "desktop:compile": "tsc -p electron/tsconfig.json && node scripts/write-electron-commonjs.mjs",
+    "desktop:compile": "tsc -p electron/tsconfig.json && node scripts/write-electron-commonjs.mjs && node scripts/bundle-preload.mjs",
     "desktop:build": "pnpm desktop:web && pnpm desktop:compile && electron-forge package",
     "desktop:make": "pnpm desktop:web && pnpm desktop:compile && electron-forge make",
-    "desktop:test": "node --test --experimental-strip-types tests/electron-workspace.test.ts",
+    "desktop:test": "pnpm desktop:compile && node --test --experimental-strip-types tests/electron-launch.test.ts tests/electron-workspace.test.ts",
     "format": "oxfmt"
   },
   "dependencies": {
@@ -63,6 +63,7 @@
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
     "electron": "^44.0.0",
+    "esbuild": "0.27.3",
     "oxfmt": "0.61.0",
     "oxlint": "1.76.0",
     "oxlint-tsgolint": "7.0.2001",
