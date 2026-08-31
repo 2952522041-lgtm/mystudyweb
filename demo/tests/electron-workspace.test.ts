@@ -1,8 +1,37 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+
+/**
+ * Windows 上创建符号链接需要管理员权限或开发者模式；无权限时跳过
+ * symlink 专项测试，其余路径逃逸用例仍会全量执行。
+ */
+function probeSymlinkSupport(): boolean {
+  try {
+    const probeDirectory = mkdtempSync(path.join(os.tmpdir(), 'yeyu-symlink-'));
+    try {
+      symlinkSync(probeDirectory, path.join(probeDirectory, 'probe'));
+      return true;
+    } finally {
+      rmSync(probeDirectory, { recursive: true, force: true });
+    }
+  } catch {
+    return false;
+  }
+}
+
+const symlinkSupported = probeSymlinkSupport();
 
 import {
   assertSafeRelativeSegments,
@@ -36,14 +65,10 @@ const courseManifest = (name: string) => ({
   documents: [],
 });
 
-void test('workspace defaults to Documents/页语工作区', () => {
-  const layout = resolveWorkspaceLayout(
-    path.join('/home', 'someone', 'Documents'),
-  );
-  assert.equal(
-    layout.root,
-    path.join('/home', 'someone', 'Documents', '页语工作区'),
-  );
+void test('workspace defaults to Documents/页语工作区', async () => {
+  const documentsDir = await temporaryDirectory();
+  const layout = resolveWorkspaceLayout(documentsDir);
+  assert.equal(layout.root, path.join(documentsDir, '页语工作区'));
   assert.equal(layout.coursesRoot, path.join(layout.root, 'Courses'));
   assert.equal(layout.cacheRoot, path.join(layout.root, 'Cache'));
   assert.equal(layout.settingsRoot, path.join(layout.root, 'Settings'));
@@ -226,7 +251,10 @@ void test('course file IO round-trips and blocks path escapes', async () => {
   }
 });
 
-void test('symlinked entries inside a course directory are rejected', async () => {
+void test(
+  'symlinked entries inside a course directory are rejected',
+  { skip: symlinkSupported ? false : '当前环境无法创建符号链接（需要管理员或开发者模式）' },
+  async () => {
   const root = await temporaryDirectory();
   try {
     const layout = resolveWorkspaceLayout(root);
