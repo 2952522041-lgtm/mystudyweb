@@ -13,8 +13,10 @@ import {
   FileUp,
   Languages,
   LoaderCircle,
+  LibraryBig,
   MessageCircle,
   Minus,
+  Network,
   PanelRightClose,
   PanelRightOpen,
   Plus,
@@ -26,6 +28,12 @@ import {
 
 import { Button } from '@/components/ui/button';
 import { AIChatPanel } from '@/components/ai-chat-panel';
+import {
+  CourseLibrary,
+  type CourseReaderContext,
+} from '@/components/course-library';
+import { DocumentSummaryPanel } from '@/components/document-summary-panel';
+import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
 import {
   ReaderSettingsDialog,
   type SettingsTab,
@@ -86,6 +94,10 @@ import {
   TranslationError,
   type TranslationErrorCode,
 } from '@/lib/translation';
+import {
+  emptyCourseKnowledge,
+  mergeDocumentDigest,
+} from '@/lib/knowledge/course-merger';
 
 const TARGET_LANGUAGES = ['简体中文', '繁體中文', '日本語', '한국어'] as const;
 const TRANSLATION_STABLE_DELAY = 300;
@@ -405,7 +417,15 @@ function TranslationBody({
   );
 }
 
-export default function Home() {
+function PdfReader({
+  initialFile,
+  courseContext,
+  onOpenCourses,
+}: {
+  initialFile?: File | null;
+  courseContext?: CourseReaderContext | null;
+  onOpenCourses: () => void;
+}) {
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [docMeta, setDocMeta] = useState<DocumentMeta | null>(null);
   const [pageSizes, setPageSizes] = useState<PageView[]>([]);
@@ -419,9 +439,9 @@ export default function Home() {
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('translation');
-  const [rightMode, setRightMode] = useState<'translation' | 'chat'>(
-    'translation',
-  );
+  const [rightMode, setRightMode] = useState<
+    'translation' | 'chat' | 'summary' | 'mindmap'
+  >(courseContext?.digest ? 'summary' : 'translation');
   const [translationStates, setTranslationStates] = useState<
     Record<string, PageTranslationState>
   >({});
@@ -609,7 +629,7 @@ export default function Home() {
     }
   }, [page, pageHeightsPx, pageTops]);
 
-  const handleFile = useCallback(async (file: File) => {
+  const handleFile = useCallback(async (file: File, requestedPage?: number) => {
     setImporting(true);
     setImportError(null);
     try {
@@ -677,8 +697,12 @@ export default function Home() {
       });
       setZoom(restored?.zoom ?? 95);
       setTargetLanguage(restored?.targetLanguage ?? '简体中文');
-      setPage(restored?.lastPage ?? 1);
-      setTranslationPage(restored?.lastPage ?? 1);
+      const openingPage = clampPage(
+        requestedPage ?? restored?.lastPage ?? 1,
+        doc.numPages,
+      );
+      setPage(openingPage);
+      setTranslationPage(openingPage);
       setImportOpen(false);
     } catch {
       setImportError('无法解析该 PDF 文件，文件可能已损坏或已加密。');
@@ -686,6 +710,16 @@ export default function Home() {
       setImporting(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (initialFile) {
+      const timer = setTimeout(() => {
+        void handleFile(initialFile, courseContext?.initialPage);
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+    return undefined;
+  }, [courseContext?.initialPage, handleFile, initialFile]);
 
   // Persist reading progress for this fingerprint.
   useEffect(() => {
@@ -951,6 +985,14 @@ export default function Home() {
       <main className="flex h-screen min-h-[680px] flex-col overflow-hidden bg-background text-foreground">
         <header className="app-toolbar">
           <div className="flex min-w-0 items-center gap-3">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="返回课程知识库"
+              onClick={onOpenCourses}
+            >
+              <ChevronLeft />
+            </Button>
             <div className="brand-mark" aria-hidden="true">
               <BookOpen className="size-4" />
             </div>
@@ -1166,7 +1208,13 @@ export default function Home() {
                       className="h-full min-h-0 gap-0"
                       value={rightMode}
                       onValueChange={(value) =>
-                        setRightMode(value as 'translation' | 'chat')
+                        setRightMode(
+                          value as
+                            | 'translation'
+                            | 'chat'
+                            | 'summary'
+                            | 'mindmap',
+                        )
                       }
                     >
                       <div className="pane-heading border-b border-slate-200/80">
@@ -1183,11 +1231,31 @@ export default function Home() {
                               <MessageCircle />
                               AI 答疑
                             </TabsTrigger>
+                            {courseContext?.digest ? (
+                              <>
+                                <TabsTrigger
+                                  value="summary"
+                                  className="px-3 text-xs"
+                                >
+                                  <FileText />
+                                  PDF 总结
+                                </TabsTrigger>
+                                <TabsTrigger
+                                  value="mindmap"
+                                  className="px-3 text-xs"
+                                >
+                                  <Network />
+                                  PDF 脑图
+                                </TabsTrigger>
+                              </>
+                            ) : null}
                           </TabsList>
                           <p className="pane-meta truncate">
                             {rightMode === 'translation'
                               ? `第 ${translationPage} 页 · ${targetLanguage}${remoteProvider ? ' · 已连接翻译服务' : ' · 演示模式'}`
-                              : `第 ${translationPage} 页 · 文字与视觉上下文`}
+                              : rightMode === 'chat'
+                                ? `第 ${translationPage} 页 · 文字与视觉上下文`
+                                : `整份 PDF · 已保存到课程文件夹`}
                           </p>
                         </div>
                         <div className="flex items-center gap-1">
@@ -1297,6 +1365,42 @@ export default function Home() {
                           onOpenSettings={() => openSettings('chat')}
                         />
                       </TabsContent>
+
+                      {courseContext?.digest ? (
+                        <TabsContent
+                          value="summary"
+                          keepMounted
+                          className="min-h-0 overflow-y-auto data-[hidden]:hidden"
+                        >
+                          <DocumentSummaryPanel
+                            digest={courseContext.digest}
+                            onOpenSource={goToPage}
+                          />
+                        </TabsContent>
+                      ) : null}
+
+                      {courseContext?.digest ? (
+                        <TabsContent
+                          value="mindmap"
+                          keepMounted
+                          className="min-h-0 overflow-y-auto data-[hidden]:hidden"
+                        >
+                          <KnowledgeMindmap
+                            knowledge={mergeDocumentDigest(
+                              emptyCourseKnowledge(
+                                courseContext.document.id,
+                                courseContext.digest.title,
+                                courseContext.digest.updatedAt,
+                              ),
+                              courseContext.digest,
+                              courseContext.digest.updatedAt,
+                            )}
+                            onOpenSource={(_, sourcePage) =>
+                              goToPage(sourcePage)
+                            }
+                          />
+                        </TabsContent>
+                      ) : null}
                     </Tabs>
                   </aside>
                 </ResizablePanel>
@@ -1334,7 +1438,11 @@ export default function Home() {
                 ? docMeta
                   ? `AI 答疑已绑定第 ${translationPage} 页`
                   : '导入 PDF 后可使用 AI 答疑'
-                : statusLabel}
+                : rightMode === 'summary'
+                  ? 'PDF 总结已保存到课程文件夹'
+                  : rightMode === 'mindmap'
+                    ? 'PDF 脑图已保存到课程文件夹'
+                    : statusLabel}
             </span>
           </div>
           <div className="flex items-center gap-4">
@@ -1425,6 +1533,64 @@ export default function Home() {
             onSave={applySettings}
           />
         ) : null}
+      </main>
+    </TooltipProvider>
+  );
+}
+
+export default function Home() {
+  const [view, setView] = useState<'courses' | 'reader'>('courses');
+  const [readerFile, setReaderFile] = useState<File | null>(null);
+  const [readerContext, setReaderContext] =
+    useState<CourseReaderContext | null>(null);
+
+  if (view === 'reader') {
+    return (
+      <PdfReader
+        initialFile={readerFile}
+        courseContext={readerContext}
+        onOpenCourses={() => setView('courses')}
+      />
+    );
+  }
+
+  return (
+    <TooltipProvider>
+      <main className="flex h-screen min-h-[680px] flex-col overflow-hidden bg-[#f5f7fa]">
+        <header className="flex h-15 shrink-0 items-center justify-between border-b border-white/10 bg-[#243a59] px-5 text-white">
+          <div className="flex items-center gap-3">
+            <span className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-400 to-indigo-500 shadow-sm">
+              <BookOpen className="size-4" />
+            </span>
+            <span className="text-sm font-semibold tracking-wide">页语</span>
+          </div>
+          <nav className="flex h-full items-center" aria-label="主导航">
+            <button
+              type="button"
+              className="flex h-full items-center gap-2 border-b-2 border-violet-300 px-4 text-sm font-medium"
+            >
+              <LibraryBig className="size-4" /> 课程知识库
+            </button>
+            <button
+              type="button"
+              className="flex h-full items-center gap-2 border-b-2 border-transparent px-4 text-sm text-slate-300 hover:text-white"
+              onClick={() => setView('reader')}
+            >
+              <FileText className="size-4" /> PDF 阅读器
+            </button>
+          </nav>
+          <div className="w-24" aria-hidden="true" />
+        </header>
+        <CourseLibrary
+          onOpenDocument={(file, context) => {
+            setReaderFile(file);
+            setReaderContext({
+              ...context,
+              onBack: () => setView('courses'),
+            });
+            setView('reader');
+          }}
+        />
       </main>
     </TooltipProvider>
   );

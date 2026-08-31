@@ -1,11 +1,11 @@
 # 项目交接文档
 
 > 写给下一位接手的人。读完这份 + `README.md` + `PRODUCT_DESIGN.md` + `docs/TECHNICAL_SOLUTION.md` 就能上手。
-> 最后更新：2026-08-30
+> 最后更新：2026-08-31
 
 ## 一、项目是什么
 
-「页语」——PDF 随页翻译与 AI 答疑阅读器。用户导入外文 PDF，左侧读原文，右侧可切换随页译文和基于当前页文字、图片及公式的视觉答疑。产品范围、验收标准见 `PRODUCT_DESIGN.md`；架构设计见 `docs/TECHNICAL_SOLUTION.md`。
+「页语」——本地课程知识库、PDF 随页翻译与 AI 答疑阅读器。用户可把多份 PDF 组织到本地课程目录，生成带来源的总结与脑图；阅读时左侧读原文，右侧可切换随页译文、视觉答疑、PDF 总结和 PDF 脑图。产品范围、验收标准见 `PRODUCT_DESIGN.md`；架构设计见 `docs/TECHNICAL_SOLUTION.md`。
 
 ## 二、当前状态（MVP 已可用）
 
@@ -29,6 +29,12 @@
 | 独立 AI 配置 | ✅ | 答疑 API 地址、Key、模型与翻译完全隔离，要求视觉模型 |
 | 每页独立会话 | ✅ | IndexedDB 本地保存；翻页切换、返回恢复，流式回答归属原页面 |
 | AI 回答展示 | ✅ | Markdown + GFM + KaTeX，支持表格、代码和 LaTeX 公式 |
+| 本地课程目录 | ✅ | File System Access API；创建/重连/重新授权，目录是唯一可信数据源 |
+| PDF 导入与去重 | ✅ | SHA-256 内容指纹；复制到 `PDFs/`，同名异内容加稳定后缀 |
+| 内部摘要与单 PDF 成果 | ✅ | 全页文字提取，生成带页码来源的结构化摘要、Markdown 总结和 JSON/SVG 脑图 |
+| 课程增量合并 | ✅ | 概念去重、来源追加、用户节点保护、revision 冲突检查 |
+| 历史与恢复 | ✅ | 新版本提交前保存 `History/`，知识源使用版本化 JSON，用户笔记不覆盖 |
+| 课程/阅读器衔接 | ✅ | 课程总结和脑图来源可打开对应 PDF 页；阅读器新增 PDF 总结/脑图页签 |
 
 已实测的真实使用案例：港中深 MAT 3007 期中试卷（旧配置 `glm-4-flash`，整页十几秒，流式 2 秒内出首段）。当前推荐改用关闭深度思考的 `glm-4.7-flashx`。
 
@@ -42,6 +48,10 @@ demo/
 ├─ app/globals.css         # 主题与布局类
 ├─ components/ai-chat-panel.tsx       # 每页对话、流式状态、Markdown/公式展示
 ├─ components/reader-settings-dialog.tsx # 翻译与 AI 独立设置
+├─ components/course-library.tsx          # 本地课程工作台
+├─ components/course-import-dialog.tsx    # PDF 导入与独立生成选项
+├─ components/knowledge-mindmap.tsx       # 课程/PDF 可追溯脑图
+├─ components/document-summary-panel.tsx  # 阅读器中的单 PDF 总结
 ├─ lib/pdfjs.ts            # pdf.js 懒加载（worker 由 predev/prebuild 复制到 public/）
 ├─ lib/pdf-text.ts         # 文本提取规范化流水线 + sha256（纯函数，Node 可测）
 ├─ lib/translation.ts      # 供应商适配器、SSE 流式解析、错误分类、重试、缓存键、提示词
@@ -51,6 +61,8 @@ demo/
 ├─ lib/reader-cache.ts     # KV 存储（IndexedDB/内存）、译文缓存、进度、设置
 ├─ lib/current-page.ts     # 当前页判定（纯函数）
 ├─ lib/reader-model.ts     # 缩放步进、页宽计算等纯函数
+├─ lib/course-storage/     # 课程 schema、目录存储、内存实现、最近目录句柄
+├─ lib/knowledge/          # 内部摘要、增量合并、Markdown/JSON/SVG 渲染
 ├─ tests/                  # node --test 单元测试 + 源码结构冒烟测试
 ├─ public/sample.pdf       # 测试语料：文字型 PDF
 ├─ public/scanned.pdf      # 测试语料：无文字层（扫描型）PDF
@@ -67,6 +79,8 @@ demo/
 6. **答疑请求使用不可变页面快照**。问题发出后绑定文档指纹和页码，用户翻页不会把回答写到新页面。
 7. **页面图像按需生成且不持久化**。只有用户提问时才离屏渲染 PNG，IndexedDB 只保存完成的对话消息。
 8. **PDF 内容是不可信数据**。答疑系统提示词要求忽略页面内试图改变规则的指令，只依据绑定页面作答。
+9. **课程结构化 JSON 是合并依据**。Markdown 与 SVG 都是可重新生成的派生成果；活动知识版本由 `course.json` 指向 `Knowledge/knowledge-vN.json`。
+10. **课程写入使用乐观 revision**。外部修改后会拒绝覆盖并要求重新加载；每次变更前先保存 History 快照，`course.json` 最后写入。
 
 ## 四、如何运行 / 测试 / 构建
 
@@ -89,12 +103,13 @@ python3 -m unittest discover tests   # 根目录文档完整性测试
 
 1. **E2E 测试缺失**。建议引入 Playwright：导入 `public/sample.pdf` → 翻页 → 断言译文面板状态。目前只有单元测试和源码正则冒烟测试（`tests/reader-layout.test.ts` 较脆弱，重构 UI 时记得同步）。
 2. **没有 CI**。建议 GitHub Actions：test + lint + tsc + build 四件套。
-3. **桌面端（Tauri）未启动**。当前是纯 Web 实现（技术方案允许的容器替换路线）。Web 版限制：文件句柄不持久，重开页面需重新导入文件（同文件可恢复进度）。Tauri 化后可做"最近文档直接打开"。
+3. **桌面端（Tauri）未启动**。当前是纯 Web 实现（技术方案允许的容器替换路线）。课程目录句柄会保存在 IndexedDB，但浏览器可能要求重新授权；临时打开的单 PDF 仍需重新选择。
 4. **无托管密钥的薄后端代理**。当前翻译和答疑 Key 存本地浏览器、浏览器直连供应商（已在设置界面告知）。公开运营前需按技术方案 6.4 和 15.8 建代理。
 5. **源语言固定为 auto**，未做语言检测展示。
 6. **双栏论文语料未覆盖**。`lib/pdf-text.ts` 的双栏检测有单元测试，但缺真实双栏论文验证；`public/` 里应补充双栏测试 PDF。
 7. **vinext 是 beta**（1.0.0-beta.5），升级时注意 RSC 相关破坏性变更。
 8. **真实视觉供应商需要人工冒烟**。自动测试使用模拟多模态响应；上线前需用目标供应商检查图片字段兼容、CORS、请求体限制和公式理解质量。
+9. **课程摘要当前为本地结构化提取**。已实现完整目录、去重、来源、合并和版本流程；更高质量的语义归纳与“对话洞察自动提炼”仍需接入独立 `KnowledgeProvider`，当前导入选项只记录后续是否纳入对话洞察。
 
 ## 六、踩过的坑（重要）
 

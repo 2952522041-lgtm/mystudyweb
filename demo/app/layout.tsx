@@ -9,12 +9,12 @@ const siteUrl =
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
-  title: '页语｜PDF 随页翻译与 AI 答疑阅读器',
+  title: '页语｜本地课程知识库与 PDF AI 阅读器',
   description:
-    '导入 PDF，随页查看译文，并围绕当前页的文字、图片和公式向 AI 提问。',
+    '把多份 PDF 组织为本地课程知识库，生成带来源的总结与脑图，并随页翻译或向 AI 提问。',
   openGraph: {
-    title: '页语｜PDF 随页翻译与 AI 答疑阅读器',
-    description: '阅读到哪一页，译文和视觉答疑就跟到哪一页。',
+    title: '页语｜本地课程知识库与 PDF AI 阅读器',
+    description: '课程知识有出处，阅读到哪一页，译文和视觉答疑就跟到哪一页。',
     images: [
       {
         url: '/og.png',
@@ -26,8 +26,8 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    title: '页语｜PDF 随页翻译与 AI 答疑阅读器',
-    description: '阅读到哪一页，译文和视觉答疑就跟到哪一页。',
+    title: '页语｜本地课程知识库与 PDF AI 阅读器',
+    description: '课程知识有出处，阅读到哪一页，译文和视觉答疑就跟到哪一页。',
     images: ['/og.png'],
   },
 };
