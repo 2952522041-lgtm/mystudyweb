@@ -8,12 +8,21 @@ export const SMOKE_RESULT_MARKER = 'YEYU_SMOKE_RESULT';
 /** 打开后主进程会在页面加载完成时探测 preload 桥接并自动退出。 */
 export const SMOKE_ENV_VAR = 'YEYU_SMOKE';
 
+/** 置为 1 时探测还会通过真实桥接创建一门冒烟课程并写 course.json。 */
+export const SMOKE_CREATE_COURSE_ENV_VAR = 'YEYU_SMOKE_CREATE_COURSE';
+
+export const SMOKE_COURSE_NAME = '冒烟课程';
+
 export interface SmokeProbeResult {
   api: boolean;
   methods?: string[];
   workspace?: WorkspaceInfo;
   /** setWindowOpenHandler 运行时确实拒绝弹窗时为 true。 */
   popupDenied?: boolean;
+  /** YEYU_SMOKE_CREATE_COURSE=1 时，通过桥接创建的课程目录名。 */
+  createdCourse?: string;
+  /** listCourses() 返回的课程目录名（只有含合法 course.json 的目录）。 */
+  courses?: string[];
   error?: string;
 }
 
@@ -29,25 +38,53 @@ export function isSmokeRun(env: NodeJS.ProcessEnv = process.env): boolean {
 export async function probePreloadBridge(
   window: BrowserWindow,
 ): Promise<SmokeProbeResult> {
+  const createCourse = process.env[SMOKE_CREATE_COURSE_ENV_VAR] === '1';
+  const courseName = SMOKE_COURSE_NAME;
   let result: SmokeProbeResult;
   try {
     result = await window.webContents.executeJavaScript(
-      `(async () => {
+      `(async (createCourse, courseName) => {
         const api = window.yeyuDesktop;
         if (!api) return { api: false, error: 'window.yeyuDesktop 不存在' };
         try {
           // setWindowOpenHandler 默认 deny：被拒绝的 window.open 返回 null。
           const popup = window.open('about:blank');
+          let createdCourse;
+          if (createCourse) {
+            createdCourse = (await api.createCourseDirectory(courseName))
+              .directoryName;
+            // course.json 是课程目录的合法标志；scanCourses 只统计有清单的目录。
+            const manifest = {
+              schemaVersion: 1,
+              id: 'smoke-course',
+              name: courseName,
+              revision: 0,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              activeKnowledgeVersion: 0,
+              documents: [],
+            };
+            await api.writeFile(
+              createdCourse,
+              ['course.json'],
+              new TextEncoder().encode(JSON.stringify(manifest)),
+            );
+          }
+          const courses = (await api.listCourses()).map(
+            (course) => course.directoryName,
+          );
           return {
             api: true,
             popupDenied: popup === null,
             methods: Object.keys(api).sort(),
             workspace: await api.getWorkspaceInfo(),
+            createdCourse,
+            courses,
           };
         } catch (error) {
           return { api: false, error: String(error) };
         }
-      })()`,
+      })(${JSON.stringify(createCourse)}, ${JSON.stringify(courseName)})`,
     );
   } catch (error) {
     result = {

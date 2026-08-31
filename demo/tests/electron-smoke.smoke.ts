@@ -9,14 +9,20 @@ import process from 'node:process';
 import test from 'node:test';
 
 import { DESKTOP_METHOD_NAMES } from '../electron/api.ts';
-import { SMOKE_RESULT_MARKER } from '../electron/smoke.ts';
+import {
+  SMOKE_CREATE_COURSE_ENV_VAR,
+  SMOKE_COURSE_NAME,
+  SMOKE_RESULT_MARKER,
+} from '../electron/smoke.ts';
 
 /**
  * 真实 Electron 启动冒烟测试（HANDOFF 13.1：不要再用"源码包含字符串"代替
  * 运行时验证）。直接启动编译产物或 Linux 打包产物，断言：
  *   1. sandbox preload 加载成功，window.yeyuDesktop 存在且方法面完整；
  *   2. getWorkspaceInfo() 能完成一次真实 IPC 往返；
- *   3. 固定工作区 Courses/Cache/Settings 被幂等创建。
+ *   3. 固定工作区 Courses/Cache/Settings 被幂等创建；
+ *   4. 通过真实桥接创建课程并写入 course.json 后，关闭应用重新启动，
+ *      listCourses() 仍能扫出该课程（关闭重启恢复）。
  * 需要 DISPLAY（或 win32/darwin 桌面会话）；缺少显示环境时跳过并说明原因。
  * 本文件刻意不匹配 tests/*.test.ts：冒烟只由 `pnpm desktop:test` 运行。
  */
@@ -91,6 +97,8 @@ interface SmokeProbePayload {
   methods?: string[];
   workspace?: { root: string; coursesRoot: string };
   popupDenied?: boolean;
+  createdCourse?: string;
+  courses?: string[];
   error?: string;
 }
 
@@ -105,41 +113,59 @@ function parseSmokeResult(stdout: string): SmokeProbePayload {
   return JSON.parse(markerLine.slice(SMOKE_RESULT_MARKER.length + 1)) as SmokeProbePayload;
 }
 
-async function assertDesktopBridgeLaunch(
+async function launchAndProbe(
   command: string,
   args: string[],
-): Promise<void> {
+  workspaceRoot: string,
+  createCourse: boolean,
+): Promise<SmokeProbePayload> {
+  const env = launchEnvironment(workspaceRoot);
+  if (createCourse) {
+    env[SMOKE_CREATE_COURSE_ENV_VAR] = '1';
+  }
+  const { code, stdout, stderr } = await launchElectron(command, args, env);
+  const result = parseSmokeResult(stdout);
+  assert.equal(
+    result.api,
+    true,
+    `preload 桥接不可用：${result.error ?? '未知原因'}\nstderr:\n${stderr}`,
+  );
+  assert.deepEqual(result.methods, EXPECTED_METHODS);
+  assert.equal(
+    result.popupDenied,
+    true,
+    'window.open 应被 setWindowOpenHandler 拒绝（返回 null）。',
+  );
+  assert.ok(result.workspace, 'getWorkspaceInfo() 没有返回工作区信息。');
+  assert.equal(result.workspace.root, workspaceRoot);
+  assert.equal(
+    result.workspace.coursesRoot,
+    path.join(workspaceRoot, 'Courses'),
+  );
+  assert.equal(code, 0, `Electron 进程异常退出（${code}）。\nstderr:\n${stderr}`);
+  assert.deepEqual(
+    (await readdir(workspaceRoot)).sort(),
+    ['Cache', 'Courses', 'Settings'],
+    '首次启动应幂等创建 Courses/Cache/Settings。',
+  );
+  return result;
+}
+
+async function assertCourseLifecycle(command: string, args: string[]): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'yeyu-smoke-'));
   try {
-    const { code, stdout, stderr } = await launchElectron(
-      command,
-      args,
-      launchEnvironment(workspaceRoot),
+    // 第一次启动：通过真实桥接创建课程并写入 course.json。
+    const created = await launchAndProbe(command, args, workspaceRoot, true);
+    assert.equal(created.createdCourse, SMOKE_COURSE_NAME);
+    assert.ok(created.courses?.includes(SMOKE_COURSE_NAME));
+
+    // 关闭应用后重新启动：课程必须从磁盘自动恢复。
+    const restarted = await launchAndProbe(command, args, workspaceRoot, false);
+    assert.ok(
+      restarted.courses?.includes(SMOKE_COURSE_NAME),
+      `重启后应恢复课程，实际：${JSON.stringify(restarted.courses)}`,
     );
-    const result = parseSmokeResult(stdout);
-    assert.equal(
-      result.api,
-      true,
-      `preload 桥接不可用：${result.error ?? '未知原因'}\nstderr:\n${stderr}`,
-    );
-    assert.deepEqual(result.methods, EXPECTED_METHODS);
-    assert.equal(
-      result.popupDenied,
-      true,
-      'window.open 应被 setWindowOpenHandler 拒绝（返回 null）。',
-    );
-    assert.ok(result.workspace, 'getWorkspaceInfo() 没有返回工作区信息。');
-    assert.equal(result.workspace.root, workspaceRoot);
-    assert.equal(
-      result.workspace.coursesRoot,
-      path.join(workspaceRoot, 'Courses'),
-    );
-    assert.equal(code, 0, `Electron 进程异常退出（${code}）。\nstderr:\n${stderr}`);
-    assert.deepEqual(
-      (await readdir(workspaceRoot)).sort(),
-      ['Cache', 'Courses', 'Settings'],
-      '首次启动应幂等创建 Courses/Cache/Settings。',
-    );
+    assert.equal(restarted.createdCourse, undefined);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
@@ -156,7 +182,7 @@ void test(
   'compiled electron app exposes the yeyuDesktop bridge',
   { skip: noDisplay || missingCompiledEntry },
   async () => {
-    await assertDesktopBridgeLaunch(electronBinary(), [COMPILED_MAIN_ENTRY]);
+    await assertCourseLifecycle(electronBinary(), [COMPILED_MAIN_ENTRY]);
   },
 );
 
@@ -168,6 +194,6 @@ void test(
   'packaged linux app exposes the yeyuDesktop bridge',
   { skip: noDisplay || missingPackagedBinary },
   async () => {
-    await assertDesktopBridgeLaunch(PACKAGED_LINUX_BINARY, []);
+    await assertCourseLifecycle(PACKAGED_LINUX_BINARY, []);
   },
 );
