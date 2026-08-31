@@ -189,17 +189,23 @@ class HandoffDocumentTest(unittest.TestCase):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, content)
 
-    def test_handoff_records_desktop_runtime_blockers(self) -> None:
+    def test_handoff_records_desktop_runtime_blockers_and_their_fixes(self) -> None:
         content = HANDOFF.read_text(encoding="utf-8")
 
         for requirement in (
-            "## 十三、Windows 机器接手前的 Codex 复核结论（必须先处理）",
+            "## 十三、Windows 机器接手前的 Codex 复核结论（已于 2026-08-31 全部修复）",
+            # 历史症状保留，便于后人识别同类问题。
             "Error: module not found: ./api.js",
-            "把 `preload.ts` 及 `api.ts` 打包成单个 CommonJS `preload.js`",
-            "Windows Squirrel 安装器缺少必填元数据",
+            # 修复方式与安全约束必须记录在案。
+            "把 `preload.ts + api.ts` 打包为单个 CommonJS `electron/dist/preload.js`",
+            "electron-squirrel-startup",
+            "will-navigate",
             "setWindowOpenHandler",
-            "外部导航隔离：尚未实现",
+            "shell.openExternal",
             "不要关闭 Electron sandbox",
+            # 安装与验收结果必须可追溯。
+            "Setup.exe",
+            "### 13.5 安装版实测记录（2026-08-31）",
         ):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, content)
