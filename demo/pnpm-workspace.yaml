@@ -1,4 +1,17 @@
+# Electron Forge 的依赖遍历器要求 npm 式扁平 node_modules，因此使用 hoisted 布局。
+nodeLinker: hoisted
+
+# Electron 的安装脚本会下载平台二进制；pnpm 10/11 默认拦截依赖构建脚本。
+# onlyBuiltDependencies 供 pnpm 10 读取，allowBuilds 供 pnpm 11 读取，两边保持一致。
+onlyBuiltDependencies:
+  - electron
+  - electron-winstaller
+  - esbuild
+  - sharp
+  - workerd
 allowBuilds:
+  electron: true
+  electron-winstaller: true
   esbuild: true
   sharp: true
   workerd: true

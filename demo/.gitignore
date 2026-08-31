@@ -38,3 +38,6 @@ next-env.d.ts
 /work/
 *.tsbuildinfo
 /public/pdf.worker.min.mjs
+
+# electron desktop shell
+/electron/dist/
