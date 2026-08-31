@@ -35,13 +35,16 @@ import {
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { BrowserDirectoryStorage } from '@/lib/course-storage/browser-directory-storage';
+import { DesktopCourseStorage } from '@/lib/course-storage/desktop-course-storage';
 import {
   loadRecentCourses,
   saveRecentCourse,
   type RecentCourse,
 } from '@/lib/course-storage/recent-courses';
 import type {
+  BrowserDirectoryHandle,
   CourseBundle,
+  CourseStorage,
   DirectoryPickerWindow,
   DocumentDigest,
   DocumentRecord,
@@ -64,8 +67,12 @@ export interface CourseReaderContext {
 }
 
 interface CourseEntry {
-  recent: RecentCourse;
-  storage: BrowserDirectoryStorage;
+  id: string;
+  name: string;
+  updatedAt: string;
+  /** 仅浏览器模式存在；桌面课程来自工作区磁盘扫描，无需目录句柄。 */
+  handle?: BrowserDirectoryHandle;
+  storage: CourseStorage;
   bundle: CourseBundle | null;
   permission: 'granted' | 'prompt' | 'denied' | 'error';
 }
@@ -129,6 +136,7 @@ export function CourseLibrary({
   const [entries, setEntries] = useState<CourseEntry[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [courseName, setCourseName] = useState('');
@@ -136,14 +144,58 @@ export function CourseLibrary({
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const desktopApi =
+    typeof window !== 'undefined' ? window.yeyuDesktop : undefined;
+  const isDesktop = Boolean(desktopApi);
+
   const supported =
-    typeof window !== 'undefined' &&
-    typeof (window as DirectoryPickerWindow).showDirectoryPicker === 'function';
+    isDesktop ||
+    (typeof window !== 'undefined' &&
+      typeof (window as DirectoryPickerWindow).showDirectoryPicker ===
+        'function');
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
+        if (desktopApi) {
+          // 桌面模式：启动即用固定工作区，课程以磁盘扫描结果为准。
+          const info = await desktopApi.getWorkspaceInfo();
+          const courses = await desktopApi.listCourses();
+          const loaded: CourseEntry[] = await Promise.all(
+            courses.map(async (course): Promise<CourseEntry> => {
+              const storage = new DesktopCourseStorage(
+                desktopApi,
+                course.directoryName,
+              );
+              try {
+                return {
+                  id: course.manifest.id,
+                  name: course.manifest.name,
+                  updatedAt: course.manifest.updatedAt,
+                  storage,
+                  bundle: await storage.load(),
+                  permission: 'granted',
+                };
+              } catch {
+                return {
+                  id: course.manifest.id,
+                  name: course.manifest.name,
+                  updatedAt: course.manifest.updatedAt,
+                  storage,
+                  bundle: null,
+                  permission: 'error',
+                };
+              }
+            }),
+          );
+          if (!cancelled) {
+            setWorkspaceRoot(info.root);
+            setEntries(loaded);
+            setActiveId(loaded[0]?.id ?? null);
+          }
+          return;
+        }
         const recentCourses = await loadRecentCourses();
         const loaded = await Promise.all(
           recentCourses.map(async (recent): Promise<CourseEntry> => {
@@ -153,22 +205,41 @@ export function CourseLibrary({
                 ? await recent.handle.queryPermission({ mode: 'readwrite' })
                 : 'prompt';
               if (permission !== 'granted') {
-                return { recent, storage, bundle: null, permission };
+                return {
+                  id: recent.id,
+                  name: recent.name,
+                  updatedAt: recent.updatedAt,
+                  handle: recent.handle,
+                  storage,
+                  bundle: null,
+                  permission,
+                };
               }
               return {
-                recent,
+                id: recent.id,
+                name: recent.name,
+                updatedAt: recent.updatedAt,
+                handle: recent.handle,
                 storage,
                 bundle: await storage.load(),
                 permission: 'granted',
               };
             } catch {
-              return { recent, storage, bundle: null, permission: 'error' };
+              return {
+                id: recent.id,
+                name: recent.name,
+                updatedAt: recent.updatedAt,
+                handle: recent.handle,
+                storage,
+                bundle: null,
+                permission: 'error',
+              };
             }
           }),
         );
         if (!cancelled) {
           setEntries(loaded);
-          setActiveId(loaded[0]?.recent.id ?? null);
+          setActiveId(loaded[0]?.id ?? null);
         }
       } catch {
         if (!cancelled) setError('最近课程记录暂时无法读取。');
@@ -181,7 +252,7 @@ export function CourseLibrary({
     };
   }, []);
 
-  const active = entries.find((entry) => entry.recent.id === activeId) ?? null;
+  const active = entries.find((entry) => entry.id === activeId) ?? null;
   const bundle = active?.bundle ?? null;
   const includedCount =
     bundle?.manifest.documents.filter((document) => document.includedInCourse)
@@ -193,23 +264,58 @@ export function CourseLibrary({
   const setEntryBundle = (id: string, nextBundle: CourseBundle) => {
     setEntries((previous) =>
       previous.map((entry) =>
-        entry.recent.id === id
+        entry.id === id
           ? {
               ...entry,
               bundle: nextBundle,
               permission: 'granted',
-              recent: {
-                ...entry.recent,
-                name: nextBundle.manifest.name,
-                updatedAt: nextBundle.manifest.updatedAt,
-              },
+              name: nextBundle.manifest.name,
+              updatedAt: nextBundle.manifest.updatedAt,
             }
           : entry,
       ),
     );
   };
 
+  const createDesktopCourse = async () => {
+    if (!desktopApi) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { directoryName } = await desktopApi.createCourseDirectory(
+        courseName.trim(),
+      );
+      const storage = new DesktopCourseStorage(desktopApi, directoryName);
+      const nextBundle = await storage.initialize(courseName.trim());
+      setEntries((previous) => [
+        {
+          id: nextBundle.manifest.id,
+          name: nextBundle.manifest.name,
+          updatedAt: nextBundle.manifest.updatedAt,
+          storage,
+          bundle: nextBundle,
+          permission: 'granted',
+        },
+        ...previous.filter((entry) => entry.id !== nextBundle.manifest.id),
+      ]);
+      setActiveId(nextBundle.manifest.id);
+      setCreateOpen(false);
+      setCourseName('');
+      setMessage(`课程“${nextBundle.manifest.name}”已在工作区创建。`);
+    } catch (createError) {
+      setError(
+        createError instanceof Error ? createError.message : '无法创建课程。',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const connectHandle = async (mode: 'create' | 'existing') => {
+    if (isDesktop) {
+      await createDesktopCourse();
+      return;
+    }
     const picker = (window as DirectoryPickerWindow).showDirectoryPicker;
     if (!picker) return;
     setBusy(true);
@@ -229,8 +335,16 @@ export function CourseLibrary({
       };
       await saveRecentCourse(recent);
       setEntries((previous) => [
-        { recent, storage, bundle: nextBundle, permission: 'granted' },
-        ...previous.filter((entry) => entry.recent.id !== recent.id),
+        {
+          id: recent.id,
+          name: recent.name,
+          updatedAt: recent.updatedAt,
+          handle,
+          storage,
+          bundle: nextBundle,
+          permission: 'granted',
+        },
+        ...previous.filter((entry) => entry.id !== recent.id),
       ]);
       setActiveId(recent.id);
       setCreateOpen(false);
@@ -254,16 +368,17 @@ export function CourseLibrary({
   };
 
   const reauthorize = async (entry: CourseEntry) => {
+    if (!entry.handle) return;
     setBusy(true);
     setError(null);
     try {
-      const permission = entry.recent.handle.requestPermission
-        ? await entry.recent.handle.requestPermission({ mode: 'readwrite' })
+      const permission = entry.handle.requestPermission
+        ? await entry.handle.requestPermission({ mode: 'readwrite' })
         : 'denied';
       if (permission !== 'granted')
         throw new Error('没有获得该文件夹的读写权限。');
       const nextBundle = await entry.storage.load();
-      setEntryBundle(entry.recent.id, nextBundle);
+      setEntryBundle(entry.id, nextBundle);
     } catch (permissionError) {
       setError(
         permissionError instanceof Error
@@ -280,8 +395,12 @@ export function CourseLibrary({
     setBusy(true);
     setError(null);
     try {
-      setEntryBundle(active.recent.id, await active.storage.load());
-      setMessage('已重新读取课程文件夹中的最新版本。');
+      setEntryBundle(active.id, await active.storage.load());
+      setMessage(
+        isDesktop
+          ? '已重新读取工作区课程目录中的最新版本。'
+          : '已重新读取课程文件夹中的最新版本。',
+      );
     } catch (reloadError) {
       setError(
         reloadError instanceof Error ? reloadError.message : '重新加载失败。',
@@ -335,12 +454,15 @@ export function CourseLibrary({
       active.bundle.manifest.revision,
     );
     onProgress('正在提交课程新版本', 94);
-    setEntryBundle(active.recent.id, result.bundle);
-    await saveRecentCourse({
-      ...active.recent,
-      name: result.bundle.manifest.name,
-      updatedAt: result.bundle.manifest.updatedAt,
-    });
+    setEntryBundle(active.id, result.bundle);
+    if (active.handle) {
+      await saveRecentCourse({
+        id: active.id,
+        name: result.bundle.manifest.name,
+        handle: active.handle,
+        updatedAt: result.bundle.manifest.updatedAt,
+      });
+    }
     setMessage(
       options.mergeIntoCourse
         ? 'PDF 已导入，并已更新课程总总结和总脑图。'
@@ -366,7 +488,7 @@ export function CourseLibrary({
               documentId,
               active.bundle.manifest.revision,
             );
-      setEntryBundle(active.recent.id, next);
+      setEntryBundle(active.id, next);
       setMessage(
         action === 'merge'
           ? '这份 PDF 已并入课程总结和脑图。'
@@ -433,17 +555,17 @@ export function CourseLibrary({
         <div className="mt-2 space-y-1">
           {entries.map((entry) => (
             <button
-              key={entry.recent.id}
+              key={entry.id}
               type="button"
-              className={`flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left transition ${entry.recent.id === activeId ? 'border-slate-200 bg-white shadow-sm' : 'border-transparent hover:bg-white'}`}
-              onClick={() => setActiveId(entry.recent.id)}
+              className={`flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left transition ${entry.id === activeId ? 'border-slate-200 bg-white shadow-sm' : 'border-transparent hover:bg-white'}`}
+              onClick={() => setActiveId(entry.id)}
             >
               <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-violet-100 font-bold text-violet-700">
-                {entry.recent.name.slice(0, 1)}
+                {entry.name.slice(0, 1)}
               </span>
               <span className="min-w-0">
                 <span className="block truncate text-sm font-semibold">
-                  {entry.recent.name}
+                  {entry.name}
                 </span>
                 <span className="mt-0.5 block text-[10px] text-slate-500">
                   {entry.bundle?.manifest.documents.length ?? 0} 份 PDF ·{' '}
@@ -454,12 +576,33 @@ export function CourseLibrary({
           ))}
         </div>
         <div className="mt-auto rounded-xl border border-slate-200 bg-white p-4">
-          <p className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-            <ShieldCheck className="size-4 text-emerald-600" /> 本地文件夹模式
-          </p>
-          <p className="mt-2 text-[10px] leading-4 text-slate-500">
-            课程资料只写入你授权的目录。浏览器数据被清除后，重新连接原文件夹即可恢复。
-          </p>
+          {isDesktop ? (
+            <>
+              <p className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                <ShieldCheck className="size-4 text-emerald-600" /> 固定工作区
+              </p>
+              <p className="mt-2 break-all text-[10px] leading-4 text-slate-500">
+                {workspaceRoot ?? '正在准备工作区…'}
+              </p>
+              <Button
+                variant="outline"
+                size="xs"
+                className="mt-3 w-full"
+                onClick={() => void desktopApi?.revealWorkspace()}
+              >
+                <Folder className="size-3.5" /> 打开工作区文件夹
+              </Button>
+            </>
+          ) : (
+            <>
+              <p className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                <ShieldCheck className="size-4 text-emerald-600" /> 本地文件夹模式
+              </p>
+              <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                课程资料只写入你授权的目录。浏览器数据被清除后，重新连接原文件夹即可恢复。
+              </p>
+            </>
+          )}
         </div>
       </aside>
 
@@ -477,7 +620,7 @@ export function CourseLibrary({
                 当前浏览器不支持本地课程文件夹
               </h1>
               <p className="mt-3 text-sm leading-6 text-slate-500">
-                请使用最新版桌面 Chrome 或 Edge
+                请使用页语桌面版，或最新版桌面 Chrome / Edge
                 打开本应用。当前版本不会静默改用浏览器内部存储。
               </p>
             </div>
@@ -491,33 +634,36 @@ export function CourseLibrary({
               </h1>
               <p className="mx-auto mt-3 max-w-lg text-sm leading-7 text-slate-500">
                 一门课程可包含多份
-                PDF，并持续生成带页码来源的课程总结和脑图。文件夹是唯一可信数据源。
+                PDF，并持续生成带页码来源的课程总结和脑图。
+                {isDesktop ? '课程数据保存在固定工作区，无需手动选择文件夹。' : '文件夹是唯一可信数据源。'}
               </p>
               <div className="mt-8 flex flex-wrap justify-center gap-3">
                 <Button onClick={() => setCreateOpen(true)}>
                   <FolderPlus /> 创建本地课程
                 </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => void connectHandle('existing')}
-                >
-                  <FolderCheck /> 连接已有课程
-                </Button>
+                {!isDesktop ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => void connectHandle('existing')}
+                  >
+                    <FolderCheck /> 连接已有课程
+                  </Button>
+                ) : null}
               </div>
             </div>
           ) : active && !bundle ? (
             <div className="mx-auto mt-20 max-w-lg rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
               <Folder className="mx-auto size-9 text-violet-600" />
-              <h1 className="mt-4 text-xl font-semibold">
-                {active.recent.name}
-              </h1>
+              <h1 className="mt-4 text-xl font-semibold">{active.name}</h1>
               <p className="mt-2 text-sm text-slate-500">
-                {active.permission === 'error'
-                  ? '课程文件夹内容异常，请重新连接原目录。'
-                  : '浏览器需要你再次确认这个文件夹的读写权限。'}
+                {isDesktop
+                  ? '课程目录内容异常，请检查工作区中的 course.json。'
+                  : active.permission === 'error'
+                    ? '课程文件夹内容异常，请重新连接原目录。'
+                    : '浏览器需要你再次确认这个文件夹的读写权限。'}
               </p>
               <div className="mt-7 flex justify-center gap-3">
-                {active.permission !== 'error' ? (
+                {!isDesktop && active.permission !== 'error' ? (
                   <Button
                     onClick={() => void reauthorize(active)}
                     disabled={busy}
@@ -525,13 +671,15 @@ export function CourseLibrary({
                     <FolderCheck /> 重新授权
                   </Button>
                 ) : null}
-                <Button
-                  variant="outline"
-                  onClick={() => void connectHandle('existing')}
-                  disabled={busy}
-                >
-                  重新连接原文件夹
-                </Button>
+                {!isDesktop ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => void connectHandle('existing')}
+                    disabled={busy}
+                  >
+                    重新连接原文件夹
+                  </Button>
+                ) : null}
               </div>
             </div>
           ) : bundle && active ? (
@@ -539,7 +687,8 @@ export function CourseLibrary({
               <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-start">
                 <div>
                   <p className="text-xs text-slate-500">
-                    本地课程 / {bundle.manifest.name}
+                    {isDesktop ? '工作区课程' : '本地课程'} /{' '}
+                    {bundle.manifest.name}
                   </p>
                   <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-900">
                     {bundle.manifest.name}
@@ -856,7 +1005,9 @@ export function CourseLibrary({
           <DialogHeader>
             <DialogTitle>创建本地课程</DialogTitle>
             <DialogDescription>
-              所选文件夹将成为这门课程的唯一可信数据来源。
+              {isDesktop
+                ? '课程将在固定工作区中获得独立目录，作为唯一可信数据来源。'
+                : '所选文件夹将成为这门课程的唯一可信数据来源。'}
             </DialogDescription>
           </DialogHeader>
           <label className="mt-2 space-y-2">
@@ -874,6 +1025,7 @@ export function CourseLibrary({
             创建后会建立
             course.json、课程总结、课程脑图、PDFs、Documents、History
             和“我的课程笔记.md”。用户笔记不会被自动覆盖。
+            {isDesktop ? '工作区位置见左侧边栏。' : ''}
           </div>
           <DialogFooter>
             <Button
@@ -892,7 +1044,7 @@ export function CourseLibrary({
               ) : (
                 <FolderPlus />
               )}
-              选择文件夹并创建
+              {isDesktop ? '创建课程' : '选择文件夹并创建'}
             </Button>
           </DialogFooter>
         </DialogContent>
