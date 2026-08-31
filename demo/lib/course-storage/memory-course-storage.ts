@@ -1,5 +1,6 @@
 import { createCourseId, sanitizeFileName } from './file-utils.ts';
 import type {
+  AiCourseKnowledge,
   CourseBundle,
   CourseManifest,
   CourseStorage,
@@ -9,6 +10,7 @@ import type {
   ImportResult,
 } from './types.ts';
 import {
+  applyAiCourseKnowledge,
   emptyCourseKnowledge,
   mergeDocumentDigest,
 } from '../knowledge/course-merger.ts';
@@ -50,6 +52,7 @@ export class MemoryCourseStorage implements CourseStorage {
     digest: DocumentDigest,
     options: ImportOptions,
     expectedRevision: number,
+    aiKnowledge?: AiCourseKnowledge,
   ): Promise<ImportResult> {
     const current = await this.load();
     this.assertRevision(current, expectedRevision);
@@ -76,7 +79,9 @@ export class MemoryCourseStorage implements CourseStorage {
       updatedAt: now,
     };
     const knowledge = options.mergeIntoCourse
-      ? mergeDocumentDigest(current.knowledge, digest, now)
+      ? aiKnowledge
+        ? applyAiCourseKnowledge(current.knowledge, aiKnowledge, now)
+        : mergeDocumentDigest(current.knowledge, digest, now)
       : current.knowledge;
     current.manifest.documents.push(document);
     current.manifest.revision += 1;
@@ -92,6 +97,7 @@ export class MemoryCourseStorage implements CourseStorage {
   async updateDocumentArtifacts(
     documentId: string,
     expectedRevision: number,
+    digest?: DocumentDigest,
   ): Promise<CourseBundle> {
     const current = await this.load();
     this.assertRevision(current, expectedRevision);
@@ -99,6 +105,7 @@ export class MemoryCourseStorage implements CourseStorage {
       (item) => item.id === documentId,
     );
     if (!document) throw new Error('文档不存在。');
+    if (digest) current.digests[documentId] = digest;
     document.hasSummary = true;
     document.hasMindmap = true;
     document.status = document.includedInCourse
@@ -112,6 +119,7 @@ export class MemoryCourseStorage implements CourseStorage {
   async mergeDocument(
     documentId: string,
     expectedRevision: number,
+    aiKnowledge?: AiCourseKnowledge,
   ): Promise<CourseBundle> {
     const current = await this.load();
     this.assertRevision(current, expectedRevision);
@@ -122,7 +130,9 @@ export class MemoryCourseStorage implements CourseStorage {
     if (!document || !digest) throw new Error('文档摘要不存在。');
     document.includedInCourse = true;
     document.status = 'course-merged';
-    current.knowledge = mergeDocumentDigest(current.knowledge, digest);
+    current.knowledge = aiKnowledge
+      ? applyAiCourseKnowledge(current.knowledge, aiKnowledge)
+      : mergeDocumentDigest(current.knowledge, digest);
     current.manifest.activeKnowledgeVersion = current.knowledge.version;
     current.manifest.revision += 1;
     this.bundle = current;

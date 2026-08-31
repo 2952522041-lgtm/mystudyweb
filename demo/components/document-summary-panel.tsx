@@ -21,7 +21,10 @@ export function DocumentSummaryPanel({
         {digest.title}
       </h2>
       <p className="mt-1 text-xs text-slate-500">
-        本地结构化摘要 · {digest.sourcePages.length} 页 · 来源可追溯
+        {digest.promptVersion === 'local-structure-v1'
+          ? '本地结构化摘要'
+          : `AI 生成${digest.model ? ` · ${digest.model}` : ''}`}{' '}
+        · {digest.sourcePages.length} 页 · 来源可追溯
       </p>
 
       <section className="mt-8">

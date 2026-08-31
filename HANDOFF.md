@@ -112,8 +112,8 @@ python3 -m unittest discover tests   # 根目录文档完整性测试
 5. **源语言固定为 auto**，未做语言检测展示。
 6. **真实双栏 PDF 尚未纳入仓库测试夹具**。已用 18 页 Springer 论文实测窄栏缝、跨栏标题和页眉页脚，并把关键几何特征固化为单元测试；若许可证允许，可再加入脱敏的小型 PDF 夹具。
 7. **vinext 是 beta**（1.0.0-beta.5），升级时注意 RSC 相关破坏性变更。
-8. **真实视觉供应商需要人工冒烟**。自动测试使用模拟多模态响应；上线前需用目标供应商检查图片字段兼容、CORS、请求体限制和公式理解质量。
-9. **课程摘要当前为本地结构化提取**。已实现完整目录、去重、来源、合并和版本流程；更高质量的语义归纳与“对话洞察自动提炼”仍需接入独立 `KnowledgeProvider`，当前导入选项只记录后续是否纳入对话洞察。
+8. **真实视觉供应商需要人工冒烟**。自动测试使用模拟多模态响应；上线前需用目标供应商检查图片字段兼容、CORS、请求体大小限制和公式理解质量。
+9. **知识库生成已接入 AI（2026-08-31，GLM，见第十五节）**。单 PDF 总结/脑图、课程总总结/总脑图全部由 KnowledgeProvider 生成并完全复用 AI 答疑配置；本地规则摘要 `createDocumentDigest` 仅保留用于旧数据兼容和测试，不再用于新导入。剩余工作：真实供应商下的人工质量调优（提示词在 `demo/lib/knowledge/ai-knowledge-provider.ts`，改提示词必须递增 promptVersion）与超长课程（几十份 PDF）一次综合的 token 上限策略。
 
 ## 六、踩过的坑（重要）
 
@@ -505,3 +505,40 @@ Ubuntu DEB 实机安装：构建产物已核对；图形会话内的安装与菜
 已验证（Linux）：第十三节 13.4 清单所列全部命令；`YEYU_SMOKE=1` 直接启动 `out/Yeyu-linux-x64/yeyu` 确认 preload 桥接、弹窗拒绝与课程生命周期；DEB 绝对路径 `demo/out/make/deb/x64/yeyu_0.1.0_amd64.deb`，`dpkg-deb -I` 元数据（Package: yeyu、Section: education、Maintainer、Homepage、Depends 自动补齐 libgtk-3-0 等）与内容清单（/usr/bin/yeyu 符号链接、/usr/share/applications/yeyu.desktop、hicolor 8 尺寸图标）核对无误。系统权限不允许免 sudo 安装 DEB，实机安装与 GNOME 菜单点击验收交由协调者执行。
 
 桌面架构补充说明：preload 构建管线在 `scripts/build-electron.mjs`（tsc + esbuild bundle），图标再生成命令为 `./node_modules/.bin/electron scripts/render-app-icons.cjs`（需图形会话）。
+
+## 十五、2026-08-31 知识库 AI 生成落地记录（GLM）
+
+把「单 PDF 总结、单 PDF 脑图、课程总总结、课程总脑图」从本地规则生成改为 AI 生成，并完全复用「AI 答疑」的接口配置（baseUrl、apiKey、model、visionConfirmed），不新增第二套知识库 API 设置。
+
+### 15.1 架构与调用流程
+
+```text
+导入/重新生成（course-library.tsx）
+  1. createKnowledgeProviderForSettings(loadChatSettings())
+     —— 未配置时抛 KnowledgeError('not_configured')，绝不回退本地规则
+  2. extractPdfPages（PDF.js 提取 + 同一视觉模型 OCR）
+  3. KnowledgeProvider.analyzeDocument：
+     buildPdfChunks 按页边界分块（8000–12000 字符，<page number="N"> 标签，长页按段落/句子边界拆分）
+     → 第一阶段逐分块 AI 分析（结构化 JSON）
+     → 第二阶段 AI 合成完整 DocumentDigest（schemaVersion 2，provider/model/promptVersion 入库）
+  4. mergeIntoCourse 时 synthesizeCourseKnowledge：把所有已纳入 DocumentDigest 交给 AI
+     跨文档综合（theme/概念去重/真实 relations/冲突/unresolvedQuestions）
+  5. storage.importDocument(..., aiKnowledge) → applyAiCourseKnowledge 落库
+     （保留 ownership=user 节点及其关系，version+1，写 History 快照与 revision 检查不变）
+```
+
+关键文件：
+
+- `demo/lib/openai-client.ts` + `demo/lib/ai-errors.ts` — 从 chat.ts 抽出的共享 OpenAI 兼容 SSE 客户端（流式、finish_reason 跟踪、错误分类），AI 答疑行为不变（chat.test.ts 通过）
+- `demo/lib/knowledge/ai-knowledge-provider.ts` — KnowledgeProvider：两阶段分析、JSON 解析失败自动纠错重试一次、`finish_reason=length` 拒收、来源页码越界拒收（invalid_source_pages）、AbortSignal、阶段回调、不可信数据系统提示词
+- `demo/lib/knowledge/pdf-chunks.ts` — 分块纯函数；`demo/lib/knowledge/mindmap-layout.ts` — 界面脑图与 SVG 共用的关系型层次布局（含折叠计数）
+- `demo/lib/knowledge/course-merger.ts` — 新增 `applyAiCourseKnowledge`；`mergeDocumentDigest` 现在也会携带摘要中的概念间关系
+- `demo/lib/course-storage/types.ts` — DocumentDigest/CourseKnowledge 扩展 provider/model/promptVersion/unresolvedQuestions（schemaVersion 1|2 双读兼容旧数据）；CourseStorage 三个方法新增可选 AI 成果参数
+- `demo/components/knowledge-mindmap.tsx` — 用 relations 层次渲染（层级深度、关系标签、虚线横向关系、折叠提示）；SVG 渲染器同源同数据
+- 缓存：`knowledgeDigestCacheKey` = 指纹 + provider + model + 提示词版本 + schema 版本；「重新生成」bypassCache 强制重跑 AI
+
+### 15.2 测试与已知限制
+
+- `tests/ai-knowledge.test.ts` 覆盖任务书 13 条测试要求（配置复用、密钥不泄漏、分块覆盖顺序、JSON 重试、截断拒存、页码越界拒存、未配置报错、模拟 AI 成果、多文档综合、user 节点保留、SVG 关系、桌面/浏览器一致性、失败不落盘）
+- 真实供应商质量需人工调优：提示词改动必须递增 `KNOWLEDGE_*_PROMPT_VERSION`
+- 冒烟测试环境说明：本容器无 root SUID helper 且禁用 user namespace，OS 级沙箱无法创建；`tests/electron-smoke.smoke.ts` 在检测到该启动失败后自动以 `--no-sandbox` 重试（仅测试进程追加参数，应用安全配置不变），正常桌面环境仍走带沙箱启动

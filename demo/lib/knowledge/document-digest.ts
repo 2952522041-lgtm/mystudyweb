@@ -125,9 +125,19 @@ export function createDocumentDigest(input: {
   };
 }
 
-export async function extractDocumentDigest(
+export interface ExtractedPdfPages {
+  fingerprint: string;
+  fileName: string;
+  pageCount: number;
+  /** 1 起始页码的页面文字（已按需 OCR）。 */
+  pages: string[];
+}
+
+/** 用 PDF.js 提取每页文字；缺文字层的页面交给视觉模型 OCR。 */
+export async function extractPdfPages(
   file: File,
   options: {
+    signal?: AbortSignal;
     onProgress?: (
       page: number,
       pageCount: number,
@@ -139,7 +149,7 @@ export async function extractDocumentDigest(
       pageImage: PageImageInput;
     }) => Promise<string>;
   } = {},
-): Promise<DocumentDigest> {
+): Promise<ExtractedPdfPages> {
   const buffer = await file.arrayBuffer();
   const fingerprint = await sha256Hex(buffer);
   const pdfjs = await loadPdfjs();
@@ -148,6 +158,9 @@ export async function extractDocumentDigest(
   const pages: string[] = [];
   try {
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      if (options.signal?.aborted) {
+        throw new Error('PDF 文字提取已取消。');
+      }
       const page = await pdf.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 1 });
       const content = await page.getTextContent();
@@ -189,5 +202,28 @@ export async function extractDocumentDigest(
         : '这份 PDF 没有文字层。请先配置 AI 答疑的视觉模型，再使用扫描件 OCR 导入。',
     );
   }
-  return createDocumentDigest({ fingerprint, fileName: file.name, pages });
+  return { fingerprint, fileName: file.name, pageCount: pages.length, pages };
+}
+
+export async function extractDocumentDigest(
+  file: File,
+  options: {
+    onProgress?: (
+      page: number,
+      pageCount: number,
+      stage: 'extracting' | 'ocr',
+    ) => void;
+    recognizePage?: (input: {
+      fingerprint: string;
+      pageNumber: number;
+      pageImage: PageImageInput;
+    }) => Promise<string>;
+  } = {},
+): Promise<DocumentDigest> {
+  const extracted = await extractPdfPages(file, options);
+  return createDocumentDigest({
+    fingerprint: extracted.fingerprint,
+    fileName: file.name,
+    pages: extracted.pages,
+  });
 }

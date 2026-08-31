@@ -1,4 +1,8 @@
 export const COURSE_SCHEMA_VERSION = 1 as const;
+/** AI 生成的 DocumentDigest 使用 schemaVersion 2；本地规则生成的旧摘要仍为 1。 */
+export const DIGEST_SCHEMA_VERSION = 2 as const;
+/** AI 生成的课程知识库使用 schemaVersion 2；旧版增量合并结果仍为 1。 */
+export const KNOWLEDGE_SCHEMA_VERSION = 2 as const;
 
 export type ImportStage =
   | 'selected'
@@ -39,8 +43,10 @@ export interface ConceptRelation {
   label: string;
 }
 
+export type DigestPromptVersion = 'local-structure-v1' | (string & {});
+
 export interface DocumentDigest {
-  schemaVersion: typeof COURSE_SCHEMA_VERSION;
+  schemaVersion: 1 | 2;
   documentId: string;
   fingerprint: string;
   title: string;
@@ -50,7 +56,10 @@ export interface DocumentDigest {
   relations: ConceptRelation[];
   unresolvedQuestions: string[];
   sourcePages: number[];
-  promptVersion: 'local-structure-v1';
+  promptVersion: DigestPromptVersion;
+  /** AI 生成时记录供应商与模型；旧本地摘要没有这两个字段。 */
+  provider?: string;
+  model?: string;
   updatedAt: string;
 }
 
@@ -97,14 +106,43 @@ export interface KnowledgeConflict {
   sources: SourceReference[];
 }
 
+/**
+ * KnowledgeProvider 综合出的课程知识库内容（尚未写入版本号）。
+ * 存储层接收后负责保留用户节点并推进 knowledge.version。
+ */
+export interface AiCourseKnowledge {
+  theme: string;
+  nodes: Array<{
+    id: string;
+    label: string;
+    description: string;
+    sources: SourceReference[];
+  }>;
+  relations: ConceptRelation[];
+  conflicts: Array<{
+    nodeId: string;
+    descriptions: string[];
+    sources: SourceReference[];
+  }>;
+  unresolvedQuestions: string[];
+  provider: string;
+  model: string;
+  promptVersion: string;
+}
+
 export interface CourseKnowledge {
-  schemaVersion: typeof COURSE_SCHEMA_VERSION;
+  schemaVersion: 1 | 2;
   courseId: string;
   version: number;
   nodes: KnowledgeNode[];
   relations: ConceptRelation[];
   conflicts: KnowledgeConflict[];
   updatedAt: string;
+  /** AI 综合生成时记录来源与提示词版本；旧版增量合并结果没有这些字段。 */
+  provider?: string;
+  model?: string;
+  promptVersion?: string;
+  unresolvedQuestions?: string[];
 }
 
 export interface CourseBundle {
@@ -129,19 +167,27 @@ export interface CourseStorage {
   readonly label: string;
   initialize(name: string): Promise<CourseBundle>;
   load(): Promise<CourseBundle>;
+  /**
+   * aiKnowledge 是预先用 AI 综合好的课程知识库内容；
+   * 提供时不再走本地名称匹配合并，但 user 节点仍由存储层强制保留。
+   */
   importDocument(
     file: File,
     digest: DocumentDigest,
     options: ImportOptions,
     expectedRevision: number,
+    aiKnowledge?: AiCourseKnowledge,
   ): Promise<ImportResult>;
+  /** digest 提供时用 AI 重新生成的摘要替换已存摘要并重绘成果。 */
   updateDocumentArtifacts(
     documentId: string,
     expectedRevision: number,
+    digest?: DocumentDigest,
   ): Promise<CourseBundle>;
   mergeDocument(
     documentId: string,
     expectedRevision: number,
+    aiKnowledge?: AiCourseKnowledge,
   ): Promise<CourseBundle>;
   openPdf(documentId: string): Promise<File>;
 }

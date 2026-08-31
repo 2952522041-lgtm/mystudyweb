@@ -42,6 +42,7 @@ import {
   type RecentCourse,
 } from '@/lib/course-storage/recent-courses';
 import type {
+  AiCourseKnowledge,
   BrowserDirectoryHandle,
   CourseBundle,
   CourseStorage,
@@ -50,8 +51,14 @@ import type {
   DocumentRecord,
   ImportOptions,
 } from '@/lib/course-storage/types';
-import { chatSettingsConfigured, loadChatSettings } from '@/lib/chat-cache';
-import { extractDocumentDigest } from '@/lib/knowledge/document-digest';
+import { loadChatSettings, type ChatSettings } from '@/lib/chat-cache';
+import type { PageImageInput } from '@/lib/chat';
+import { stableDocumentId } from '@/lib/course-storage/file-utils';
+import {
+  createKnowledgeProviderForSettings,
+  describeKnowledgeError,
+} from '@/lib/knowledge/ai-knowledge-provider';
+import { extractPdfPages } from '@/lib/knowledge/document-digest';
 import {
   createOcrProviderForSettings,
   createOcrService,
@@ -410,50 +417,92 @@ export function CourseLibrary({
     }
   };
 
+  const makeOcrRecognizer = (chatSettings: ChatSettings) => {
+    const ocrProvider = createOcrProviderForSettings(chatSettings);
+    const ocrCache = createOcrService();
+    return (request: {
+      fingerprint: string;
+      pageNumber: number;
+      pageImage: PageImageInput;
+    }) =>
+      resolvePageOcr({ provider: ocrProvider, cache: ocrCache, request }).then(
+        (resolved) => resolved.result.text,
+      );
+  };
+
   const importPdf = async (
     file: File,
     options: ImportOptions,
     onProgress: (message: string, percent: number) => void,
   ) => {
     if (!active?.bundle) throw new Error('请先连接课程文件夹。');
+    const bundle = active.bundle;
     const chatSettings = loadChatSettings();
-    const ocrProvider = chatSettingsConfigured(chatSettings)
-      ? createOcrProviderForSettings(chatSettings)
-      : null;
-    const ocrCache = createOcrService();
-    onProgress('正在提取 PDF 文字并建立内部摘要', 8);
-    const digest = await extractDocumentDigest(file, {
+    // 知识库成果完全由 AI 生成并复用「AI 答疑」配置；未配置时明确报错，不回退本地规则。
+    const provider = createKnowledgeProviderForSettings(chatSettings);
+
+    onProgress('正在提取 PDF 文字', 6);
+    const recognizePage = makeOcrRecognizer(chatSettings);
+    const extracted = await extractPdfPages(file, {
       onProgress: (page, count, stage) => {
         onProgress(
           stage === 'ocr'
-            ? `正在用视觉模型识别第 ${page} / ${count} 页`
-            : `正在分析第 ${page} / ${count} 页`,
-          8 + Math.round((page / count) * 62),
+            ? `正在用视觉模型识别第 ${page} / ${count} 页（OCR）`
+            : `正在提取第 ${page} / ${count} 页文字`,
+          6 + Math.round((page / count) * 14),
         );
       },
-      recognizePage: async (request) => {
-        if (!ocrProvider) {
-          throw new Error(
-            '检测到扫描或手写页面。请先在 PDF 阅读器的“AI 答疑”设置中配置 API Key 和视觉模型，再重新导入。',
+      recognizePage,
+    });
+
+    const digest = await provider.analyzeDocument({
+      fingerprint: extracted.fingerprint,
+      fileName: file.name,
+      documentId: stableDocumentId(extracted.fingerprint),
+      pages: extracted.pages,
+      onStage: (stage, detail) => {
+        if (stage === 'chunk-analysis' && detail?.chunkIndex && detail?.chunkCount) {
+          onProgress(
+            `AI 正在分块分析（${detail.chunkIndex} / ${detail.chunkCount}）`,
+            22 + Math.round((detail.chunkIndex / detail.chunkCount) * 40),
           );
+        } else if (stage === 'synthesize') {
+          onProgress('AI 正在综合整份文档摘要', 66);
+        } else if (stage === 'cached') {
+          onProgress('命中本机缓存，复用上次的 AI 分析结果', 66);
         }
-        return (
-          await resolvePageOcr({
-            provider: ocrProvider,
-            cache: ocrCache,
-            request,
-          })
-        ).result.text;
       },
     });
-    onProgress('正在复制 PDF 并生成本地成果', 76);
+
+    let aiKnowledge: AiCourseKnowledge | undefined;
+    if (options.mergeIntoCourse) {
+      onProgress('AI 正在综合课程总总结与总脑图', 78);
+      const includedDigests = [
+        ...bundle.manifest.documents
+          .filter((document) => document.includedInCourse)
+          .map((document) => bundle.digests[document.id])
+          .filter((item): item is DocumentDigest => Boolean(item)),
+        digest,
+      ];
+      aiKnowledge = await provider.synthesizeCourseKnowledge({
+        courseId: bundle.manifest.id,
+        courseName: bundle.manifest.name,
+        digests: includedDigests,
+        userNodeLabels: bundle.knowledge.nodes
+          .filter((node) => node.ownership === 'user')
+          .map((node) => node.label),
+      });
+    }
+
+    onProgress('正在保存课程成果', 90);
     const result = await active.storage.importDocument(
       file,
       digest,
       options,
-      active.bundle.manifest.revision,
+      bundle.manifest.revision,
+      aiKnowledge,
     );
-    onProgress('正在提交课程新版本', 94);
+    onProgress('正在提交课程新版本', 96);
     setEntryBundle(active.id, result.bundle);
     if (active.handle) {
       await saveRecentCourse({
@@ -465,39 +514,94 @@ export function CourseLibrary({
     }
     setMessage(
       options.mergeIntoCourse
-        ? 'PDF 已导入，并已更新课程总总结和总脑图。'
-        : 'PDF 已导入，暂未纳入课程知识库。',
+        ? 'AI 已生成 PDF 总结和脑图，并更新课程总总结和总脑图。'
+        : options.generateSummary || options.generateMindmap
+          ? 'AI 已生成这份 PDF 的总结和脑图，暂未纳入课程知识库。'
+          : 'PDF 已导入，AI 内部摘要已建立，暂未生成可见成果。',
     );
   };
 
-  const mutateDocument = async (
-    documentId: string,
-    action: 'merge' | 'artifacts',
-  ) => {
+  const regenerateDocument = async (document: DocumentRecord) => {
     if (!active?.bundle) return;
     setBusy(true);
     setError(null);
     try {
-      const next =
-        action === 'merge'
-          ? await active.storage.mergeDocument(
-              documentId,
-              active.bundle.manifest.revision,
-            )
-          : await active.storage.updateDocumentArtifacts(
-              documentId,
-              active.bundle.manifest.revision,
-            );
+      const chatSettings = loadChatSettings();
+      const provider = createKnowledgeProviderForSettings(chatSettings);
+      setMessage('正在读取课程中的 PDF 并提取文字…');
+      const file = await active.storage.openPdf(document.id);
+      const recognizePage = makeOcrRecognizer(chatSettings);
+      const extracted = await extractPdfPages(file, {
+        onProgress: (page, count, stage) => {
+          setMessage(
+            stage === 'ocr'
+              ? `正在用视觉模型识别第 ${page} / ${count} 页（OCR）`
+              : `正在提取第 ${page} / ${count} 页文字`,
+          );
+        },
+        recognizePage,
+      });
+      // 重新生成必须重新调用 AI：绕过缓存。
+      const digest = await provider.analyzeDocument({
+        fingerprint: extracted.fingerprint,
+        fileName: file.name,
+        documentId: stableDocumentId(extracted.fingerprint),
+        pages: extracted.pages,
+        bypassCache: true,
+        onStage: (stage, detail) => {
+          if (stage === 'chunk-analysis' && detail?.chunkIndex && detail?.chunkCount) {
+            setMessage(`AI 正在分块分析（${detail.chunkIndex} / ${detail.chunkCount}）`);
+          } else if (stage === 'synthesize') {
+            setMessage('AI 正在综合整份文档摘要…');
+          }
+        },
+      });
+      const next = await active.storage.updateDocumentArtifacts(
+        document.id,
+        active.bundle.manifest.revision,
+        digest,
+      );
       setEntryBundle(active.id, next);
-      setMessage(
-        action === 'merge'
-          ? '这份 PDF 已并入课程总结和脑图。'
-          : '已生成这份 PDF 的总结和脑图。',
-      );
+      setMessage('已用 AI 重新生成这份 PDF 的总结和脑图。');
     } catch (mutationError) {
-      setError(
-        mutationError instanceof Error ? mutationError.message : '操作失败。',
+      setError(describeKnowledgeError(mutationError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const mergeDocumentWithAi = async (document: DocumentRecord) => {
+    if (!active?.bundle) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const bundle = active.bundle;
+      const chatSettings = loadChatSettings();
+      const provider = createKnowledgeProviderForSettings(chatSettings);
+      setMessage('AI 正在综合课程总总结与总脑图…');
+      const includedDigests = bundle.manifest.documents
+        .filter(
+          (item) =>
+            (item.includedInCourse || item.id === document.id) && bundle.digests[item.id],
+        )
+        .map((item) => bundle.digests[item.id]);
+      const aiKnowledge = await provider.synthesizeCourseKnowledge({
+        courseId: bundle.manifest.id,
+        courseName: bundle.manifest.name,
+        digests: includedDigests,
+        userNodeLabels: bundle.knowledge.nodes
+          .filter((node) => node.ownership === 'user')
+          .map((node) => node.label),
+      });
+      const next = await active.storage.mergeDocument(
+        document.id,
+        bundle.manifest.revision,
+        aiKnowledge,
       );
+      setEntryBundle(active.id, next);
+      setMessage('这份 PDF 已并入 AI 综合的课程总结和脑图。');
+    } catch (mutationError) {
+      setError(describeKnowledgeError(mutationError));
     } finally {
       setBusy(false);
     }
@@ -969,11 +1073,11 @@ export function CourseLibrary({
                               <Button
                                 size="xs"
                                 onClick={() =>
-                                  void mutateDocument(document.id, 'merge')
+                                  void mergeDocumentWithAi(document)
                                 }
                                 disabled={busy}
                               >
-                                <GitMerge /> 并入课程
+                                <GitMerge /> AI 并入课程
                               </Button>
                             ) : null}
                             {!document.hasSummary || !document.hasMindmap ? (
@@ -981,13 +1085,24 @@ export function CourseLibrary({
                                 variant="outline"
                                 size="xs"
                                 onClick={() =>
-                                  void mutateDocument(document.id, 'artifacts')
+                                  void regenerateDocument(document)
                                 }
                                 disabled={busy}
                               >
-                                生成成果
+                                AI 生成成果
                               </Button>
-                            ) : null}
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="xs"
+                                onClick={() =>
+                                  void regenerateDocument(document)
+                                }
+                                disabled={busy}
+                              >
+                                重新生成
+                              </Button>
+                            )}
                           </div>
                         </div>
                       ))}

@@ -5,6 +5,7 @@ import {
   suffixFileName,
 } from './file-utils.ts';
 import type {
+  AiCourseKnowledge,
   BrowserDirectoryHandle,
   BrowserFileHandle,
   CourseBundle,
@@ -16,6 +17,7 @@ import type {
   ImportResult,
 } from './types.ts';
 import {
+  applyAiCourseKnowledge,
   emptyCourseKnowledge,
   mergeDocumentDigest,
 } from '../knowledge/course-merger.ts';
@@ -107,8 +109,10 @@ function documentDirectory(documentId: string): string[] {
 
 export class BrowserDirectoryStorage implements CourseStorage {
   readonly label: string;
+  readonly root: BrowserDirectoryHandle;
 
-  constructor(readonly root: BrowserDirectoryHandle) {
+  constructor(root: BrowserDirectoryHandle) {
+    this.root = root;
     this.label = root.name;
   }
 
@@ -172,6 +176,7 @@ export class BrowserDirectoryStorage implements CourseStorage {
     digest: DocumentDigest,
     options: ImportOptions,
     expectedRevision: number,
+    aiKnowledge?: AiCourseKnowledge,
   ): Promise<ImportResult> {
     const current = await this.load();
     this.assertRevision(current.manifest, expectedRevision);
@@ -218,7 +223,9 @@ export class BrowserDirectoryStorage implements CourseStorage {
 
     await this.writeDocumentArtifacts(document, digest);
     const knowledge = options.mergeIntoCourse
-      ? mergeDocumentDigest(current.knowledge, digest, now)
+      ? aiKnowledge
+        ? applyAiCourseKnowledge(current.knowledge, aiKnowledge, now)
+        : mergeDocumentDigest(current.knowledge, digest, now)
       : current.knowledge;
     const manifest: CourseManifest = {
       ...current.manifest,
@@ -240,11 +247,12 @@ export class BrowserDirectoryStorage implements CourseStorage {
   async updateDocumentArtifacts(
     documentId: string,
     expectedRevision: number,
+    digest?: DocumentDigest,
   ): Promise<CourseBundle> {
     const current = await this.load();
     this.assertRevision(current.manifest, expectedRevision);
-    const digest = current.digests[documentId];
-    if (!digest) throw new Error('这份 PDF 的内部摘要缺失，无法生成成果。');
+    const activeDigest = digest ?? current.digests[documentId];
+    if (!activeDigest) throw new Error('这份 PDF 的内部摘要缺失，无法生成成果。');
     const now = new Date().toISOString();
     const documents = current.manifest.documents.map((document) =>
       document.id === documentId
@@ -260,9 +268,10 @@ export class BrowserDirectoryStorage implements CourseStorage {
         : document,
     );
     const target = documents.find((document) => document.id === documentId)!;
-    await this.writeDocumentArtifacts(target, digest);
+    await this.writeDocumentArtifacts(target, activeDigest);
     const bundle = {
       ...current,
+      digests: { ...current.digests, [documentId]: activeDigest },
       manifest: {
         ...current.manifest,
         documents,
@@ -278,13 +287,16 @@ export class BrowserDirectoryStorage implements CourseStorage {
   async mergeDocument(
     documentId: string,
     expectedRevision: number,
+    aiKnowledge?: AiCourseKnowledge,
   ): Promise<CourseBundle> {
     const current = await this.load();
     this.assertRevision(current.manifest, expectedRevision);
     const digest = current.digests[documentId];
     if (!digest) throw new Error('这份 PDF 的内部摘要缺失，无法并入课程。');
     const now = new Date().toISOString();
-    const knowledge = mergeDocumentDigest(current.knowledge, digest, now);
+    const knowledge = aiKnowledge
+      ? applyAiCourseKnowledge(current.knowledge, aiKnowledge, now)
+      : mergeDocumentDigest(current.knowledge, digest, now);
     const documents = current.manifest.documents.map((document) =>
       document.id === documentId
         ? {

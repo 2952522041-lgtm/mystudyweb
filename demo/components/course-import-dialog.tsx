@@ -162,9 +162,10 @@ export function CourseImportDialog({
         />
 
         <div className="rounded-xl border border-violet-100 bg-violet-50/60 px-3 py-2 text-[11px] leading-5 text-violet-800">
-          文字型 PDF 会完全在本地提取；扫描或手写页面会使用“AI
-          答疑”中配置的视觉模型进行
-          OCR，并把对应页面图像发送给该服务。识别结果会缓存在本机。
+          总结、脑图和课程合并都由 AI 生成，并完全复用「AI 答疑」中保存的接口地址、API
+          Key 与模型（不新增第二套设置）。文字型 PDF
+          会先在本地提取；扫描或手写页面会使用同一套视觉模型进行
+          OCR，并把对应页面图像发送给该服务。识别结果与 AI 分析会缓存在本机。
         </div>
 
         <div className="space-y-2">
@@ -174,7 +175,7 @@ export function CourseImportDialog({
           <OptionRow
             icon={<BrainCircuit className="size-4" />}
             title="生成 PDF 总结"
-            description="生成客观内容概览、章节摘要与来源页码"
+            description="AI 概括全文，生成内容概览、章节摘要与来源页码"
             checked={options.generateSummary}
             onCheckedChange={(checked) =>
               updateOption('generateSummary', checked)
@@ -183,7 +184,7 @@ export function CourseImportDialog({
           <OptionRow
             icon={<Network className="size-4" />}
             title="生成 PDF 脑图"
-            description="创建可追溯到页码的概念节点和关系"
+            description="AI 提炼概念节点、真实关系与来源页码"
             checked={options.generateMindmap}
             onCheckedChange={(checked) =>
               updateOption('generateMindmap', checked)
@@ -198,7 +199,7 @@ export function CourseImportDialog({
           <OptionRow
             icon={<GitMerge className="size-4" />}
             title="并入课程总总结和总脑图"
-            description="通过内部结构化摘要增量更新，保留原有来源"
+            description="AI 综合所有已纳入文档，重建跨文档概念、关系与冲突"
             checked={options.mergeIntoCourse}
             onCheckedChange={(checked) =>
               updateOption('mergeIntoCourse', checked)

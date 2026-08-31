@@ -141,7 +141,19 @@ async function launchAndProbe(
   if (storageValue !== undefined) {
     env[SMOKE_STORAGE_VALUE_ENV_VAR] = storageValue;
   }
-  const { code, stdout, stderr } = await launchElectron(command, args, env);
+  let { code, stdout, stderr } = await launchElectron(command, args, env);
+  if (
+    !stdout.includes(SMOKE_RESULT_MARKER) &&
+    /SUID sandbox|chrome-sandbox/i.test(stderr)
+  ) {
+    // 容器环境限制：无 root 的 SUID helper 且 user namespace 被禁用时，
+    // Chromium 的 OS 级沙箱无法创建。此时仅对测试进程追加 --no-sandbox 重试；
+    // 应用内 sandbox: true、contextIsolation 与导航隔离配置不变，全部断言照常执行。
+    process.stderr.write(
+      '[electron-smoke] OS 沙箱不可用（容器限制），改用 --no-sandbox 重试桥接冒烟。\n',
+    );
+    ({ code, stdout, stderr } = await launchElectron(command, [...args, '--no-sandbox'], env));
+  }
   const result = parseSmokeResult(stdout);
   assert.equal(
     result.api,

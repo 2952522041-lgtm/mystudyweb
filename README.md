@@ -40,10 +40,16 @@ AI 答疑需要单独配置 OpenAI 兼容接口、API Key 和支持图片输入�
 ## 本地课程知识库
 
 - 课程必须绑定用户主动授权的本地文件夹，浏览器本地存储只保存最近目录句柄
+- 单 PDF 总结、单 PDF 脑图、课程总总结和总脑图全部由 AI 生成，并完全复用「AI 答疑」保存的接口地址、API Key、模型与视觉确认，不新增第二套设置
+- 生成流程：PDF.js 提取文字（扫描页复用同一视觉模型 OCR）→ 按页面边界分块（约 8000–12000 字符，页码标签 `<page number="N">`）→ AI 分块分析 → AI 全文综合 → AI 课程综合；AI 未配置或失败时会明确报错，不会回退到本地规则结果
+- AI 系统提示词把 PDF 内容视为不可信数据：忽略文档内指令、结论必须带来源页码、禁止编造页码与引用；来源页码超出 PDF 范围、`finish_reason=length` 截断或 JSON 解析两次失败的结果一律不保存
+- 课程知识库由 AI 跨文档综合：概念去重、真实关系（包含/依赖/导致/对比/组成/应用/冲突）、文档间冲突与待解决问题；`ownership=user` 的用户节点不会被 AI 覆盖或删除
+- 界面脑图与 SVG 使用同一份结构化数据与布局，按 AI relations 层次展开并显示关系标签；节点过多时折叠展示，完整结构始终保存在 JSON 中
 - 创建课程会生成 `course.json`、`课程总结.md`、`课程脑图.json`、`课程脑图.svg`、`我的课程笔记.md`、`PDFs/`、`Documents/`、`Knowledge/` 和 `History/`
 - 每份 PDF 都会生成结构化内部摘要；即使不生成单 PDF 可见成果，也可以稍后并入课程
 - PDF 按 SHA-256 内容指纹去重；同名但内容不同的文件会使用稳定后缀保存
-- 课程更新采用 revision 冲突检查，提交新版本前会保留旧成果到 `History/`
+- AI 结果按「指纹 + provider + model + 提示词版本 + schema 版本」缓存；模型、提示词或 PDF 内容变化后不会复用旧结果，重新生成会绕过缓存强制重跑 AI
+- 课程更新采用 revision 冲突检查，提交新版本前会保留旧成果到 `History/`；旧版本本地规则成果仍能打开，重新生成后升级为 AI 版本
 - `我的课程笔记.md` 只属于用户，应用不会自动覆盖；API Key 不会写入课程目录
 - 当前版本要求支持 File System Access API 的桌面 Chrome / Edge，不支持时会明确提示
 
@@ -63,14 +69,18 @@ pnpm build      # 生产构建
 
 - `demo/lib/pdf-text.ts` — PDF 文字提取与段落重建（双栏检测、连字符合并）
 - `demo/lib/translation.ts` — 翻译供应商适配器、错误分类、重试与缓存键规则
-- `demo/lib/chat.ts` — 多模态 AI 答疑适配器、SSE 流式回答和安全提示词
+- `demo/lib/ai-errors.ts` + `demo/lib/openai-client.ts` — AI 答疑与知识库共用的 OpenAI 兼容 SSE 客户端、错误分类
+- `demo/lib/chat.ts` — 多模态 AI 答疑适配器和安全提示词
+- `demo/lib/knowledge/ai-knowledge-provider.ts` — 知识库 AI Provider（分块分析、全文综合、课程综合、校验与缓存）
+- `demo/lib/knowledge/pdf-chunks.ts` — 按页面边界的分块纯函数（页码标签、长页拆分）
+- `demo/lib/knowledge/mindmap-layout.ts` — 界面脑图与 SVG 共用的关系型层次布局
 - `demo/lib/page-vision.ts` — 当前页离屏渲染、视觉图像尺寸控制和文字上下文提取
 - `demo/lib/ocr.ts` — 扫描/手写页面视觉 OCR、结果规范化和 IndexedDB 缓存
 - `demo/lib/chat-cache.ts` — 独立 AI 设置与逐页对话的 IndexedDB 存储
 - `demo/lib/reader-cache.ts` — IndexedDB 缓存、阅读进度、设置存储
 - `demo/lib/current-page.ts` — 当前页判定（最大可见面积规则）
 - `demo/lib/course-storage/` — 本地目录、课程清单、版本历史、去重与最近课程句柄
-- `demo/lib/knowledge/` — PDF 内部摘要、课程增量合并、Markdown/JSON/SVG 成果渲染
+- `demo/lib/knowledge/` — 内部摘要、课程合并、Markdown/JSON/SVG 成果渲染
 - `demo/components/course-library.tsx` — 正式课程工作台与课程/阅读器衔接
 
 产品与架构文档见 `PRODUCT_DESIGN.md` 和 `docs/TECHNICAL_SOLUTION.md`。
