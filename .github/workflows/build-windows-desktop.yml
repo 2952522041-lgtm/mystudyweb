@@ -38,6 +38,8 @@ jobs:
         run: pnpm lint
       - name: Run typecheck
         run: pnpm exec tsc --noEmit
+      - name: Real Electron startup smoke test
+        run: pnpm desktop:test
       - name: Build static web assets
         run: pnpm desktop:web
       - name: Compile electron main and preload

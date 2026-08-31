@@ -1,3 +1,4 @@
+import squirrelStartup from 'electron-squirrel-startup';
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
@@ -257,21 +258,28 @@ async function createWindow(): Promise<void> {
   await window.loadURL(target);
 }
 
-void app.whenReady().then(async () => {
-  const layout = resolveWorkspaceLayout(
-    app.getPath('documents'),
-    process.env.YEYU_WORKSPACE_ROOT,
-  );
-  await ensureWorkspace(layout);
-  registerDesktopIpc(layout);
-  await createWindow();
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      void createWindow();
-    }
-  });
-});
-
-app.on('window-all-closed', () => {
+// Squirrel 安装/更新/卸载事件必须最早处理：安装器会以
+// --squirrel-install/--squirrel-updated/--squirrel-uninstall/--squirrel-obsolete
+// 启动应用本体，此时只需生成/删除快捷方式并立即退出，不进入正常启动流程。
+if (squirrelStartup) {
   app.quit();
-});
+} else {
+  void app.whenReady().then(async () => {
+    const layout = resolveWorkspaceLayout(
+      app.getPath('documents'),
+      process.env.YEYU_WORKSPACE_ROOT,
+    );
+    await ensureWorkspace(layout);
+    registerDesktopIpc(layout);
+    await createWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        void createWindow();
+      }
+    });
+  });
+
+  app.on('window-all-closed', () => {
+    app.quit();
+  });
+}

@@ -359,6 +359,9 @@ void test('packaging wires main, preload and the static client bundle', async ()
   ]);
   const pkg = JSON.parse(packageJson) as {
     main: string;
+    productName?: string;
+    author?: string;
+    description?: string;
     scripts: Record<string, string>;
   };
 
@@ -367,8 +370,25 @@ void test('packaging wires main, preload and the static client bundle', async ()
   assert.match(pkg.scripts['desktop:compile'], /electron\/tsconfig\.json/);
   assert.match(pkg.scripts['desktop:build'], /electron-forge package/);
   assert.match(pkg.scripts['desktop:make'], /electron-forge make/);
+  // Squirrel.Windows 的 NuGet manifest 必需元数据。
+  assert.ok(pkg.productName, 'package.json 需要 productName');
+  assert.ok(pkg.author, 'package.json 需要 author');
+  assert.ok(pkg.description, 'package.json 需要 description');
 
   assert.match(forgeConfig, /extraResource: \['dist\/client'\]/);
   assert.match(forgeConfig, /maker-squirrel/);
   assert.match(forgeConfig, /win32/);
+  assert.match(forgeConfig, /authors/);
+  assert.match(forgeConfig, /description/);
+});
+
+void test('main process handles Squirrel install lifecycle before startup', async () => {
+  const main = await readFile(new URL('../electron/main.ts', import.meta.url), 'utf8');
+  // Squirrel 事件必须在注册任何启动逻辑之前检查，处理到事件时直接退出。
+  assert.match(main, /import squirrelStartup from 'electron-squirrel-startup';/);
+  const squirrelIndex = main.indexOf('if (squirrelStartup)');
+  const whenReadyIndex = main.indexOf('app.whenReady()');
+  assert.ok(squirrelIndex >= 0, 'main.ts 必须处理 Squirrel 启动事件');
+  assert.ok(whenReadyIndex > squirrelIndex, 'Squirrel 检查必须在 whenReady 之前');
+  assert.match(main, /if \(squirrelStartup\) \{\s*app\.quit\(\);\s*\} else \{/);
 });
