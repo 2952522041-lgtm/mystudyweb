@@ -20,7 +20,11 @@ void test('Pages build copies the PDF worker before creating the static export',
     packageJson.scripts.prepages,
     /^node scripts\/copy-pdf-worker\.mjs && /,
   );
-  assert.match(packageJson.scripts.prepages, /VINEXT_EXPORT=1 vinext build$/);
+  // 构建经 run-vinext 包装：容忍 Windows 上成功构建后的 libuv 退出崩溃。
+  assert.match(
+    packageJson.scripts.prepages,
+    /VINEXT_EXPORT=1 node scripts\/run-vinext\.mjs build$/,
+  );
 });
 
 void test('GitHub Pages repository name comes from CI and rejects unsafe values', () => {
