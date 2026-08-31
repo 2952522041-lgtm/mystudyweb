@@ -362,6 +362,8 @@ void test('packaging wires main, preload and the static client bundle', async ()
     productName?: string;
     author?: string;
     description?: string;
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
     scripts: Record<string, string>;
   };
 
@@ -383,6 +385,11 @@ void test('packaging wires main, preload and the static client bundle', async ()
 });
 
 void test('main process handles Squirrel install lifecycle before startup', async () => {
+  const packageJson = await readFile(new URL('../package.json', import.meta.url), 'utf8');
+  const pkg = JSON.parse(packageJson) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
   const main = await readFile(new URL('../electron/main.ts', import.meta.url), 'utf8');
   // Squirrel 事件必须在注册任何启动逻辑之前检查，处理到事件时直接退出。
   assert.match(main, /import squirrelStartup from 'electron-squirrel-startup';/);
@@ -391,4 +398,15 @@ void test('main process handles Squirrel install lifecycle before startup', asyn
   assert.ok(squirrelIndex >= 0, 'main.ts 必须处理 Squirrel 启动事件');
   assert.ok(whenReadyIndex > squirrelIndex, 'Squirrel 检查必须在 whenReady 之前');
   assert.match(main, /if \(squirrelStartup\) \{\s*app\.quit\(\);\s*\} else \{/);
+  // electron-packager 只打包 dependencies；主进程运行时模块放 devDependencies
+  // 会在打包后的应用里报 Cannot find module。
+  assert.ok(
+    pkg.dependencies?.['electron-squirrel-startup'],
+    'electron-squirrel-startup 必须是生产依赖',
+  );
+  assert.equal(
+    pkg.devDependencies?.['electron-squirrel-startup'],
+    undefined,
+    'electron-squirrel-startup 不能留在 devDependencies',
+  );
 });
