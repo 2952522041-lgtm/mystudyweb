@@ -9,7 +9,7 @@
 
 ## 二、当前状态（Web MVP 已可用，下一步迁移 Windows 桌面端）
 
-> **接手者先看这里：** 用户已经确认下一阶段不再优先修补网页目录选择器，而是把应用打包成 Windows 桌面程序。桌面程序启动时自动创建固定工作区，课程、PDF、总结、脑图和历史版本都直接写入该工作区。当前仓库尚未加入 Electron/Tauri 代码，工作树干净，不存在需要续写的半成品桌面实现。
+> **接手者先看这里：** 2026-08-31 起，Windows 桌面端已按第七至第十节完成迁移落地（Electron 外壳、固定工作区、安全文件桥接、DesktopCourseStorage、Windows 打包工作流，提交 `18a9488` → `592ec31` 及后续状态更新）。在线网页保留为 Demo/临时 PDF 阅读器，浏览器目录选择流程原样保留。剩余工作见第五节第 2 条（Windows runner 实机验证安装包）。
 
 已实现并经过真实浏览器端到端验证的能力：
 
@@ -105,7 +105,7 @@ python3 -m unittest discover tests   # 根目录文档完整性测试
 按优先级（对应技术方案的分阶段规划）：
 
 1. **浏览器目录访问是当前主要阻塞项**。File System Access API 必须由用户触发系统目录选择器，不能稳定做到“启动即使用固定工作区”；Codex 内置浏览器的系统选择器也不适合自动化。不要继续用浏览器内部存储模拟一个看似真实的系统目录。
-2. **桌面端尚未启动**。下一步按本文第七至第十节迁移 Electron；早期技术方案写过 Tauri 2，但结合当前 React/TypeScript/vinext 代码和交付 `.exe` 的目标，Electron 的迁移成本更低。
+2. **桌面端已落地，待 Windows 实机验证**。阶段 A–D 已完成：`demo/electron/`（main/preload/工作区文件层/路径安全纯函数）、`demo/lib/course-storage/desktop-course-storage.ts`、`.github/workflows/build-windows-desktop.yml`（workflow_dispatch + v* tag 触发）。本地已完成 Linux 打包冒烟（`pnpm desktop:build` 产出 `out/Yeyu-linux-x64`，asar 内含 CJS main/preload，resources/client 含静态站点）。**尚未验证**：Windows 安装包实机安装、GUI 启动冒烟（本机无显示器/无 Wine），需由 Windows runner 或用户按 10.3 验收。pnpm 注意事项：demo 使用 `nodeLinker: hoisted`（Electron Forge 的依赖遍历器要求 npm 式布局）。
 3. **浏览器 E2E 测试缺失**。现有 GitHub Actions 已执行 test + lint + tsc + Pages build，不要重复创建相同 CI。桌面迁移后应新增 Electron 主进程文件系统测试和一条 Windows 启动冒烟测试。
 4. **无托管密钥的薄后端代理**。当前翻译和答疑 Key 存本地浏览器、浏览器直连供应商（已在设置界面告知）。公开运营前需按技术方案 6.4 和 15.8 建代理。
 5. **源语言固定为 auto**，未做语言检测展示。
@@ -387,3 +387,8 @@ Windows 安装包必须由 Windows runner 验证，Linux 上“配置能解析�
 - 本地测试目录：`/home/yusicheng/Documents/1`（当前为空，仅用于 Linux 开发测试）
 - 开始工作前先执行 `git status --short`；正常情况应为空。
 - 建议第一笔提交只完成“Electron 外壳 + 固定工作区创建 + 安全路径测试”，不要把整个迁移塞进一个无法回滚的大提交。
+- **执行记录（2026-08-31）**：
+  - `18a9488 feat: add electron shell with fixed workspace and safe path bridge`（阶段 A+B）
+  - `6d7ce35 feat: connect course workspace to desktop storage`（阶段 C）
+  - `592ec31 ci: add Windows x64 desktop packaging workflow`（阶段 D）
+  - 桌面迁移开始时的最新提交：`0927988 feat: add visual OCR for scanned PDFs`
