@@ -21,6 +21,7 @@ export const DESKTOP_CHANNELS = {
   workspaceInfo: 'yeyu:workspace-info',
   listCourses: 'yeyu:list-courses',
   createCourse: 'yeyu:create-course',
+  deleteCourse: 'yeyu:delete-course',
   exists: 'yeyu:exists',
   ensureDirectory: 'yeyu:ensure-directory',
   readFile: 'yeyu:read-file',
@@ -43,6 +44,8 @@ export interface YeyuDesktopApi {
   getWorkspaceInfo(): Promise<WorkspaceInfo>;
   listCourses(): Promise<DesktopCourseSummary[]>;
   createCourseDirectory(name: string): Promise<{ directoryName: string }>;
+  /** 把整个课程目录移入系统回收站；删除的是 Courses 下经过校验的课程子目录。 */
+  deleteCourseDirectory(name: string): Promise<void>;
   exists(
     courseDirectory: string,
     relativePath: string[],

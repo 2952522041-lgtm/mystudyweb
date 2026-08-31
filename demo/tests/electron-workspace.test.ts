@@ -46,6 +46,7 @@ import {
   ensureCourseDirectory,
   ensureWorkspace,
   readCourseFile,
+  resolveDeletableCourseDirectory,
   scanCourses,
   writeCourseFile,
 } from '../electron/workspace.ts';
@@ -298,6 +299,81 @@ void test(
     await rm(root, { recursive: true, force: true });
   }
 });
+
+void test('deletable course directory resolves real courses and rejects everything else', async () => {
+  const root = await temporaryDirectory();
+  try {
+    const layout = resolveWorkspaceLayout(root);
+    await ensureWorkspace(layout);
+    const { directoryName } = await createCourseDirectory(
+      layout.coursesRoot,
+      'MAT 3007',
+    );
+
+    const target = await resolveDeletableCourseDirectory(
+      layout.coursesRoot,
+      directoryName,
+    );
+    assert.equal(
+      target,
+      path.join(layout.coursesRoot, 'MAT 3007'),
+      '合法课程目录应解析为 Courses 根下的绝对路径',
+    );
+
+    const rejects: string[] = [
+      // 不存在的课程目录。
+      '不存在的课程',
+      // sanitize 后不再等于原值的名字（含非法字符或结尾空白）。
+      'MAT 3007...',
+      'bad/name?',
+      '..',
+      'a\\b',
+      'C:',
+      '',
+    ];
+    for (const name of rejects) {
+      await assert.rejects(
+        () => resolveDeletableCourseDirectory(layout.coursesRoot, name),
+        WorkspacePathError,
+        `expected rejection for ${JSON.stringify(name)}`,
+      );
+    }
+
+    // 目标是文件而不是目录时也必须拒绝。
+    await writeFile(path.join(layout.coursesRoot, 'notes.md'), '笔记');
+    await assert.rejects(
+      () => resolveDeletableCourseDirectory(layout.coursesRoot, 'notes.md'),
+      WorkspacePathError,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test(
+  'a symlinked course directory is never deletable',
+  { skip: symlinkSupported ? false : '当前环境无法创建符号链接（需要管理员或开发者模式）' },
+  async () => {
+    const root = await temporaryDirectory();
+    try {
+      const layout = resolveWorkspaceLayout(root);
+      await ensureWorkspace(layout);
+      const outside = path.join(root, 'outside');
+      await mkdir(outside);
+      // 目录名本身合法（sanitize 原样保留），但它是一个指向外部的符号链接。
+      await symlink(outside, path.join(layout.coursesRoot, '链接课程'));
+
+      await assert.rejects(
+        () =>
+          resolveDeletableCourseDirectory(layout.coursesRoot, '链接课程'),
+        WorkspacePathError,
+        '符号链接目录不允许通过删除接口移入回收站',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 void test('scanCourses only lists directories with a valid manifest', async () => {
   const root = await temporaryDirectory();

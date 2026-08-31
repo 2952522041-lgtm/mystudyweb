@@ -19,6 +19,7 @@ import {
   ensureCourseDirectory,
   ensureWorkspace,
   readCourseFile,
+  resolveDeletableCourseDirectory,
   scanCourses,
   writeCourseFile,
 } from './workspace.ts';
@@ -143,6 +144,27 @@ function registerDesktopIpc(layout: WorkspaceLayout): void {
     await ensureWorkspace(layout);
     try {
       return await createCourseDirectory(layout.coursesRoot, name);
+    } catch (error) {
+      throw toIpcError(error);
+    }
+  });
+  ipcMain.handle(DESKTOP_CHANNELS.deleteCourse, async (_event, name) => {
+    assertString(name, '课程目录名不合法。');
+    try {
+      const target = await resolveDeletableCourseDirectory(
+        layout.coursesRoot,
+        name,
+      );
+      // 移入系统回收站而不是永久删除；用户可以在回收站找回误删的课程。
+      // shell.trashItem 成功时 resolve(void)，失败时 reject。
+      try {
+        await shell.trashItem(target);
+      } catch {
+        throw new WorkspacePathError(
+          'COURSE_DATA',
+          '无法将课程移入回收站，请手动检查该课程目录。',
+        );
+      }
     } catch (error) {
       throw toIpcError(error);
     }

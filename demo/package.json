@@ -3,7 +3,7 @@
   "productName": "Yeyu",
   "description": "页语——本地课程知识库、PDF 随页翻译与 AI 答疑阅读器",
   "author": "Yeyu Team",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

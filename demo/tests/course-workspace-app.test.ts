@@ -34,6 +34,36 @@ void test('production app exposes the course workspace and reader handoff', asyn
   }
 });
 
+void test('course deletion is desktop-only, confirmed and routed through the safe bridge', async () => {
+  const [library, main, workspace] = await Promise.all([
+    read('../components/course-library.tsx'),
+    read('../electron/main.ts'),
+    read('../electron/workspace.ts'),
+  ]);
+
+  for (const requirement of [
+    // UI：确认对话框 + 明确说明数据去向，不能一击即删。
+    '删除课程',
+    '移入系统回收站',
+    '移入回收站',
+    'deleteCourseDirectory',
+  ]) {
+    assert.match(library, new RegExp(requirement));
+  }
+  // 删除入口只在桌面模式出现：浏览器模式没有删除用户文件夹的权限。
+  assert.match(
+    library,
+    /isDesktop \? \(\s*<Button[^>]*variant="destructive"[\s\S]*?删除课程/,
+  );
+
+  // 主进程：删除走回收站而不是直接 rm，且目标必须先通过路径校验。
+  assert.match(main, /resolveDeletableCourseDirectory/);
+  assert.match(main, /shell\.trashItem/);
+  // 校验层：只允许 Courses 根的直接子目录，并拒绝符号链接。
+  assert.match(workspace, /assertKnownCourseDirectory\(directoryName\)/);
+  assert.match(workspace, /lstat/);
+});
+
 void test('directory storage writes recoverable artifacts and never receives settings', async () => {
   const [storage, types] = await Promise.all([
     read('../lib/course-storage/browser-directory-storage.ts'),

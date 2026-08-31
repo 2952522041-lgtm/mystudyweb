@@ -11,6 +11,7 @@ import {
   ensureCourseDirectory,
   ensureWorkspace,
   readCourseFile,
+  resolveDeletableCourseDirectory,
   scanCourses,
   writeCourseFile,
 } from '../electron/workspace.ts';
@@ -37,6 +38,15 @@ class FakeWorkspaceApi implements YeyuDesktopApi {
 
   createCourseDirectory(name: string) {
     return createCourseDirectory(this.layout.coursesRoot, name);
+  }
+
+  /** 测试替身用永久删除模拟主进程的回收站删除；回收站行为由 electron-launch 冒烟覆盖。 */
+  async deleteCourseDirectory(name: string) {
+    const target = await resolveDeletableCourseDirectory(
+      this.layout.coursesRoot,
+      name,
+    );
+    await rm(target, { recursive: true, force: true });
   }
 
   exists(courseDirectory: string, relativePath: string[]) {

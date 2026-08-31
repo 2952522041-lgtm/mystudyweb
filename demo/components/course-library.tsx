@@ -18,6 +18,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Sparkles,
+  Trash2,
   TriangleAlert,
 } from 'lucide-react';
 
@@ -139,6 +140,7 @@ export function CourseLibrary({
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [courseName, setCourseName] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -305,6 +307,31 @@ export function CourseLibrary({
     } catch (createError) {
       setError(
         createError instanceof Error ? createError.message : '无法创建课程。',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteActiveCourse = async () => {
+    if (!desktopApi || !active) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await desktopApi.deleteCourseDirectory(active.storage.label);
+      setEntries((previous) => previous.filter((entry) => entry.id !== active.id));
+      setActiveId((previous) =>
+        previous === active.id
+          ? (entries.find((entry) => entry.id !== active.id)?.id ?? null)
+          : previous,
+      );
+      setDeleteOpen(false);
+      setMessage(
+        `课程“${active.name}”已移入系统回收站，如需恢复请在回收站中找回。`,
+      );
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error ? deleteError.message : '无法删除课程。',
       );
     } finally {
       setBusy(false);
@@ -715,6 +742,16 @@ export function CourseLibrary({
                   <Button size="sm" onClick={() => setImportOpen(true)}>
                     <FilePlus2 /> 导入 PDF
                   </Button>
+                  {isDesktop ? (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => setDeleteOpen(true)}
+                      disabled={busy}
+                    >
+                      <Trash2 /> 删除课程
+                    </Button>
+                  ) : null}
                 </div>
               </div>
 
@@ -1045,6 +1082,42 @@ export function CourseLibrary({
                 <FolderPlus />
               )}
               {isDesktop ? '创建课程' : '选择文件夹并创建'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent className="sm:max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle>删除课程“{active?.name}”</DialogTitle>
+            <DialogDescription>
+              整个课程目录将从固定工作区移入系统回收站。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs leading-5 text-rose-700">
+            将一起删除的内容：全部课程 PDF、课程总结、课程脑图、历史版本和“我的课程笔记.md”。
+            移入回收站后仍可在回收站中找回；但工作区中的课程列表会立即移除这门课程。
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteOpen(false)}
+              disabled={busy}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => void deleteActiveCourse()}
+              disabled={busy}
+            >
+              {busy ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <Trash2 />
+              )}
+              移入回收站
             </Button>
           </DialogFooter>
         </DialogContent>

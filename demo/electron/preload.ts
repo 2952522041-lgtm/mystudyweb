@@ -7,6 +7,8 @@ const api: YeyuDesktopApi = {
   listCourses: () => ipcRenderer.invoke(DESKTOP_CHANNELS.listCourses),
   createCourseDirectory: (name) =>
     ipcRenderer.invoke(DESKTOP_CHANNELS.createCourse, name),
+  deleteCourseDirectory: (name) =>
+    ipcRenderer.invoke(DESKTOP_CHANNELS.deleteCourse, name),
   exists: (courseDirectory, relativePath) =>
     ipcRenderer.invoke(DESKTOP_CHANNELS.exists, courseDirectory, relativePath),
   ensureDirectory: (courseDirectory, relativePath) =>

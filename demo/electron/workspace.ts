@@ -93,6 +93,34 @@ export async function createCourseDirectory(
   return { directoryName };
 }
 
+/**
+ * 校验“待删除课程目录”并返回其绝对路径。
+ * 只允许 Courses 根的直接子目录，且必须真实存在、是目录、不是符号链接；
+ * 真正的删除（回收站）由主进程用返回路径执行。
+ */
+export async function resolveDeletableCourseDirectory(
+  coursesRoot: string,
+  directoryName: string,
+): Promise<string> {
+  const clean = assertKnownCourseDirectory(directoryName);
+  const coursesRootResolved = path.resolve(coursesRoot);
+  const target = path.resolve(coursesRootResolved, clean);
+  if (
+    target !== coursesRootResolved &&
+    !target.startsWith(coursesRootResolved + path.sep)
+  ) {
+    throw new WorkspacePathError('PATH_ESCAPE', '课程目录越出了工作区边界。');
+  }
+  const stat = await fs.lstat(target).catch(() => null);
+  if (!stat?.isDirectory()) {
+    throw new WorkspacePathError(
+      'COURSE_NOT_FOUND',
+      '课程目录不存在或不是目录。',
+    );
+  }
+  return target;
+}
+
 function assertKnownCourseDirectory(directoryName: string): string {
   const clean = sanitizeCourseDirectoryName(directoryName);
   if (clean !== directoryName) {

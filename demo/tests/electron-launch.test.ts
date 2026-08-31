@@ -75,6 +75,12 @@ const DEFAULT_HARNESS_PAGE = `<!doctype html><meta charset="utf-8"><title>yeyu s
     result.createdCourse = created.directoryName;
     const courses = await window.yeyuDesktop.listCourses();
     result.courses = courses.map((course) => course.directoryName);
+    // 删除课程：整个课程目录应从工作区消失（主进程负责移入回收站）。
+    await window.yeyuDesktop.deleteCourseDirectory(created.directoryName);
+    result.deletedCourse = true;
+    result.coursesAfterDelete = (await window.yeyuDesktop.listCourses()).map(
+      (course) => course.directoryName,
+    );
     result.error = null;
   } catch (error) {
     result.error = error instanceof Error ? error.message : String(error);
@@ -190,12 +196,20 @@ void test(
         'Courses',
         String(report.createdCourse),
       );
+      // 删除流程：IPC 返回成功后，工作区中的课程目录必须真的消失。
+      // （harness 在回报前已完成“创建→删除”，删除成功本身要求目录此前真实存在。）
+      assert.equal(report.deletedCourse, true, '删除课程 IPC 应成功返回');
+      assert.deepEqual(
+        report.coursesAfterDelete,
+        [],
+        '删除后重新扫描不应再列出该课程',
+      );
       assert.ok(
         await stat(createdCourse).then(
-          () => true,
           () => false,
+          () => true,
         ),
-        `通过 IPC 创建的课程目录应真实存在：${createdCourse}`,
+        `删除后课程目录应已离开工作区：${createdCourse}`,
       );
     } finally {
       await rmQuiet(tempRoot);
