@@ -441,10 +441,16 @@ function PdfReader({
   initialFile,
   courseContext,
   onOpenCourses,
+  suspended = false,
+  onStandaloneImport,
 }: {
   initialFile?: File | null;
   courseContext?: CourseReaderContext | null;
   onOpenCourses: () => void;
+  /** True while the course library covers this reader; the DOM stays mounted. */
+  suspended?: boolean;
+  /** Called when a PDF is imported from this reader's own import dialog. */
+  onStandaloneImport?: (file: File) => void;
 }) {
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [docMeta, setDocMeta] = useState<DocumentMeta | null>(null);
@@ -490,6 +496,7 @@ function PdfReader({
   const ocrCacheRef = useRef<ReturnType<typeof createOcrService> | null>(null);
   const settingsRef = useRef(settings);
   const chatSettingsRef = useRef(chatSettings);
+  const onStandaloneImportRef = useRef(onStandaloneImport);
   const bypassCacheRef = useRef(new Set<string>());
   const prefetchedTranslationsRef = useRef(new Set<string>());
   const retryTokenRef = useRef(0);
@@ -502,6 +509,10 @@ function PdfReader({
   useEffect(() => {
     chatSettingsRef.current = chatSettings;
   }, [chatSettings]);
+
+  useEffect(() => {
+    onStandaloneImportRef.current = onStandaloneImport;
+  }, [onStandaloneImport]);
 
   const translationKey = useCallback(
     (pageNumber: number, language: string) => `${pageNumber}:${language}`,
@@ -621,6 +632,23 @@ function PdfReader({
     activeThumbnailRef.current?.scrollIntoView({ block: 'nearest' });
   }, [page]);
 
+  // A display:none subtree loses its scroll position, so when the reader comes
+  // back from behind the course library, re-anchor on the page being read.
+  const anchorOnResumeRef = useRef(false);
+  useEffect(() => {
+    if (suspended) {
+      anchorOnResumeRef.current = true;
+      return;
+    }
+    if (!anchorOnResumeRef.current) return;
+    anchorOnResumeRef.current = false;
+    const frame = requestAnimationFrame(() => {
+      pageElementsRef.current.get(page)?.scrollIntoView({ block: 'start' });
+      activeThumbnailRef.current?.scrollIntoView({ block: 'nearest' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [suspended, page]);
+
   // Display page and translated page are decoupled: translation waits for a
   // stable page so fast scrolling does not fire requests.
   useEffect(() => {
@@ -656,10 +684,15 @@ function PdfReader({
     }
   }, [page, pageHeightsPx, pageTops]);
 
-  const handleFile = useCallback(async (file: File, requestedPage?: number) => {
-    setImporting(true);
-    setImportError(null);
-    try {
+  const handleFile = useCallback(
+    async (
+      file: File,
+      requestedPage?: number,
+      origin: 'home' | 'dialog' = 'home',
+    ) => {
+      setImporting(true);
+      setImportError(null);
+      try {
       const buffer = await file.arrayBuffer();
       const fingerprint = await computeFileFingerprint(buffer);
       const pdfjs = await loadPdfjs();
@@ -730,6 +763,7 @@ function PdfReader({
       );
       setPage(openingPage);
       setTranslationPage(openingPage);
+      if (origin === 'dialog') onStandaloneImportRef.current?.(file);
       setImportOpen(false);
     } catch {
       setImportError('无法解析该 PDF 文件，文件可能已损坏或已加密。');
@@ -941,6 +975,15 @@ function PdfReader({
     { length: docMeta?.pageCount ?? 0 },
     (_, index) => index + 1,
   );
+  // rightMode is the user's intent; clamp it to what the current document
+  // offers, so summary/mindmap never linger on a document without course
+  // results (e.g. after importing a new PDF inside the reader).
+  const activeMode =
+    rightMode === 'summary' || rightMode === 'mindmap'
+      ? courseContext?.digest
+        ? rightMode
+        : 'translation'
+      : rightMode;
   const translationKeyCurrent = translationKey(translationPage, targetLanguage);
   const currentState = translationStates[translationKeyCurrent];
   const isReady =
@@ -1263,7 +1306,7 @@ function PdfReader({
                   >
                     <Tabs
                       className="h-full min-h-0 gap-0"
-                      value={rightMode}
+                      value={activeMode}
                       onValueChange={(value) =>
                         setRightMode(
                           value as
@@ -1308,15 +1351,15 @@ function PdfReader({
                             ) : null}
                           </TabsList>
                           <p className="pane-meta truncate">
-                            {rightMode === 'translation'
+                            {activeMode === 'translation'
                               ? `第 ${translationPage} 页 · ${targetLanguage}${remoteProvider ? ' · 已连接翻译服务' : ' · 演示模式'}`
-                              : rightMode === 'chat'
+                              : activeMode === 'chat'
                                 ? `第 ${translationPage} 页 · 文字与视觉上下文`
                                 : `整份 PDF · 已保存到课程文件夹`}
                           </p>
                         </div>
                         <div className="flex items-center gap-1">
-                          {rightMode === 'translation' ? (
+                          {activeMode === 'translation' ? (
                             <>
                               <IconButton
                                 label="复制译文"
@@ -1470,7 +1513,7 @@ function PdfReader({
           <div className="flex items-center gap-2">
             <span
               className={`size-1.5 rounded-full ${
-                rightMode === 'chat'
+                activeMode === 'chat'
                   ? 'bg-violet-500'
                   : currentState?.status === 'error'
                     ? 'bg-rose-500'
@@ -1481,13 +1524,13 @@ function PdfReader({
               }`}
             />
             <span>
-              {rightMode === 'chat'
+              {activeMode === 'chat'
                 ? docMeta
                   ? `AI 答疑已绑定第 ${translationPage} 页`
                   : '导入 PDF 后可使用 AI 答疑'
-                : rightMode === 'summary'
+                : activeMode === 'summary'
                   ? 'PDF 总结已保存到课程文件夹'
-                  : rightMode === 'mindmap'
+                  : activeMode === 'mindmap'
                     ? 'PDF 脑图已保存到课程文件夹'
                     : statusLabel}
             </span>
@@ -1538,7 +1581,7 @@ function PdfReader({
               accept="application/pdf,.pdf"
               onChange={(event) => {
                 const file = event.target.files?.[0];
-                if (file) void handleFile(file);
+                if (file) void handleFile(file, undefined, 'dialog');
                 event.target.value = '';
               }}
             />
@@ -1591,54 +1634,60 @@ export default function Home() {
   const [readerContext, setReaderContext] =
     useState<CourseReaderContext | null>(null);
 
-  if (view === 'reader') {
-    return (
-      <PdfReader
-        initialFile={readerFile}
-        courseContext={readerContext}
-        onOpenCourses={() => setView('courses')}
-      />
-    );
-  }
-
   return (
-    <TooltipProvider>
-      <main className="flex h-screen min-h-[680px] flex-col overflow-hidden bg-[#f5f7fa]">
-        <header className="flex h-15 shrink-0 items-center justify-between border-b border-white/10 bg-[#243a59] px-5 text-white">
-          <div className="flex items-center gap-3">
-            <span className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-400 to-indigo-500 shadow-sm">
-              <BookOpen className="size-4" />
-            </span>
-            <span className="text-sm font-semibold tracking-wide">页语</span>
-          </div>
-          <nav className="flex h-full items-center" aria-label="主导航">
-            <button
-              type="button"
-              className="flex h-full items-center gap-2 border-b-2 border-violet-300 px-4 text-sm font-medium"
-            >
-              <LibraryBig className="size-4" /> 课程知识库
-            </button>
-            <button
-              type="button"
-              className="flex h-full items-center gap-2 border-b-2 border-transparent px-4 text-sm text-slate-300 hover:text-white"
-              onClick={() => setView('reader')}
-            >
-              <FileText className="size-4" /> PDF 阅读器
-            </button>
-          </nav>
-          <div className="w-24" aria-hidden="true" />
-        </header>
-        <CourseLibrary
-          onOpenDocument={(file, context) => {
-            setReaderFile(file);
-            setReaderContext({
-              ...context,
-              onBack: () => setView('courses'),
-            });
-            setView('reader');
-          }}
+    <>
+      {/* The reader stays mounted behind the course library, so a PDF imported
+          into the reader (and its in-session translations) survives the round
+          trip; hidden + inert keeps it out of layout, focus and the a11y tree. */}
+      <div hidden={view !== 'reader'} inert={view !== 'reader'}>
+        <PdfReader
+          initialFile={readerFile}
+          courseContext={readerContext}
+          onOpenCourses={() => setView('courses')}
+          suspended={view !== 'reader'}
+          onStandaloneImport={() => setReaderContext(null)}
         />
-      </main>
-    </TooltipProvider>
+      </div>
+      {view === 'courses' ? (
+        <TooltipProvider>
+          <main className="flex h-screen min-h-[680px] flex-col overflow-hidden bg-[#f5f7fa]">
+            <header className="flex h-15 shrink-0 items-center justify-between border-b border-white/10 bg-[#243a59] px-5 text-white">
+              <div className="flex items-center gap-3">
+                <span className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-400 to-indigo-500 shadow-sm">
+                  <BookOpen className="size-4" />
+                </span>
+                <span className="text-sm font-semibold tracking-wide">页语</span>
+              </div>
+              <nav className="flex h-full items-center" aria-label="主导航">
+                <button
+                  type="button"
+                  className="flex h-full items-center gap-2 border-b-2 border-violet-300 px-4 text-sm font-medium"
+                >
+                  <LibraryBig className="size-4" /> 课程知识库
+                </button>
+                <button
+                  type="button"
+                  className="flex h-full items-center gap-2 border-b-2 border-transparent px-4 text-sm text-slate-300 hover:text-white"
+                  onClick={() => setView('reader')}
+                >
+                  <FileText className="size-4" /> PDF 阅读器
+                </button>
+              </nav>
+              <div className="w-24" aria-hidden="true" />
+            </header>
+            <CourseLibrary
+              onOpenDocument={(file, context) => {
+                setReaderFile(file);
+                setReaderContext({
+                  ...context,
+                  onBack: () => setView('courses'),
+                });
+                setView('reader');
+              }}
+            />
+          </main>
+        </TooltipProvider>
+      ) : null}
+    </>
   );
 }
