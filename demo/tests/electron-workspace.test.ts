@@ -323,3 +323,24 @@ void test('electron main and preload keep the secure process boundary', async ()
   assert.match(preload, /contextBridge\.exposeInMainWorld\('yeyuDesktop', api\)/);
   assert.doesNotMatch(preload, /ipcRenderer\.send|nodeIntegration/);
 });
+
+void test('packaging wires main, preload and the static client bundle', async () => {
+  const [packageJson, forgeConfig] = await Promise.all([
+    readFile(new URL('../package.json', import.meta.url), 'utf8'),
+    readFile(new URL('../forge.config.cjs', import.meta.url), 'utf8'),
+  ]);
+  const pkg = JSON.parse(packageJson) as {
+    main: string;
+    scripts: Record<string, string>;
+  };
+
+  assert.equal(pkg.main, 'electron/dist/main.js');
+  assert.match(pkg.scripts['desktop:web'], /VINEXT_EXPORT=1/);
+  assert.match(pkg.scripts['desktop:compile'], /electron\/tsconfig\.json/);
+  assert.match(pkg.scripts['desktop:build'], /electron-forge package/);
+  assert.match(pkg.scripts['desktop:make'], /electron-forge make/);
+
+  assert.match(forgeConfig, /extraResource: \['dist\/client'\]/);
+  assert.match(forgeConfig, /maker-squirrel/);
+  assert.match(forgeConfig, /win32/);
+});

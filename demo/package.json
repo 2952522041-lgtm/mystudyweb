@@ -17,8 +17,8 @@
     "lint": "oxlint app lib tests electron",
     "desktop:web": "node scripts/copy-pdf-worker.mjs && VINEXT_EXPORT=1 vinext build",
     "desktop:compile": "tsc -p electron/tsconfig.json && node scripts/write-electron-commonjs.mjs",
-    "desktop:build": "pnpm desktop:web && pnpm desktop:compile && electron-forge package --config forge.config.cjs",
-    "desktop:make": "pnpm desktop:web && pnpm desktop:compile && electron-forge make --config forge.config.cjs",
+    "desktop:build": "pnpm desktop:web && pnpm desktop:compile && electron-forge package",
+    "desktop:make": "pnpm desktop:web && pnpm desktop:compile && electron-forge make",
     "desktop:test": "node --test --experimental-strip-types tests/electron-workspace.test.ts",
     "format": "oxfmt"
   },
