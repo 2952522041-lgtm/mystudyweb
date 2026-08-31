@@ -231,7 +231,8 @@ export function ReaderSettingsDialog({
           <TabsContent value="chat" className="space-y-4 pt-3">
             <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-[11px] leading-5 text-violet-800">
               AI
-              答疑会在你发送问题时，把当前页文字和清晰页面图像发送给所配置服务。请选择支持图片输入的模型。
+              答疑会在你发送问题时，把当前页文字和清晰页面图像发送给所配置服务；扫描或手写页面也会复用此视觉模型进行
+              OCR。请选择支持图片输入的模型。
             </div>
             <div className="space-y-1.5">
               <label
@@ -312,7 +313,8 @@ export function ReaderSettingsDialog({
               </label>
             </div>
             <p className="text-[11px] leading-5 text-slate-500">
-              AI 配置只保存在本机浏览器中，不会与翻译配置共享。
+              AI 配置只保存在本机浏览器中，不会与翻译配置共享。OCR
+              识别文字会缓存在本机，不保存页面图像。
             </p>
           </TabsContent>
         </Tabs>

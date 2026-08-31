@@ -11,6 +11,18 @@ import {
   rewriteGitHubPagesOutput,
 } from '../scripts/build-github-pages.mjs';
 
+const packageJson = JSON.parse(
+  await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+) as { scripts: Record<string, string> };
+
+void test('Pages build copies the PDF worker before creating the static export', () => {
+  assert.match(
+    packageJson.scripts.prepages,
+    /^node scripts\/copy-pdf-worker\.mjs && /,
+  );
+  assert.match(packageJson.scripts.prepages, /VINEXT_EXPORT=1 vinext build$/);
+});
+
 void test('GitHub Pages repository name comes from CI and rejects unsafe values', () => {
   assert.equal(
     resolveRepositoryName({ GITHUB_REPOSITORY: 'example/learning-reader' }),

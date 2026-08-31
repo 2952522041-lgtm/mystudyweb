@@ -69,3 +69,11 @@ void test('translation and AI settings use independent controlled fields', () =>
   assert.match(settingsSource, /支持图片输入的模型/);
   assert.match(settingsSource, /id="chat-vision-confirmed"/);
 });
+
+void test('scanned pages use cached visual OCR before entering translation', () => {
+  assert.match(pageSource, /pageNeedsOcr\(sourceText\)/);
+  assert.match(pageSource, /renderPageImage\(pdfDoc, translationPage/);
+  assert.match(pageSource, /resolvePageOcr/);
+  assert.match(pageSource, /status: 'recognizing'/);
+  assert.match(settingsSource, /扫描或手写页面[\s\S]*OCR/);
+});

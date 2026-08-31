@@ -47,7 +47,13 @@ import type {
   DocumentRecord,
   ImportOptions,
 } from '@/lib/course-storage/types';
+import { chatSettingsConfigured, loadChatSettings } from '@/lib/chat-cache';
 import { extractDocumentDigest } from '@/lib/knowledge/document-digest';
+import {
+  createOcrProviderForSettings,
+  createOcrService,
+  resolvePageOcr,
+} from '@/lib/ocr';
 
 export interface CourseReaderContext {
   courseName: string;
@@ -291,12 +297,35 @@ export function CourseLibrary({
     onProgress: (message: string, percent: number) => void,
   ) => {
     if (!active?.bundle) throw new Error('请先连接课程文件夹。');
+    const chatSettings = loadChatSettings();
+    const ocrProvider = chatSettingsConfigured(chatSettings)
+      ? createOcrProviderForSettings(chatSettings)
+      : null;
+    const ocrCache = createOcrService();
     onProgress('正在提取 PDF 文字并建立内部摘要', 8);
-    const digest = await extractDocumentDigest(file, (page, count) => {
-      onProgress(
-        `正在分析第 ${page} / ${count} 页`,
-        8 + Math.round((page / count) * 62),
-      );
+    const digest = await extractDocumentDigest(file, {
+      onProgress: (page, count, stage) => {
+        onProgress(
+          stage === 'ocr'
+            ? `正在用视觉模型识别第 ${page} / ${count} 页`
+            : `正在分析第 ${page} / ${count} 页`,
+          8 + Math.round((page / count) * 62),
+        );
+      },
+      recognizePage: async (request) => {
+        if (!ocrProvider) {
+          throw new Error(
+            '检测到扫描或手写页面。请先在 PDF 阅读器的“AI 答疑”设置中配置 API Key 和视觉模型，再重新导入。',
+          );
+        }
+        return (
+          await resolvePageOcr({
+            provider: ocrProvider,
+            cache: ocrCache,
+            request,
+          })
+        ).result.text;
+      },
     });
     onProgress('正在复制 PDF 并生成本地成果', 76);
     const result = await active.storage.importDocument(

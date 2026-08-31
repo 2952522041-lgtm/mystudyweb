@@ -1,6 +1,9 @@
 import { loadPdfjs } from '../pdfjs.ts';
 import { itemsFromPdfJs, normalizePage } from '../pdf-text.ts';
 import { sha256Hex, stableDocumentId } from '../course-storage/file-utils.ts';
+import { pageNeedsOcr } from '../ocr.ts';
+import { renderPageImage } from '../page-vision.ts';
+import type { PageImageInput } from '../chat.ts';
 import type {
   DigestConcept,
   DigestSection,
@@ -124,7 +127,18 @@ export function createDocumentDigest(input: {
 
 export async function extractDocumentDigest(
   file: File,
-  onProgress?: (page: number, pageCount: number) => void,
+  options: {
+    onProgress?: (
+      page: number,
+      pageCount: number,
+      stage: 'extracting' | 'ocr',
+    ) => void;
+    recognizePage?: (input: {
+      fingerprint: string;
+      pageNumber: number;
+      pageImage: PageImageInput;
+    }) => Promise<string>;
+  } = {},
 ): Promise<DocumentDigest> {
   const buffer = await file.arrayBuffer();
   const fingerprint = await sha256Hex(buffer);
@@ -137,20 +151,32 @@ export async function extractDocumentDigest(
       const page = await pdf.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 1 });
       const content = await page.getTextContent();
-      pages.push(
-        normalizePage(
-          itemsFromPdfJs(
-            content.items as Array<{
-              str?: string;
-              transform?: number[];
-              width?: number;
-              height?: number;
-            }>,
-            viewport.height,
-          ),
-        ).text,
-      );
-      onProgress?.(pageNumber, pdf.numPages);
+      let text = normalizePage(
+        itemsFromPdfJs(
+          content.items as Array<{
+            str?: string;
+            transform?: number[];
+            width?: number;
+            height?: number;
+          }>,
+          viewport.height,
+        ),
+      ).text;
+      if (pageNeedsOcr(text) && options.recognizePage) {
+        options.onProgress?.(pageNumber, pdf.numPages, 'ocr');
+        const pageImage = await renderPageImage(pdf, pageNumber, {
+          maxDimension: 2200,
+          maxPixels: 4_000_000,
+        });
+        text = await options.recognizePage({
+          fingerprint,
+          pageNumber,
+          pageImage,
+        });
+      } else {
+        options.onProgress?.(pageNumber, pdf.numPages, 'extracting');
+      }
+      pages.push(text);
       page.cleanup();
     }
   } finally {
@@ -158,7 +184,9 @@ export async function extractDocumentDigest(
   }
   if (pages.join('').replace(/\s+/g, '').length < 20) {
     throw new Error(
-      '这份 PDF 没有足够的可提取文字，当前课程知识库暂不支持扫描版 PDF。',
+      options.recognizePage
+        ? 'OCR 没有识别到足够文字，请检查页面清晰度或更换视觉模型。'
+        : '这份 PDF 没有文字层。请先配置 AI 答疑的视觉模型，再使用扫描件 OCR 导入。',
     );
   }
   return createDocumentDigest({ fingerprint, fileName: file.name, pages });

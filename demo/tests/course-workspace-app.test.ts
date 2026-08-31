@@ -27,6 +27,8 @@ void test('production app exposes the course workspace and reader handoff', asyn
     'mergeDocument',
     'updateDocumentArtifacts',
     'openPdf',
+    'resolvePageOcr',
+    '视觉模型识别',
   ]) {
     assert.match(library, new RegExp(requirement));
   }

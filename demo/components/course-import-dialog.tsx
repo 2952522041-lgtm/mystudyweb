@@ -140,7 +140,7 @@ export function CourseImportDialog({
           </span>
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-semibold text-slate-800">
-              {file?.name ?? '选择本地文字型 PDF'}
+              {file?.name ?? '选择本地 PDF'}
             </span>
             <span className="mt-1 block text-xs text-slate-500">
               {file
@@ -160,6 +160,12 @@ export function CourseImportDialog({
             event.target.value = '';
           }}
         />
+
+        <div className="rounded-xl border border-violet-100 bg-violet-50/60 px-3 py-2 text-[11px] leading-5 text-violet-800">
+          文字型 PDF 会完全在本地提取；扫描或手写页面会使用“AI
+          答疑”中配置的视觉模型进行
+          OCR，并把对应页面图像发送给该服务。识别结果会缓存在本机。
+        </div>
 
         <div className="space-y-2">
           <p className="px-1 text-[11px] font-bold tracking-[0.12em] text-slate-500 uppercase">

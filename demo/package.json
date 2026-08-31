@@ -10,7 +10,7 @@
     "dev": "vinext dev",
     "prebuild": "node scripts/copy-pdf-worker.mjs",
     "build": "vinext build",
-    "prepages": "VINEXT_EXPORT=1 vinext build",
+    "prepages": "node scripts/copy-pdf-worker.mjs && VINEXT_EXPORT=1 vinext build",
     "pages": "node scripts/build-github-pages.mjs",
     "start": "wrangler dev --config dist/server/wrangler.json",
     "test": "node --test --experimental-strip-types tests/*.test.ts",

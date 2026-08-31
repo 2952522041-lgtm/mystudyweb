@@ -67,6 +67,7 @@ export function saveChatSettings(
 
 export function createChatProviderForSettings(
   settings: ChatSettings,
+  fetchImpl?: typeof fetch,
 ): ChatProvider {
   if (!chatSettingsConfigured(settings)) {
     throw new Error('AI chat settings are incomplete');
@@ -75,6 +76,7 @@ export function createChatProviderForSettings(
     baseUrl: settings.baseUrl,
     apiKey: settings.apiKey.trim(),
     model: settings.model.trim(),
+    fetchImpl,
   });
 }
 

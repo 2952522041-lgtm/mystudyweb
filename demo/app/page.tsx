@@ -64,13 +64,22 @@ import {
 } from '@/components/ui/tooltip';
 import { pickCurrentPage, measurePageRects } from '@/lib/current-page';
 import {
+  chatSettingsConfigured,
   DEFAULT_CHAT_SETTINGS,
   loadChatSettings,
   saveChatSettings,
   type ChatSettings,
 } from '@/lib/chat-cache';
+import { ChatError } from '@/lib/chat';
 import { loadPdfjs, type PDFDocumentProxy, type RenderTask } from '@/lib/pdfjs';
 import { itemsFromPdfJs, normalizePage, pageHasText } from '@/lib/pdf-text';
+import {
+  createOcrProviderForSettings,
+  createOcrService,
+  pageNeedsOcr,
+  resolvePageOcr,
+} from '@/lib/ocr';
+import { renderPageImage } from '@/lib/page-vision';
 import {
   computeFileFingerprint,
   createReaderService,
@@ -112,12 +121,12 @@ interface DocumentMeta {
   fingerprint: string;
   fileName: string;
   pageCount: number;
-  scanUnsupported: boolean;
+  scanDetected: boolean;
   restoredPage: number | null;
 }
 
 interface PageTranslationState {
-  status: 'translating' | 'complete' | 'cached' | 'error';
+  status: 'recognizing' | 'translating' | 'complete' | 'cached' | 'error';
   paragraphs?: string[];
   errorCode?: TranslationErrorCode;
   errorMessage?: string;
@@ -128,6 +137,9 @@ function describeFailure(error: unknown): {
   message: string;
 } {
   if (error instanceof TranslationError) {
+    return { code: error.code, message: error.message };
+  }
+  if (error instanceof ChatError) {
     return { code: error.code, message: error.message };
   }
   return { code: 'unknown', message: describeTranslationError('unknown') };
@@ -315,8 +327,8 @@ function WelcomeStage({ onImport }: { onImport: () => void }) {
           导入一份外文 PDF 开始阅读
         </h2>
         <p className="mt-2 max-w-sm text-xs leading-5 text-slate-500">
-          左侧阅读原文，右侧自动显示当前页的译文。支持文字型
-          PDF，文件只在本地解析。
+          左侧阅读原文，右侧自动显示当前页的译文。文字型 PDF
+          本地提取，扫描或手写页面可使用视觉 OCR。
         </p>
       </div>
       <Button onClick={onImport}>
@@ -340,7 +352,11 @@ function TranslationBody({
   remoteProvider: boolean;
   onRetry: () => void;
 }) {
-  if (!state || state.status === 'translating') {
+  if (
+    !state ||
+    state.status === 'translating' ||
+    state.status === 'recognizing'
+  ) {
     if (state?.paragraphs && state.paragraphs.length > 0) {
       // Streaming: show paragraphs as they arrive instead of a blank wait.
       return (
@@ -366,10 +382,14 @@ function TranslationBody({
           <LoaderCircle className="size-5 animate-spin" />
         </span>
         <h2 className="text-sm font-semibold text-slate-800">
-          正在翻译第 {page} 页
+          {state?.status === 'recognizing'
+            ? `正在识别第 ${page} 页`
+            : `正在翻译第 ${page} 页`}
         </h2>
         <p className="mt-2 max-w-xs text-xs leading-5 text-slate-500">
-          已提取当前页文字，正在生成{targetLanguage}译文…
+          {state?.status === 'recognizing'
+            ? '正在用视觉模型转录扫描或手写内容，识别结果会缓存在本机…'
+            : `已提取当前页文字，正在生成${targetLanguage}译文…`}
         </p>
         <div className="mt-7 w-full max-w-sm space-y-3" aria-hidden="true">
           <span className="block h-3 w-4/5 animate-pulse rounded bg-slate-200" />
@@ -467,7 +487,9 @@ function PdfReader({
   const serviceRef = useRef<ReturnType<typeof createReaderService> | null>(
     null,
   );
+  const ocrCacheRef = useRef<ReturnType<typeof createOcrService> | null>(null);
   const settingsRef = useRef(settings);
+  const chatSettingsRef = useRef(chatSettings);
   const bypassCacheRef = useRef(new Set<string>());
   const prefetchedTranslationsRef = useRef(new Set<string>());
   const retryTokenRef = useRef(0);
@@ -476,6 +498,10 @@ function PdfReader({
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
+
+  useEffect(() => {
+    chatSettingsRef.current = chatSettings;
+  }, [chatSettings]);
 
   const translationKey = useCallback(
     (pageNumber: number, language: string) => `${pageNumber}:${language}`,
@@ -496,6 +522,7 @@ function PdfReader({
 
   useEffect(() => {
     serviceRef.current = createReaderService();
+    ocrCacheRef.current = createOcrService();
     const timer = setTimeout(() => {
       const loaded = loadReaderSettings();
       setSettings(loaded);
@@ -603,7 +630,7 @@ function PdfReader({
       TRANSLATION_STABLE_DELAY,
     );
     return () => clearTimeout(timer);
-  }, [page, pdfDoc, docMeta?.scanUnsupported]);
+  }, [page, pdfDoc, docMeta?.scanDetected]);
 
   // Current page from scroll geometry, per the largest-visible-area rule.
   const updatePageFromScroll = useCallback(() => {
@@ -650,7 +677,7 @@ function PdfReader({
 
       // Scanned-PDF rule: sample the first pages; no text layer means the
       // MVP cannot translate this document.
-      let scanUnsupported = true;
+      let scanDetected = true;
       for (
         let pageNumber = 1;
         pageNumber <= Math.min(3, doc.numPages);
@@ -672,7 +699,7 @@ function PdfReader({
             ),
           )
         ) {
-          scanUnsupported = false;
+          scanDetected = false;
           break;
         }
       }
@@ -691,7 +718,7 @@ function PdfReader({
         fingerprint,
         fileName: file.name,
         pageCount: doc.numPages,
-        scanUnsupported,
+        scanDetected,
         restoredPage:
           restored && restored.lastPage > 1 ? restored.lastPage : null,
       });
@@ -738,9 +765,10 @@ function PdfReader({
     return () => clearTimeout(timer);
   }, [pdfDoc, docMeta, page, zoom, targetLanguage]);
 
-  // Per-page translation pipeline: extract, normalize, cache, translate.
+  // Per-page pipeline: extract a text layer, fall back to cached visual OCR,
+  // then use the existing translation cache/provider.
   useEffect(() => {
-    if (!pdfDoc || !docMeta || docMeta.scanUnsupported) return;
+    if (!pdfDoc || !docMeta) return;
     const key = translationKey(translationPage, targetLanguage);
     const bypassRequested = bypassCacheRef.current.delete(key);
     const existing = translationStatesRef.current[key];
@@ -755,7 +783,9 @@ function PdfReader({
     const controller = new AbortController();
     bypassCacheRef.current.delete(key);
     let cancelled = false;
-    updateTranslationState(key, { status: 'translating' });
+    updateTranslationState(key, {
+      status: docMeta.scanDetected ? 'recognizing' : 'translating',
+    });
 
     const runTranslation = async () => {
       try {
@@ -774,13 +804,38 @@ function PdfReader({
             viewport.height,
           ),
         );
-        if (normalized.text.trim().length === 0) {
-          updateTranslationState(key, {
-            status: 'error',
-            errorCode: 'empty_text',
-            errorMessage: describeTranslationError('empty_text'),
+        let sourceText = normalized.text;
+        if (pageNeedsOcr(sourceText)) {
+          const currentChatSettings = chatSettingsRef.current;
+          if (!chatSettingsConfigured(currentChatSettings)) {
+            updateTranslationState(key, {
+              status: 'error',
+              errorCode: 'auth',
+              errorMessage:
+                '当前页需要扫描件 OCR。请在“AI 答疑”设置中配置 API Key 和支持图片输入的视觉模型。',
+            });
+            return;
+          }
+          updateTranslationState(key, { status: 'recognizing' });
+          const pageImage = await renderPageImage(pdfDoc, translationPage, {
+            signal: controller.signal,
+            maxDimension: 2200,
+            maxPixels: 4_000_000,
           });
-          return;
+          const ocrOutcome = await resolvePageOcr({
+            provider: createOcrProviderForSettings(currentChatSettings),
+            cache: ocrCacheRef.current!,
+            request: {
+              fingerprint: docMeta.fingerprint,
+              pageNumber: translationPage,
+              pageImage,
+            },
+            signal: controller.signal,
+            bypassCache: bypassRequested,
+          });
+          sourceText = ocrOutcome.result.text;
+          if (cancelled) return;
+          updateTranslationState(key, { status: 'translating' });
         }
         const provider = createProviderForSettings(settingsRef.current);
         const outcome = await resolvePageTranslation({
@@ -788,7 +843,7 @@ function PdfReader({
           cache: serviceRef.current!.cache,
           fingerprint: docMeta.fingerprint,
           request: {
-            text: normalized.text,
+            text: sourceText,
             sourceLanguage: 'auto',
             targetLanguage,
             pageNumber: translationPage,
@@ -863,14 +918,16 @@ function PdfReader({
   ) => {
     const translationChanged =
       JSON.stringify(settings) !== JSON.stringify(nextSettings);
+    const ocrChanged =
+      JSON.stringify(chatSettings) !== JSON.stringify(nextChatSettings);
     setSettings(nextSettings);
     setChatSettings(nextChatSettings);
     saveReaderSettings(nextSettings);
     saveChatSettings(nextChatSettings);
     setSettingsOpen(false);
-    if (translationChanged) {
-      // Provider/model changes alter the cache key: drop session states so the
-      // visible page re-translates under the new settings.
+    if (translationChanged || ocrChanged) {
+      // Translation or OCR provider/model changes alter cache identity: drop
+      // session states so the visible page uses the new configuration.
       translationStatesRef.current = {};
       setTranslationStates({});
       prefetchedTranslationsRef.current.clear();
@@ -894,8 +951,8 @@ function PdfReader({
     : null;
   const statusLabel = !docMeta
     ? '尚未导入 PDF'
-    : docMeta.scanUnsupported
-      ? '未检测到文字层，无法翻译'
+    : currentState?.status === 'recognizing'
+      ? `正在 OCR 识别第 ${translationPage} 页`
       : currentState?.status === 'translating'
         ? `正在翻译第 ${translationPage} 页`
         : currentState?.status === 'error'
@@ -909,7 +966,7 @@ function PdfReader({
   // Once the current translation is ready, quietly prepare the next page so
   // sequential reading usually becomes an immediate cache hit.
   useEffect(() => {
-    if (!pdfDoc || !docMeta || docMeta.scanUnsupported || !isReady) return;
+    if (!pdfDoc || !docMeta || docMeta.scanDetected || !isReady) return;
     const nextPage = nextPageToPrefetch(translationPage, docMeta.pageCount);
     if (!nextPage) return;
     const provider = createProviderForSettings(settingsRef.current);
@@ -1099,7 +1156,7 @@ function PdfReader({
                     <p className="pane-eyebrow">原文</p>
                     <p className="pane-meta">
                       {docMeta
-                        ? `${docMeta.pageCount} 页 · ${docMeta.scanUnsupported ? '未检测到文字层' : '文字型 PDF'}`
+                        ? `${docMeta.pageCount} 页 · ${docMeta.scanDetected ? '扫描件 · 可用视觉 OCR' : '文字型 PDF'}`
                         : '等待导入'}
                     </p>
                   </div>
@@ -1275,7 +1332,7 @@ function PdfReader({
                               <IconButton
                                 label="重新翻译"
                                 onClick={retranslate}
-                                disabled={!pdfDoc || docMeta?.scanUnsupported}
+                                disabled={!pdfDoc}
                               >
                                 <RotateCcw />
                               </IconButton>
@@ -1296,20 +1353,7 @@ function PdfReader({
                         className="min-h-0 overflow-hidden data-[hidden]:hidden"
                       >
                         <div className="translation-scroll h-full">
-                          {docMeta?.scanUnsupported ? (
-                            <div className="flex h-full min-h-[360px] flex-col items-center justify-center px-8 text-center">
-                              <span className="mb-5 flex size-11 items-center justify-center rounded-full bg-amber-100 text-amber-700">
-                                <TriangleAlert className="size-5" />
-                              </span>
-                              <h2 className="text-sm font-semibold text-slate-800">
-                                暂不支持扫描版 PDF 翻译
-                              </h2>
-                              <p className="mt-2 max-w-xs text-xs leading-5 text-slate-500">
-                                当前文件没有可提取文字层，但仍可切换到 AI
-                                答疑，让视觉模型查看当前页图像。
-                              </p>
-                            </div>
-                          ) : pdfDoc ? (
+                          {pdfDoc ? (
                             <>
                               {currentState?.status === 'error' ? null : (
                                 <div className="translation-status">
@@ -1321,9 +1365,11 @@ function PdfReader({
                                       {copied ? '译文已复制' : statusLabel}
                                     </p>
                                     <p className="mt-0.5 text-[11px] text-slate-400">
-                                      {remoteProvider
-                                        ? `当前页文字将发送至 ${remoteProviderHost ?? '所配置服务'}`
-                                        : '演示模式 · 不发送任何数据'}
+                                      {docMeta?.scanDetected
+                                        ? '扫描页图像仅在 OCR 时发送给已配置视觉模型'
+                                        : remoteProvider
+                                          ? `当前页文字将发送至 ${remoteProviderHost ?? '所配置服务'}`
+                                          : '演示模式 · 不发送任何数据'}
                                     </p>
                                   </div>
                                 </div>
@@ -1428,7 +1474,8 @@ function PdfReader({
                   ? 'bg-violet-500'
                   : currentState?.status === 'error'
                     ? 'bg-rose-500'
-                    : currentState?.status === 'translating'
+                    : currentState?.status === 'translating' ||
+                        currentState?.status === 'recognizing'
                       ? 'animate-pulse bg-amber-500'
                       : 'bg-emerald-500'
               }`}
@@ -1454,7 +1501,7 @@ function PdfReader({
               <span>第 {page + 1} 页已预加载</span>
             ) : null}
             <span className="hidden text-slate-300 sm:inline">
-              PDF、译文与对话仅保存在本地
+              PDF、OCR 结果、译文与对话仅保存在本机
             </span>
           </div>
         </footer>
@@ -1462,7 +1509,7 @@ function PdfReader({
         <Dialog open={importOpen} onOpenChange={setImportOpen}>
           <DialogContent className="sm:max-w-[480px]">
             <DialogHeader>
-              <DialogTitle className="text-lg">导入文字型 PDF</DialogTitle>
+              <DialogTitle className="text-lg">导入 PDF</DialogTitle>
               <DialogDescription>
                 文件在本地浏览器中解析，不会上传。译文与阅读进度保存在本机。
               </DialogDescription>
@@ -1481,7 +1528,7 @@ function PdfReader({
                 {importing ? '正在解析 PDF…' : '选择本地 PDF 文件'}
               </span>
               <span className="mt-1 text-xs text-slate-500">
-                支持文字型 PDF，扫描版暂不支持
+                支持文字型、扫描件和手写 PDF
               </span>
             </button>
             <input
@@ -1506,9 +1553,9 @@ function PdfReader({
             <div className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-3">
               <ShieldCheck className="mt-0.5 size-4 shrink-0 text-emerald-600" />
               <p className="text-[11px] leading-5 text-slate-500">
-                翻译只发送当前页文字；AI
-                答疑仅在你提问时发送当前页文字和图像。PDF
-                文件、阅读进度、译文和对话都保存在本地。
+                文字型 PDF 只发送当前页文字。扫描或手写页面需要 OCR
+                时，会把当前页图像发送给“AI 答疑”中配置的视觉模型。PDF
+                文件、阅读进度、识别结果、译文和对话都保存在本机。
               </p>
             </div>
 
