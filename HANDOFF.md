@@ -1,7 +1,7 @@
 # 项目交接文档
 
 > 写给下一位接手的人。读完这份 + `README.md` + `PRODUCT_DESIGN.md` + `docs/TECHNICAL_SOLUTION.md` 就能上手。
-> 最后更新：2026-08-31
+> 最后更新：2026-09-02
 
 ## 一、项目是什么
 
@@ -19,7 +19,7 @@
 | 页面渲染              | ✅   | 连续滚动 + 页面虚拟化（远处页释放 canvas）+ 缩略图懒加载 + 缩放 + 跳页                 |
 | 文字提取与段落重建    | ✅   | 行合并、窄栏缝双栏检测、跨栏标题、页眉页脚过滤、连字符合并与段落推断                   |
 | 当前页判定            | ✅   | 最大可见面积规则 + 显示页码/翻译页码分离，页面稳定 300ms 后才翻译                      |
-| 随页翻译              | ✅   | **流式输出**；密集页按段分块，`finish_reason=length` 时拆小重试；完成后预取下一页       |
+| 随页翻译              | ✅   | **流式输出**；密集页按段分块，`finish_reason=length` 时拆小重试；完成后预取下一页      |
 | 翻译供应商            | ✅   | OpenAI 兼容接口（用户自备 Key），内置演示供应商（不联网）                              |
 | 缓存                  | ✅   | IndexedDB，逐页缓存；键含 provider/model/提示词版本，换配置不串缓存                    |
 | 阅读进度恢复          | ✅   | 按文件 SHA-256 指纹；重新导入同一文件自动跳回上次页码                                  |
@@ -28,6 +28,7 @@
 | 重新翻译              | ✅   | 绕过缓存强制重翻并覆盖                                                                 |
 | 翻译 / AI 双模式      | ✅   | 右侧顶部切换，左侧阅读位置保持不变                                                     |
 | 当前页视觉答疑        | ✅   | 同时发送规范化文字和离屏渲染 PNG，支持图片、图表、表格和公式理解                       |
+| 通用知识与联网搜索    | ✅   | 页内上下文不再是硬边界；明确联网意图通过智谱 Web Search API 检索并引用真实 URL         |
 | 独立 AI 配置          | ✅   | 答疑 API 地址、Key、模型与翻译完全隔离，要求视觉模型                                   |
 | 每页独立会话          | ✅   | IndexedDB 本地保存；翻页切换、返回恢复，流式回答归属原页面                             |
 | AI 回答展示           | ✅   | Markdown + GFM + KaTeX，支持表格、代码和 LaTeX 公式                                    |
@@ -58,6 +59,7 @@ demo/
 ├─ lib/pdf-text.ts         # 文本提取规范化流水线 + sha256（纯函数，Node 可测）
 ├─ lib/translation.ts      # 供应商适配器、SSE 流式解析、错误分类、重试、缓存键、提示词
 ├─ lib/chat.ts             # 多模态答疑适配器、SSE、错误分类和安全提示词
+├─ lib/web-search.ts       # 联网意图识别、智谱搜索请求、检索词与来源上下文构造
 ├─ lib/chat-cache.ts       # 独立 AI 设置与逐页会话存储
 ├─ lib/page-vision.ts      # 固定质量离屏渲染与页面视觉输入
 ├─ lib/ocr.ts              # 视觉 OCR 适配、规范化和逐页缓存
@@ -82,7 +84,7 @@ demo/
 6. **重新翻译走 `bypassCache`**，绕过会话内与持久缓存并覆盖结果。
 7. **答疑请求使用不可变页面快照**。问题发出后绑定文档指纹和页码，用户翻页不会把回答写到新页面。
 8. **页面图像按需生成且不持久化**。用户提问或无文字层页面需要 OCR 时才离屏渲染 PNG；IndexedDB 只保存完成的对话消息和 OCR 文字。
-9. **PDF 内容是不可信数据**。答疑系统提示词要求忽略页面内试图改变规则的指令，只依据绑定页面作答。
+9. **PDF 和搜索结果都是不可信数据**。答疑系统提示词要求忽略其中试图改变规则的指令；当前页是主要上下文，但允许通用知识补充。只有真实取得搜索结果时才能声称联网，并必须引用结果中的 URL。
 10. **课程结构化 JSON 是合并依据**。Markdown 与 SVG 都是可重新生成的派生成果；活动知识版本由 `course.json` 指向 `Knowledge/knowledge-vN.json`。
 11. **课程写入使用乐观 revision**。外部修改后会拒绝覆盖并要求重新加载；每次变更前先保存 History 快照，`course.json` 最后写入。
 
@@ -112,7 +114,7 @@ python3 -m unittest discover tests   # 根目录文档完整性测试
 5. **源语言固定为 auto**，未做语言检测展示。
 6. **真实双栏 PDF 尚未纳入仓库测试夹具**。已用 18 页 Springer 论文实测窄栏缝、跨栏标题和页眉页脚，并把关键几何特征固化为单元测试；若许可证允许，可再加入脱敏的小型 PDF 夹具。
 7. **vinext 是 beta**（1.0.0-beta.5），升级时注意 RSC 相关破坏性变更。
-8. **真实视觉供应商需要人工冒烟**。自动测试使用模拟多模态响应；上线前需用目标供应商检查图片字段兼容、CORS、请求体大小限制和公式理解质量。
+8. **真实视觉与搜索供应商需要人工冒烟**。自动测试使用模拟多模态与搜索响应；上线前需用目标供应商检查图片字段兼容、CORS、请求体大小限制、公式理解质量，以及 `/web_search` 权限、费用与来源质量。
 9. **知识库生成已接入 AI（2026-08-31，GLM，见第十五节）**。单 PDF 总结/脑图、课程总总结/总脑图全部由 KnowledgeProvider 生成并完全复用 AI 答疑配置；本地规则摘要 `createDocumentDigest` 仅保留用于旧数据兼容和测试，不再用于新导入。剩余工作：真实供应商下的人工质量调优（提示词在 `demo/lib/knowledge/ai-knowledge-provider.ts`，改提示词必须递增 promptVersion）与超长课程（几十份 PDF）一次综合的 token 上限策略。
 
 ## 六、踩过的坑（重要）
@@ -493,14 +495,14 @@ Ubuntu DEB 实机安装：构建产物已核对；图形会话内的安装与菜
 
 在 Ubuntu x64 开发机上完成，真实启动验证均针对本机构建产物：
 
-| 提交 | 内容 |
-| ---- | ---- |
-| `6dac911` | sandbox preload 修复：`scripts/build-electron.mjs`（tsc 主进程 + esbuild 把 `preload.ts` 及 `api.ts` 打包成单个自包含 CommonJS `preload.js`），接入 desktop:build/make/test；新增真实 Electron 启动冒烟测试 |
-| `ce3d6ef` | 导航隔离：`electron/navigation.ts` 纯函数 + `applyNavigationGuards`（will-navigate/setWindowOpenHandler/will-attach-webview）、YEYU_DEV_URL 校验、5 项规则单元测试 |
-| `6bea9a1` | Squirrel 元数据（productName/author/description/title/authors）+ `electron/squirrel.ts` 最早期处理 electron-squirrel-startup（仅 win32 延迟加载） |
-| `02f1e39` | Ubuntu DEB：maker-deb 配置（包名/可执行名 `yeyu`、菜单名「页语」、Education 类别、真实维护者/主页）、favicon.svg 矢量重绘的 8 尺寸 hicolor 图标、自定义 .desktop 模板（StartupWMClass=yeyu） |
-| `f2a32fb` | 冒烟增强：通过真实桥接创建课程并写 course.json，关闭重启后 `listCourses()` 恢复（编译产物与打包产物各验证一轮） |
-| （本次提交） | 文档更新：README 桌面版章节、本节记录、技术方案附记、根目录文档测试同步 |
+| 提交         | 内容                                                                                                                                                                                                        |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `6dac911`    | sandbox preload 修复：`scripts/build-electron.mjs`（tsc 主进程 + esbuild 把 `preload.ts` 及 `api.ts` 打包成单个自包含 CommonJS `preload.js`），接入 desktop:build/make/test；新增真实 Electron 启动冒烟测试 |
+| `ce3d6ef`    | 导航隔离：`electron/navigation.ts` 纯函数 + `applyNavigationGuards`（will-navigate/setWindowOpenHandler/will-attach-webview）、YEYU_DEV_URL 校验、5 项规则单元测试                                          |
+| `6bea9a1`    | Squirrel 元数据（productName/author/description/title/authors）+ `electron/squirrel.ts` 最早期处理 electron-squirrel-startup（仅 win32 延迟加载）                                                           |
+| `02f1e39`    | Ubuntu DEB：maker-deb 配置（包名/可执行名 `yeyu`、菜单名「页语」、Education 类别、真实维护者/主页）、favicon.svg 矢量重绘的 8 尺寸 hicolor 图标、自定义 .desktop 模板（StartupWMClass=yeyu）                |
+| `f2a32fb`    | 冒烟增强：通过真实桥接创建课程并写 course.json，关闭重启后 `listCourses()` 恢复（编译产物与打包产物各验证一轮）                                                                                             |
+| （本次提交） | 文档更新：README 桌面版章节、本节记录、技术方案附记、根目录文档测试同步                                                                                                                                     |
 
 已验证（Linux）：第十三节 13.4 清单所列全部命令；`YEYU_SMOKE=1` 直接启动 `out/Yeyu-linux-x64/yeyu` 确认 preload 桥接、弹窗拒绝与课程生命周期；DEB 绝对路径 `demo/out/make/deb/x64/yeyu_0.1.0_amd64.deb`，`dpkg-deb -I` 元数据（Package: yeyu、Section: education、Maintainer、Homepage、Depends 自动补齐 libgtk-3-0 等）与内容清单（/usr/bin/yeyu 符号链接、/usr/share/applications/yeyu.desktop、hicolor 8 尺寸图标）核对无误。系统权限不允许免 sudo 安装 DEB，实机安装与 GNOME 菜单点击验收交由协调者执行。
 
@@ -542,3 +544,11 @@ Ubuntu DEB 实机安装：构建产物已核对；图形会话内的安装与菜
 - `tests/ai-knowledge.test.ts` 覆盖任务书 13 条测试要求（配置复用、密钥不泄漏、分块覆盖顺序、JSON 重试、截断拒存、页码越界拒存、未配置报错、模拟 AI 成果、多文档综合、user 节点保留、SVG 关系、桌面/浏览器一致性、失败不落盘）
 - 真实供应商质量需人工调优：提示词改动必须递增 `KNOWLEDGE_*_PROMPT_VERSION`
 - 冒烟测试环境说明：本容器无 root SUID helper 且禁用 user namespace，OS 级沙箱无法创建；`tests/electron-smoke.smoke.ts` 在检测到该启动失败后自动以 `--no-sandbox` 重试（仅测试进程追加参数，应用安全配置不变），正常桌面环境仍走带沙箱启动
+
+## 十六、2026-09-02 AI 答疑通用知识与联网搜索
+
+按用户反馈取消“信息不足时禁止使用外部知识”的硬限制。`demo/lib/chat.ts` 现在把当前页定义为主要阅读上下文，允许模型补充可靠通用知识，同时要求明确区分页内依据与外部背景。
+
+联网不是提示词模拟：`demo/lib/web-search.ts` 识别“网上查”“联网搜索”“找相关文献”“最新研究进展”等明确意图；当 AI 地址为 `https://open.bigmodel.cn/api/paas/v4` 时，先用同一 API Key 调用 `/web_search`，再把最多 5 条带真实 URL 的结果作为不可信 `<web-search-results>` 上下文交给视觉模型。省略主语的追问会组合当前页型号/缩写与同页最近问题构造查询。普通页内问题不调用搜索；搜索失败、空结果或不支持的兼容接口会显示错误，不允许模型声称已经联网。
+
+界面在搜索阶段显示“正在联网检索相关资料…”，智谱地址显示“可联网搜索”；设置页说明搜索可能产生供应商费用。自动测试覆盖真实的两段请求顺序、检索词、来源注入、密钥不进入请求正文/上下文、状态切换、意图判断和不支持接口拒绝。

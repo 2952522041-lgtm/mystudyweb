@@ -25,6 +25,7 @@ import { Textarea } from '@/components/ui/textarea';
 import {
   ChatError,
   describeChatError,
+  supportsZhipuWebSearch,
   type ChatErrorCode,
   type ChatMessage,
 } from '@/lib/chat';
@@ -40,7 +41,7 @@ import { extractPageText, renderPageImage } from '@/lib/page-vision';
 interface PageChatState {
   loaded: boolean;
   messages: ChatMessage[];
-  status: 'idle' | 'preparing' | 'generating' | 'error';
+  status: 'idle' | 'preparing' | 'searching' | 'generating' | 'error';
   partial?: string;
   errorCode?: ChatErrorCode;
   errorMessage?: string;
@@ -212,6 +213,13 @@ export function AIChatPanel({
         },
         {
           signal: controller.signal,
+          onStatus: (status) =>
+            updateState(key, (previous) => ({
+              ...previous,
+              status,
+              errorCode: undefined,
+              errorMessage: undefined,
+            })),
           onPartial: (content) =>
             updateState(key, (previous) => ({
               ...previous,
@@ -282,7 +290,9 @@ export function AIChatPanel({
   };
 
   const generating =
-    state.status === 'preparing' || state.status === 'generating';
+    state.status === 'preparing' ||
+    state.status === 'searching' ||
+    state.status === 'generating';
 
   return (
     <section
@@ -400,7 +410,9 @@ export function AIChatPanel({
                       ) : (
                         <p className="flex items-center gap-2 text-xs text-violet-700">
                           <LoaderCircle className="size-3.5 animate-spin" />
-                          正在读取第 {pageNumber} 页的文字与视觉内容…
+                          {state.status === 'searching'
+                            ? '正在联网检索相关资料…'
+                            : `正在读取第 ${pageNumber} 页的文字与视觉内容…`}
                         </p>
                       )}
                     </BubbleContent>
@@ -460,7 +472,7 @@ export function AIChatPanel({
         <div className="flex items-center justify-between border-t border-slate-200 pt-2">
           <p className="text-[10px] text-slate-400">
             {configured
-              ? `视觉模型 · ${settings.model}`
+              ? `视觉模型 · ${settings.model}${supportsZhipuWebSearch(settings.baseUrl) ? ' · 可联网搜索' : ''}`
               : '尚未配置独立 AI 服务'}
           </p>
           {generating ? (

@@ -46,10 +46,11 @@ class TechnicalSolutionDocumentTest(unittest.TestCase):
         required_sections = (
             "### 15.2 当前页视觉图像生成",
             "### 15.3 多模态答疑供应商接口",
-            "### 15.5 对话协调与翻页归属",
-            "### 15.6 本地存储设计",
-            "### 15.7 回答渲染与界面拆分",
-            "### 15.9 测试策略",
+            "### 15.4 联网检索与来源边界",
+            "### 15.6 对话协调与翻页归属",
+            "### 15.7 本地存储设计",
+            "### 15.8 回答渲染与界面拆分",
+            "### 15.10 测试策略",
         )
 
         for section in required_sections:
@@ -65,6 +66,8 @@ class TechnicalSolutionDocumentTest(unittest.TestCase):
             "Fetch + ReadableStream + SSE",
             "React Markdown + GFM + KaTeX",
             "chat:{documentFingerprint}:{pageNumber}",
+            "智谱 Web Search API",
+            "真实 URL",
             "不需要 LangChain",
         ):
             with self.subTest(requirement=requirement):
@@ -128,6 +131,19 @@ class ProductDesignDocumentTest(unittest.TestCase):
             "每个文档的每一页拥有独立对话记录",
             "切换到 AI 答疑模式本身不触发上传或请求",
             "API Key",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, content)
+
+    def test_ai_page_qa_allows_external_knowledge_and_real_web_search(self) -> None:
+        content = PRODUCT_DESIGN.read_text(encoding="utf-8")
+
+        for requirement in (
+            "当前页是答疑的主要阅读上下文，而不是唯一知识来源",
+            "应用应先执行真实搜索",
+            "可点击的来源链接",
+            "只有实际取得搜索结果时才能声称已经联网搜索",
+            "可能产生供应商搜索费用",
         ):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, content)

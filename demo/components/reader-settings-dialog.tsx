@@ -232,7 +232,7 @@ export function ReaderSettingsDialog({
             <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-[11px] leading-5 text-violet-800">
               AI
               答疑会在你发送问题时，把当前页文字和清晰页面图像发送给所配置服务；扫描或手写页面也会复用此视觉模型进行
-              OCR。请选择支持图片输入的模型。
+              OCR。请选择支持图片输入的模型。使用智谱开放平台地址时，明确要求“联网搜索”会先调用其网络搜索服务，再结合网页来源回答，并可能产生搜索费用。
             </div>
             <div className="space-y-1.5">
               <label

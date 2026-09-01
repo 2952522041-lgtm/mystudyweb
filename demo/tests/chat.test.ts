@@ -10,6 +10,11 @@ import {
   type PageChatRequest,
 } from '../lib/chat.ts';
 import {
+  buildWebSearchQuery,
+  supportsZhipuWebSearch,
+  wantsWebSearch,
+} from '../lib/web-search.ts';
+import {
   chatSettingsConfigured,
   createConversationStore,
   DEFAULT_CHAT_SETTINGS,
@@ -73,7 +78,140 @@ void test('multimodal chat sends page text and image and streams the answer', as
     image_url: { url: request.pageImage.dataUrl, detail: 'high' },
   });
   assert.equal(messages.at(-1)?.content, request.question);
+  assert.match(String(messages[0].content), /reliable general knowledge/);
+  assert.doesNotMatch(String(messages[0].content), /Answer only from/);
   assert.doesNotMatch(JSON.stringify(body), /secret/);
+});
+
+void test('explicit web-search requests retrieve live Zhipu results before answering', async () => {
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const statuses: string[] = [];
+  const provider = createOpenAICompatibleChatProvider({
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
+    apiKey: 'zhipu-secret',
+    model: 'glm-4.6v',
+    fetchImpl: (async (input, init) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (typeof init?.body !== 'string') throw new Error('missing body');
+      calls.push({
+        url,
+        body: JSON.parse(init.body) as Record<string, unknown>,
+      });
+      if (url.endsWith('/web_search')) {
+        return Response.json({
+          search_result: [
+            {
+              title: 'SMORES-EP modular robot',
+              content:
+                'The module has four active rotational degrees of freedom.',
+              link: 'https://example.edu/smores-ep',
+              media: 'Example University',
+              publish_date: '2024-01-02',
+            },
+          ],
+        });
+      }
+      return new Response(
+        [
+          'data: {"choices":[{"delta":{"content":"检索后确认。"}}]}\n',
+          'data: [DONE]\n',
+        ].join(''),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as typeof fetch,
+  });
+
+  const result = await provider.answer(
+    {
+      ...request,
+      pageText:
+        'Fig. 1. A SMORES-EP module has four active rotation degrees of freedom.',
+      messages: [
+        {
+          id: 'previous-question',
+          role: 'user',
+          content: '这个小模块的结构具体是怎样的？',
+          createdAt: '2026-09-02T00:00:00.000Z',
+        },
+      ],
+      question: '那你网上查一下相关资料再回答我',
+    },
+    { onStatus: (status) => statuses.push(status) },
+  );
+
+  assert.equal(result.content, '检索后确认。');
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    [
+      'https://open.bigmodel.cn/api/paas/v4/web_search',
+      'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+    ],
+  );
+  assert.equal(calls[0].body.search_engine, 'search_std');
+  assert.match(String(calls[0].body.search_query), /SMORES-EP/);
+  assert.ok(String(calls[0].body.search_query).length <= 70);
+  const completionMessages = calls[1].body.messages as Array<{
+    role: string;
+    content: unknown;
+  }>;
+  assert.match(JSON.stringify(completionMessages), /web-search-results/);
+  assert.match(
+    JSON.stringify(completionMessages),
+    /https:\/\/example\.edu\/smores-ep/,
+  );
+  assert.deepEqual(statuses, ['searching', 'generating']);
+  assert.doesNotMatch(JSON.stringify(calls), /zhipu-secret/);
+});
+
+void test('web-search intent and provider support are explicit and deterministic', async () => {
+  assert.equal(wantsWebSearch('请帮我网上查一下相关论文'), true);
+  assert.equal(wantsWebSearch('帮我找一下相关文献'), true);
+  assert.equal(wantsWebSearch('这个方向的最新研究进展是什么'), true);
+  assert.equal(wantsWebSearch('search the web for recent papers'), true);
+  assert.equal(wantsWebSearch('解释一下本页公式'), false);
+  assert.equal(
+    supportsZhipuWebSearch('https://open.bigmodel.cn/api/paas/v4'),
+    true,
+  );
+  assert.equal(supportsZhipuWebSearch('https://example.com/v1'), false);
+  const query = buildWebSearchQuery({
+    pageText: 'A SMORES-EP module has four connectors.',
+    question: '网上查一下相关资料',
+    messages: [
+      {
+        id: 'q',
+        role: 'user',
+        content: '这个模块的旋转关节是怎么工作的？',
+        createdAt: '2026-09-02T00:00:00.000Z',
+      },
+    ],
+  });
+  assert.match(query, /SMORES-EP/);
+  assert.match(query, /旋转关节/);
+
+  let called = false;
+  const unsupported = createOpenAICompatibleChatProvider({
+    baseUrl: 'https://example.com/v1',
+    apiKey: 'secret',
+    model: 'vision-model',
+    fetchImpl: (async () => {
+      called = true;
+      throw new Error('must not call');
+    }) as typeof fetch,
+  });
+  await assert.rejects(
+    unsupported.answer({ ...request, question: '请联网搜索后回答' }),
+    (error: unknown) =>
+      error instanceof ChatError &&
+      error.code === 'invalid_input' &&
+      /智谱开放平台/.test(error.message),
+  );
+  assert.equal(called, false);
 });
 
 void test('chat history keeps only the latest non-empty messages', () => {

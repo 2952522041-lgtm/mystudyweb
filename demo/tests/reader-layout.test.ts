@@ -53,6 +53,8 @@ void test('right panel exposes translation and page-scoped AI modes', () => {
   assert.match(pageSource, /<AIChatPanel/);
   assert.match(chatSource, /正在基于第 \{pageNumber\} 页/);
   assert.match(chatSource, /renderPageImage\(pdfDoc, pageNumber/);
+  assert.match(chatSource, /正在联网检索相关资料/);
+  assert.match(chatSource, /可联网搜索/);
 });
 
 void test('chat tab content is a column flex container so messages scroll above the pinned composer', () => {
@@ -68,6 +70,7 @@ void test('translation and AI settings use independent controlled fields', () =>
   assert.match(settingsSource, /id="chat-api-key"/);
   assert.match(settingsSource, /支持图片输入的模型/);
   assert.match(settingsSource, /id="chat-vision-confirmed"/);
+  assert.match(settingsSource, /网络搜索服务/);
 });
 
 void test('scanned pages use cached visual OCR before entering translation', () => {
