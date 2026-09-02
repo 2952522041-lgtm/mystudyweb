@@ -104,6 +104,11 @@ import {
   READER_RIGHT_MODES,
 } from '@/lib/reader-shortcuts';
 import {
+  countTranslated,
+  statusToBadge,
+  type TranslationStatus,
+} from '@/lib/reader-ui-status';
+import {
   describeTranslationError,
   TranslationError,
   type TranslationErrorCode,
@@ -248,12 +253,14 @@ function PdfPageThumbnail({
   pdfDoc,
   page,
   active,
+  translationStatus,
   onSelect,
   activeRef,
 }: {
   pdfDoc: PDFDocumentProxy;
   page: number;
   active: boolean;
+  translationStatus?: TranslationStatus;
   onSelect: () => void;
   activeRef?: React.Ref<HTMLButtonElement>;
 }) {
@@ -301,6 +308,8 @@ function PdfPageThumbnail({
     };
   }, [pdfDoc, page, visible]);
 
+  const badge = translationStatus ? statusToBadge(translationStatus) : null;
+
   return (
     <button
       ref={activeRef}
@@ -310,12 +319,22 @@ function PdfPageThumbnail({
       aria-current={active ? 'page' : undefined}
       onClick={onSelect}
     >
-      <span className="thumbnail-paper" aria-hidden="true" ref={holderRef}>
-        {visible ? (
-          <canvas ref={canvasRef} className="h-full w-full object-cover" />
-        ) : (
-          <span className="thumbnail-line w-full" />
-        )}
+      <span className="thumbnail-thumb">
+        <span className="thumbnail-paper" aria-hidden="true" ref={holderRef}>
+          {visible ? (
+            <canvas ref={canvasRef} className="h-full w-full object-cover" />
+          ) : (
+            <span className="thumbnail-line w-full" />
+          )}
+        </span>
+        {badge ? (
+          <span
+            className={`thumbnail-status-badge thumbnail-status-badge-${badge.tone}`}
+            aria-label={`第 ${page} 页翻译状态：${badge.label}`}
+          >
+            {badge.label}
+          </span>
+        ) : null}
       </span>
       <span className="thumbnail-page-number">{page}</span>
     </button>
@@ -1066,6 +1085,11 @@ function PdfReader({
   const remoteProviderHost = remoteProvider
     ? readerServiceHost(settings.baseUrl)
     : null;
+  const translationProgress = countTranslated(
+    translationStates,
+    docMeta?.pageCount ?? 0,
+  );
+  const translationProgressLabel = `已翻译 ${translationProgress.done}/${translationProgress.total}`;
   const statusLabel = !docMeta
     ? '尚未导入 PDF'
     : currentState?.status === 'recognizing'
@@ -1298,6 +1322,11 @@ function PdfReader({
                             pdfDoc={pdfDoc!}
                             page={pageNumber}
                             active={pageNumber === page}
+                            translationStatus={
+                              translationStates[
+                                translationKey(pageNumber, targetLanguage)
+                              ]?.status
+                            }
                             activeRef={
                               pageNumber === page
                                 ? activeThumbnailRef
@@ -1433,6 +1462,15 @@ function PdfReader({
                           </p>
                         </div>
                         <div className="flex items-center gap-1">
+                          {activeMode === 'translation' &&
+                          translationProgress.total > 0 ? (
+                            <span
+                              className="translation-progress-chip"
+                              aria-label={`翻译进度：已翻译 ${translationProgress.done} 页，共 ${translationProgress.total} 页`}
+                            >
+                              {translationProgressLabel}
+                            </span>
+                          ) : null}
                           {activeMode === 'translation' ? (
                             <>
                               <IconButton

@@ -135,6 +135,10 @@
     @apply rounded-full border border-white/80 bg-white/75 px-2.5 py-1 text-[10px] font-medium text-slate-500 shadow-sm backdrop-blur;
   }
 
+  .translation-progress-chip {
+    @apply rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-medium text-slate-500;
+  }
+
   .reader-workspace {
     @apply flex min-h-0 flex-1 border-t border-slate-300/70;
   }
@@ -184,6 +188,34 @@
 
   .thumbnail-page-number {
     @apply mt-1.5 text-[10px] font-medium tabular-nums;
+  }
+
+  .thumbnail-thumb {
+    @apply relative block;
+  }
+
+  .thumbnail-status-badge {
+    @apply absolute right-1 top-1 rounded-full px-1.5 py-px text-[9px] font-medium leading-none shadow-sm ring-1;
+  }
+
+  .thumbnail-status-badge-neutral {
+    @apply bg-slate-100 text-slate-600 ring-slate-500/20;
+  }
+
+  .thumbnail-status-badge-info {
+    @apply bg-sky-100 text-sky-700 ring-sky-600/20;
+  }
+
+  .thumbnail-status-badge-success {
+    @apply bg-emerald-100 text-emerald-700 ring-emerald-600/20;
+  }
+
+  .thumbnail-status-badge-warning {
+    @apply bg-amber-100 text-amber-700 ring-amber-600/20;
+  }
+
+  .thumbnail-status-badge-error {
+    @apply bg-rose-100 text-rose-700 ring-rose-600/20;
   }
 
   .document-stage {
