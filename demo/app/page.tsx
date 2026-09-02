@@ -102,9 +102,11 @@ import {
   isEditableTarget,
   mapShortcut,
   READER_RIGHT_MODES,
+  type ReaderRightModeName,
 } from '@/lib/reader-shortcuts';
 import {
   countTranslated,
+  statusBarParts,
   statusToBadge,
   type TranslationStatus,
 } from '@/lib/reader-ui-status';
@@ -490,9 +492,9 @@ function PdfReader({
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('translation');
-  const [rightMode, setRightMode] = useState<
-    'translation' | 'chat' | 'summary' | 'mindmap'
-  >(courseContext?.digest ? 'summary' : 'translation');
+  const [rightMode, setRightMode] = useState<ReaderRightModeName>(
+    courseContext?.digest ? 'summary' : 'translation',
+  );
   const [translationStates, setTranslationStates] = useState<
     Record<string, PageTranslationState>
   >({});
@@ -1090,6 +1092,13 @@ function PdfReader({
     docMeta?.pageCount ?? 0,
   );
   const translationProgressLabel = `已翻译 ${translationProgress.done}/${translationProgress.total}`;
+  const statusBarItems = statusBarParts({
+    page,
+    pageCount: docMeta?.pageCount ?? 0,
+    zoom,
+    mode: activeMode,
+    translated: translationProgress,
+  });
   const statusLabel = !docMeta
     ? '尚未导入 PDF'
     : currentState?.status === 'recognizing'
@@ -1220,8 +1229,6 @@ function PdfReader({
                 value={page}
                 onChange={(event) => goToPage(Number(event.target.value) || 1)}
               />
-              <span className="text-slate-300">/</span>
-              <span className="pr-1">{docMeta?.pageCount ?? '—'}</span>
             </label>
             <IconButton
               label="下一页"
@@ -1257,9 +1264,6 @@ function PdfReader({
               >
                 <Minus />
               </IconButton>
-              <span className="w-11 text-center text-xs tabular-nums text-slate-600">
-                {zoom}%
-              </span>
               <IconButton
                 label="放大"
                 onClick={() => setZoom(stepZoom(zoom, 1))}
@@ -1301,9 +1305,6 @@ function PdfReader({
                         : '等待导入'}
                     </p>
                   </div>
-                  {docMeta ? (
-                    <span className="status-chip">第 {page} 页正在阅读</span>
-                  ) : null}
                 </div>
                 <div className="reader-workspace">
                   {docMeta ? (
@@ -1411,13 +1412,7 @@ function PdfReader({
                       className="h-full min-h-0 gap-0"
                       value={activeMode}
                       onValueChange={(value) =>
-                        setRightMode(
-                          value as
-                            | 'translation'
-                            | 'chat'
-                            | 'summary'
-                            | 'mindmap',
-                        )
+                        setRightMode(value as ReaderRightModeName)
                       }
                     >
                       <div className="pane-heading border-b border-slate-200/80">
@@ -1646,6 +1641,14 @@ function PdfReader({
                     ? 'PDF 脑图已保存到课程文件夹'
                     : statusLabel}
             </span>
+          </div>
+          <div
+            className="flex items-center gap-3 tabular-nums"
+            aria-label="阅读状态"
+          >
+            {statusBarItems.map((part) => (
+              <span key={part}>{part}</span>
+            ))}
           </div>
           <div className="flex items-center gap-4">
             {docMeta?.restoredPage ? (

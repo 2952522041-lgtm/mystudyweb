@@ -1,8 +1,11 @@
 /**
  * Pure presentation helpers for the reader's translation-status UI: the
- * thumbnail badge text/tone per translation status and the translated-page
- * counter shown at the top of the right panel.
+ * thumbnail badge text/tone per translation status, the translated-page
+ * counter shown at the top of the right panel, and the read-only facts
+ * summarized in the bottom status bar.
  */
+
+import type { ReaderRightModeName } from './reader-shortcuts.ts';
 
 export type TranslationStatus =
   | 'recognizing'
@@ -64,4 +67,46 @@ export function countTranslated(
     }
   }
   return { done: translatedPages.size, total: pageCount };
+}
+
+/** Chinese labels for the right-panel modes, matching the tab trigger text. */
+const MODE_LABELS: Record<ReaderRightModeName, string> = {
+  translation: '页面翻译',
+  chat: 'AI 答疑',
+  summary: 'PDF 总结',
+  mindmap: 'PDF 脑图',
+};
+
+/** Chinese label of the active right-panel mode. */
+export function modeLabel(mode: ReaderRightModeName): string {
+  return MODE_LABELS[mode];
+}
+
+/** Read-only facts the bottom status bar summarizes. */
+export interface StatusBarFacts {
+  /** Current page, 1-based. */
+  page: number;
+  /** Total pages; 0 means no document is open. */
+  pageCount: number;
+  zoom: number;
+  mode: ReaderRightModeName;
+  translated: { done: number; total: number };
+}
+
+/**
+ * The status bar's read-only facts as display strings, in fixed order: page
+ * position, zoom, mode, translation progress. Page position and progress are
+ * omitted while no document is open.
+ */
+export function statusBarParts(facts: StatusBarFacts): string[] {
+  const parts: string[] = [];
+  if (facts.pageCount > 0) {
+    parts.push(`第 ${facts.page}/${facts.pageCount} 页`);
+  }
+  parts.push(`${facts.zoom}%`);
+  parts.push(MODE_LABELS[facts.mode]);
+  if (facts.pageCount > 0) {
+    parts.push(`已翻译 ${facts.translated.done}/${facts.translated.total}`);
+  }
+  return parts;
 }

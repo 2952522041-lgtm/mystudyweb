@@ -4,6 +4,8 @@ import test from 'node:test';
 
 import {
   countTranslated,
+  modeLabel,
+  statusBarParts,
   statusToBadge,
   type TranslationStatus,
 } from '../lib/reader-ui-status.ts';
@@ -109,4 +111,87 @@ void test('right panel header shows the translated-pages progress', () => {
     /className="translation-progress-chip"\s*aria-label=\{`翻译进度：已翻译 \$\{translationProgress\.done\} 页，共 \$\{translationProgress\.total\} 页`\}/,
   );
   assert.match(styles, /\.translation-progress-chip \{[^}]*rounded-full/);
+});
+
+void test('modeLabel maps every right-panel mode to its Chinese label', () => {
+  assert.equal(modeLabel('translation'), '页面翻译');
+  assert.equal(modeLabel('chat'), 'AI 答疑');
+  assert.equal(modeLabel('summary'), 'PDF 总结');
+  assert.equal(modeLabel('mindmap'), 'PDF 脑图');
+});
+
+void test('statusBarParts composes page position, zoom, mode and progress', () => {
+  assert.deepEqual(
+    statusBarParts({
+      page: 3,
+      pageCount: 12,
+      zoom: 95,
+      mode: 'translation',
+      translated: { done: 5, total: 12 },
+    }),
+    ['第 3/12 页', '95%', '页面翻译', '已翻译 5/12'],
+  );
+  assert.deepEqual(
+    statusBarParts({
+      page: 7,
+      pageCount: 12,
+      zoom: 110,
+      mode: 'chat',
+      translated: { done: 0, total: 12 },
+    }),
+    ['第 7/12 页', '110%', 'AI 答疑', '已翻译 0/12'],
+  );
+});
+
+void test('statusBarParts omits document facts while no document is open', () => {
+  assert.deepEqual(
+    statusBarParts({
+      page: 1,
+      pageCount: 0,
+      zoom: 95,
+      mode: 'mindmap',
+      translated: { done: 0, total: 0 },
+    }),
+    ['95%', 'PDF 脑图'],
+  );
+});
+
+void test('bottom status bar renders the read-only facts group', () => {
+  assert.match(
+    pageSource,
+    /import \{[^}]*statusBarParts[^}]*\} from '@\/lib\/reader-ui-status'/,
+  );
+  // The facts derive from the same state the toolbar used to display.
+  assert.match(
+    pageSource,
+    /const statusBarItems = statusBarParts\(\{\s*page,\s*pageCount: docMeta\?\.pageCount \?\? 0,\s*zoom,\s*mode: activeMode,\s*translated: translationProgress,\s*\}\)/,
+  );
+  assert.match(
+    pageSource,
+    /aria-label="阅读状态"\s*>\s*\{statusBarItems\.map\(\(part\) => \(\s*<span key=\{part\}>\{part\}<\/span>\s*\)\)\}/,
+  );
+  // The status bar lives in the footer, after the reader panels.
+  const footerIndex = pageSource.indexOf('<footer className="status-bar">');
+  assert.notEqual(footerIndex, -1);
+  const panelsEndIndex = pageSource.indexOf('</ResizablePanelGroup>');
+  assert.notEqual(panelsEndIndex, -1);
+  assert.ok(
+    footerIndex > panelsEndIndex,
+    'status bar footer must sit after the reader panels',
+  );
+});
+
+void test('top toolbar keeps its controls but drops facts duplicated by the status bar', () => {
+  // Operation controls survive the slim-down.
+  assert.match(pageSource, /<span className="sr-only">跳转页码<\/span>/);
+  assert.match(pageSource, /label="缩小"/);
+  assert.match(pageSource, /label="放大"/);
+  assert.match(pageSource, /label="阅读服务设置"/);
+  assert.match(pageSource, /导入 PDF/);
+  assert.match(pageSource, /<TabsTrigger\s+value="translation"/);
+  // Static facts now only live in the bottom status bar.
+  assert.doesNotMatch(pageSource, /\{zoom\}%/);
+  assert.doesNotMatch(pageSource, /docMeta\?\.pageCount \?\? '—'/);
+  assert.doesNotMatch(pageSource, /第 \{page\} 页正在阅读/);
+  assert.doesNotMatch(pageSource, /status-chip/);
 });

@@ -131,10 +131,6 @@
     @apply mt-0.5 text-[11px] text-slate-500;
   }
 
-  .status-chip {
-    @apply rounded-full border border-white/80 bg-white/75 px-2.5 py-1 text-[10px] font-medium text-slate-500 shadow-sm backdrop-blur;
-  }
-
   .translation-progress-chip {
     @apply rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-medium text-slate-500;
   }
