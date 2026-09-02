@@ -71,8 +71,17 @@ import {
   type ChatSettings,
 } from '@/lib/chat-cache';
 import { ChatError } from '@/lib/chat';
-import { loadPdfjs, type PDFDocumentProxy, type RenderTask } from '@/lib/pdfjs';
+import {
+  loadPdfjs,
+  type PDFDocumentProxy,
+  type RenderTask,
+  type TextLayer,
+} from '@/lib/pdfjs';
 import { itemsFromPdfJs, normalizePage, pageHasText } from '@/lib/pdf-text';
+import {
+  shouldBuildTextLayer,
+  textLayerScale,
+} from '@/lib/pdf-text-layer';
 import {
   createOcrProviderForSettings,
   createOcrService,
@@ -201,11 +210,13 @@ function PdfPageCanvas({
   height: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
   const [rendering, setRendering] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     let task: RenderTask | null = null;
+    let activeTextLayer: TextLayer | null = null;
 
     void (async () => {
       const pdfPage = await pdfDoc.getPage(pageNumber);
@@ -213,9 +224,10 @@ function PdfPageCanvas({
       if (cancelled || !canvas) return;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const base = pdfPage.getViewport({ scale: 1 });
-      const viewport = pdfPage.getViewport({
-        scale: (width * dpr) / base.width,
-      });
+      // Both layers derive from one scale: the canvas backing store adds the
+      // DPR on top, and any drift between the two would offset the selection.
+      const scale = textLayerScale(width, base.width);
+      const viewport = pdfPage.getViewport({ scale: scale * dpr });
       canvas.width = Math.floor(viewport.width);
       canvas.height = Math.floor(viewport.height);
       canvas.style.width = `${width}px`;
@@ -229,9 +241,44 @@ function PdfPageCanvas({
       if (!cancelled) setRendering(false);
     });
 
+    // Selectable text overlay, rebuilt alongside the canvas from the same
+    // inputs so its geometry always matches the rendered page box.
+    void (async () => {
+      const pdfjs = await loadPdfjs();
+      const pdfPage = await pdfDoc.getPage(pageNumber);
+      const container = textLayerRef.current;
+      if (cancelled || !container) return;
+      const base = pdfPage.getViewport({ scale: 1 });
+      const scale = textLayerScale(width, base.width);
+      const content = await pdfPage.getTextContent();
+      if (cancelled) return;
+      container.replaceChildren();
+      const items = itemsFromPdfJs(
+        content.items as Array<{
+          str?: string;
+          transform?: number[];
+          width?: number;
+          height?: number;
+        }>,
+        base.height,
+      );
+      // Scanned pages have no extractable text — keep them canvas-only.
+      if (!shouldBuildTextLayer(items)) return;
+      container.style.setProperty('--total-scale-factor', String(scale));
+      activeTextLayer = new pdfjs.TextLayer({
+        textContentSource: content,
+        container,
+        viewport: pdfPage.getViewport({ scale }),
+      });
+      await activeTextLayer.render();
+    })().catch(() => {
+      // Cancelled rebuilds reject; a missing text layer never blocks reading.
+    });
+
     return () => {
       cancelled = true;
       task?.cancel();
+      activeTextLayer?.cancel();
     };
   }, [pdfDoc, pageNumber, width, height]);
 
@@ -242,6 +289,7 @@ function PdfPageCanvas({
         className="block bg-white"
         aria-label={`第 ${pageNumber} 页内容`}
       />
+      <div ref={textLayerRef} className="pdf-text-layer" aria-hidden="true" />
       {rendering ? (
         <div className="absolute inset-0 flex items-center justify-center bg-white">
           <LoaderCircle className="size-6 animate-spin text-slate-400" />

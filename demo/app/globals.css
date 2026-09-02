@@ -238,6 +238,72 @@
     @apply shadow-[0_6px_20px_rgba(15,23,42,0.2)] ring-2 ring-amber-400/60;
   }
 
+  /* Selectable text overlay above the page canvas, laid out by pdf.js
+     TextLayer: spans are placed as page fractions and sized through
+     --total-scale-factor, which PdfPageCanvas sets to the canvas CSS scale
+     before each rebuild. Spans stay transparent so the canvas is untouched
+     while ::selection still shows the picked range. */
+  .pdf-text-layer {
+    position: absolute;
+    inset: 0;
+    overflow: clip;
+    line-height: 1;
+    text-align: initial;
+    text-size-adjust: none;
+    forced-color-adjust: none;
+    transform-origin: 0 0;
+    z-index: 0;
+    --total-scale-factor: 1;
+    --scale-round-x: 1px;
+    --scale-round-y: 1px;
+    --min-font-size: 1;
+    --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+    --min-font-size-inv: calc(1 / var(--min-font-size));
+  }
+
+  .pdf-text-layer :is(span, br) {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0 0;
+    user-select: text;
+  }
+
+  .pdf-text-layer > :not(.markedContent),
+  .pdf-text-layer .markedContent span:not(.markedContent) {
+    z-index: 1;
+    --font-height: 0;
+    font-size: calc(var(--text-scale-factor) * var(--font-height));
+    --scale-x: 1;
+    --rotate: 0deg;
+    transform: rotate(var(--rotate)) scaleX(var(--scale-x))
+      scale(var(--min-font-size-inv));
+  }
+
+  .pdf-text-layer .markedContent {
+    display: contents;
+  }
+
+  .pdf-text-layer ::selection {
+    background: rgba(37, 99, 235, 0.3);
+    color: transparent;
+  }
+
+  /* Rotated pages: TextLayer tags the container with the page rotation; the
+     box is sized from unrotated page units, so rotate it back into place. */
+  .pdf-text-layer[data-main-rotation='90'] {
+    transform: rotate(90deg) translateY(-100%);
+  }
+
+  .pdf-text-layer[data-main-rotation='180'] {
+    transform: rotate(180deg) translate(-100%, -100%);
+  }
+
+  .pdf-text-layer[data-main-rotation='270'] {
+    transform: rotate(270deg) translateX(-100%);
+  }
+
   .translation-scroll {
     @apply min-h-0 flex-1 overflow-y-auto px-[clamp(26px,5vw,68px)] pb-16 pt-7;
     scrollbar-color: #d6d3d1 transparent;
