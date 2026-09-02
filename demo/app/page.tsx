@@ -99,6 +99,11 @@ import {
   stepZoom,
 } from '@/lib/reader-model';
 import {
+  isEditableTarget,
+  mapShortcut,
+  READER_RIGHT_MODES,
+} from '@/lib/reader-shortcuts';
+import {
   describeTranslationError,
   TranslationError,
   type TranslationErrorCode,
@@ -111,6 +116,7 @@ import {
 const TARGET_LANGUAGES = ['简体中文', '繁體中文', '日本語', '한국어'] as const;
 const TRANSLATION_STABLE_DELAY = 300;
 const PROGRESS_SAVE_DELAY = 800;
+const DEFAULT_ZOOM = 95;
 
 interface PageView {
   width: number;
@@ -457,7 +463,7 @@ function PdfReader({
   const [pageSizes, setPageSizes] = useState<PageView[]>([]);
   const [page, setPage] = useState(1);
   const [translationPage, setTranslationPage] = useState(1);
-  const [zoom, setZoom] = useState(95);
+  const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [targetLanguage, setTargetLanguage] = useState<string>('简体中文');
   const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS);
   const [chatSettings, setChatSettings] = useState<ChatSettings>(
@@ -501,6 +507,9 @@ function PdfReader({
   const prefetchedTranslationsRef = useRef(new Set<string>());
   const retryTokenRef = useRef(0);
   const [retryToken, setRetryToken] = useState(0);
+  const pageRef = useRef(page);
+  const suspendedRef = useRef(suspended);
+  const settingsOpenRef = useRef(settingsOpen);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -513,6 +522,18 @@ function PdfReader({
   useEffect(() => {
     onStandaloneImportRef.current = onStandaloneImport;
   }, [onStandaloneImport]);
+
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
+
+  useEffect(() => {
+    suspendedRef.current = suspended;
+  }, [suspended]);
+
+  useEffect(() => {
+    settingsOpenRef.current = settingsOpen;
+  }, [settingsOpen]);
 
   const translationKey = useCallback(
     (pageNumber: number, language: string) => `${pageNumber}:${language}`,
@@ -621,6 +642,59 @@ function PdfReader({
     },
     [docMeta?.pageCount],
   );
+
+  // Keyboard shortcuts: key→action mapping stays pure in lib/reader-shortcuts;
+  // refs keep this subscription stable across page turns and zoom changes.
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const shortcut = mapShortcut(event);
+      if (!shortcut) return;
+      // Typing targets keep their keys; Escape still closes overlays anywhere.
+      if (shortcut.action !== 'dismiss' && isEditableTarget(event.target))
+        return;
+      // While the settings dialog owns the screen, only dismiss applies.
+      if (shortcut.action !== 'dismiss' && settingsOpenRef.current) return;
+      // The reader stays mounted behind the course library; ignore keys there.
+      if (suspendedRef.current) return;
+
+      switch (shortcut.action) {
+        case 'nextPage':
+          goToPage(pageRef.current + 1);
+          break;
+        case 'prevPage':
+          goToPage(pageRef.current - 1);
+          break;
+        case 'firstPage':
+          goToPage(1);
+          break;
+        case 'lastPage':
+          goToPage(Number.MAX_SAFE_INTEGER);
+          break;
+        case 'zoomIn':
+          setZoom((current) => stepZoom(current, 1));
+          break;
+        case 'zoomOut':
+          setZoom((current) => stepZoom(current, -1));
+          break;
+        case 'zoomReset':
+          setZoom(DEFAULT_ZOOM);
+          break;
+        case 'toggleRightMode':
+          setRightMode(READER_RIGHT_MODES[shortcut.mode]);
+          break;
+        case 'collapseRightPanel':
+          setTranslationVisible(false);
+          break;
+        case 'dismiss':
+          setSettingsOpen(false);
+          break;
+      }
+      event.preventDefault();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [goToPage]);
 
   useEffect(() => {
     if (!stageWidth || positionedRef.current) return;
@@ -755,7 +829,7 @@ function PdfReader({
         restoredPage:
           restored && restored.lastPage > 1 ? restored.lastPage : null,
       });
-      setZoom(restored?.zoom ?? 95);
+      setZoom(restored?.zoom ?? DEFAULT_ZOOM);
       setTargetLanguage(restored?.targetLanguage ?? '简体中文');
       const openingPage = clampPage(
         requestedPage ?? restored?.lastPage ?? 1,
