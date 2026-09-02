@@ -34,6 +34,7 @@ import {
 } from '@/components/course-library';
 import { DocumentSummaryPanel } from '@/components/document-summary-panel';
 import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
+import { SelectionToolbar } from '@/components/selection-toolbar';
 import {
   ReaderSettingsDialog,
   type SettingsTab,
@@ -1662,6 +1663,8 @@ function PdfReader({
               展开阅读辅助
             </Button>
           ) : null}
+
+          {pdfDoc && docMeta ? <SelectionToolbar /> : null}
         </section>
 
         <footer className="status-bar">
