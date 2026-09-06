@@ -149,6 +149,7 @@ export class MemoryCourseStorage implements CourseStorage {
   async removeDocument(
     documentId: string,
     expectedRevision: number,
+    aiKnowledge?: AiCourseKnowledge,
   ): Promise<CourseBundle> {
     const current = await this.load();
     this.assertRevision(current, expectedRevision);
@@ -157,11 +158,9 @@ export class MemoryCourseStorage implements CourseStorage {
     );
     if (!document) throw new Error('课程中找不到这份 PDF。');
     const now = new Date().toISOString();
-    current.knowledge = removeDocumentContribution(
-      current.knowledge,
-      documentId,
-      now,
-    );
+    current.knowledge = aiKnowledge
+      ? applyAiCourseKnowledge(current.knowledge, aiKnowledge, now)
+      : removeDocumentContribution(current.knowledge, documentId, now);
     current.manifest.documents = current.manifest.documents.filter(
       (item) => item.id !== documentId,
     );

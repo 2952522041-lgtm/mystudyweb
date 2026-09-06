@@ -645,12 +645,54 @@ export function CourseLibrary({
     setBusy(true);
     setError(null);
     try {
+      const bundle = active.bundle;
+      // 删除已纳入课程的 PDF 时，用剩余资料重新综合课程总总结与总脑图；
+      // AI 失败不阻止删除，退回本地清理（只移除该文档的贡献）。
+      let aiKnowledge: AiCourseKnowledge | undefined;
+      let synthesisWarning: string | null = null;
+      const remainingDigests = bundle.manifest.documents
+        .filter(
+          (item) =>
+            item.includedInCourse &&
+            item.id !== document.id &&
+            bundle.digests[item.id],
+        )
+        .map((item) => bundle.digests[item.id]);
+      if (document.includedInCourse && remainingDigests.length > 0) {
+        try {
+          const provider = createKnowledgeProviderForSettings(
+            loadKnowledgeSettings(),
+          );
+          setMessage('AI 正在基于剩余资料重新综合课程总总结与总脑图…');
+          aiKnowledge = await provider.synthesizeCourseKnowledge({
+            courseId: bundle.manifest.id,
+            courseName: bundle.manifest.name,
+            digests: remainingDigests,
+            userNodeLabels: bundle.knowledge.nodes
+              .filter((node) => node.ownership === 'user')
+              .map((node) => node.label),
+          });
+        } catch (synthesisError) {
+          synthesisWarning = describeKnowledgeError(synthesisError);
+        }
+      }
       const next = await active.storage.removeDocument(
         document.id,
-        active.bundle.manifest.revision,
+        bundle.manifest.revision,
+        aiKnowledge,
       );
       setEntryBundle(active.id, next);
-      setMessage(`已删除“${document.fileName}”及其总结和脑图成果。`);
+      if (synthesisWarning) {
+        setMessage(
+          `已删除“${document.fileName}”，但 AI 重新综合课程成果失败：${synthesisWarning}。课程总总结中来自它的内容已移除。`,
+        );
+      } else if (aiKnowledge) {
+        setMessage(
+          `已删除“${document.fileName}”，AI 已基于剩余 ${remainingDigests.length} 份 PDF 重新综合课程总总结和总脑图。`,
+        );
+      } else {
+        setMessage(`已删除“${document.fileName}”及其总结和脑图成果。`);
+      }
     } catch (deleteError) {
       setError(describeKnowledgeError(deleteError));
     } finally {
@@ -1256,7 +1298,9 @@ export function CourseLibrary({
                 <DialogTitle>删除这份 PDF？</DialogTitle>
                 <DialogDescription>
                   将从课程中删除“{pendingDelete.document.fileName}
-                  ”：PDF 文件和它的总结、脑图成果会一并删除，课程总总结和总脑图中来自它的内容也会被移除。此操作不可撤销。
+                  ”：PDF 文件和它的总结、脑图成果会一并删除。已纳入课程时，AI
+                  会基于剩余资料重新综合课程总总结和总脑图（未配置知识库
+                  AI 则仅移除它的内容）。此操作不可撤销。
                 </DialogDescription>
               </DialogHeader>
               <DialogFooter>

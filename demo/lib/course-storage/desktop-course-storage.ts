@@ -324,6 +324,7 @@ export class DesktopCourseStorage implements CourseStorage {
   async removeDocument(
     documentId: string,
     expectedRevision: number,
+    aiKnowledge?: AiCourseKnowledge,
   ): Promise<CourseBundle> {
     const current = await this.load();
     this.assertRevision(current.manifest, expectedRevision);
@@ -337,11 +338,9 @@ export class DesktopCourseStorage implements CourseStorage {
       document.storedFileName,
     ]);
     await this.api.deleteFile(this.directoryName, documentDirectory(documentId));
-    const knowledge = removeDocumentContribution(
-      current.knowledge,
-      documentId,
-      now,
-    );
+    const knowledge = aiKnowledge
+      ? applyAiCourseKnowledge(current.knowledge, aiKnowledge, now)
+      : removeDocumentContribution(current.knowledge, documentId, now);
     const digests = { ...current.digests };
     delete digests[documentId];
     const bundle: CourseBundle = {

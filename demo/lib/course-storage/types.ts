@@ -191,12 +191,14 @@ export interface CourseStorage {
   ): Promise<CourseBundle>;
   openPdf(documentId: string): Promise<File>;
   /**
-   * 删除一份 PDF 及其全部成果（原文件、总结、脑图），并从课程知识库中移除
-   * 它的贡献；版本号推进并把删除前的状态写入 History。
+   * 删除一份 PDF 及其全部成果（原文件、总结、脑图）；版本号推进并把删除前
+   * 的状态写入 History。删除的文档已纳入课程时，可传入用剩余资料重新综合好
+   * 的 aiKnowledge 重建课程知识库；省略时退回本地清理，只移除该文档的贡献。
    */
   removeDocument(
     documentId: string,
     expectedRevision: number,
+    aiKnowledge?: AiCourseKnowledge,
   ): Promise<CourseBundle>;
   /**
    * 删除整门课程。桌面端把课程目录移入系统回收站（无回收站时直接删除）；

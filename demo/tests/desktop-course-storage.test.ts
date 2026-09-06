@@ -299,6 +299,7 @@ void test('course library keeps both browser and desktop modes available', async
     'removeDocument',
     'deleteCourse',
     'removeRecentCourse',
+    'synthesizeCourseKnowledge',
     '删除课程',
     '删除这份 PDF',
     '删除整门课程',

@@ -21,6 +21,7 @@ import { BrowserDirectoryStorage } from '../lib/course-storage/browser-directory
 import { DesktopCourseStorage } from '../lib/course-storage/desktop-course-storage.ts';
 import { MemoryCourseStorage } from '../lib/course-storage/memory-course-storage.ts';
 import type {
+  AiCourseKnowledge,
   BrowserDirectoryHandle,
   BrowserFileHandle,
   DocumentDigest,
@@ -385,8 +386,131 @@ void test('desktop storage removeDocument deletes files, cleans knowledge and wr
   }
 });
 
-void test('desktop storage removeDocument rejects stale revision', async () => {
+void test('desktop storage removeDocument rebuilds course knowledge from AI output', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-delete-'));
+  try {
+    const api = new FakeWorkspaceApi(root);
+    await api.getWorkspaceInfo();
+    const { directoryName } = await api.createCourseDirectory('MAT3007');
+    const storage = new DesktopCourseStorage(api, directoryName);
+    await storage.initialize('MAT3007');
+
+    const digestOne = makeDigest({
+      documentId: 'doc-delete000000001',
+      fingerprint: 'fingerprint-delete00000001',
+      title: '极限',
+    });
+    const digestTwo = makeDigest({
+      documentId: 'doc-delete000000002',
+      fingerprint: 'fingerprint-delete00000002',
+      title: '微分',
+    });
+    const importedOne = await storage.importDocument(
+      pdfFile('讲义1.pdf'),
+      digestOne,
+      importOptions,
+      0,
+    );
+    const importedTwo = await storage.importDocument(
+      pdfFile('讲义2.pdf'),
+      digestTwo,
+      importOptions,
+      importedOne.bundle.manifest.revision,
+    );
+    const versionBefore = importedTwo.bundle.knowledge.version;
+
+    // 模拟 UI 用剩余资料重新综合出的课程知识库。
+    const ai: AiCourseKnowledge = {
+      theme: '课程核心围绕极限与微分两条主线。',
+      nodes: [
+        {
+          id: 'course-kn-1',
+          label: '微分',
+          description: '变化率与导数的理论。',
+          sources: [
+            {
+              documentId: digestTwo.documentId,
+              fileName: '讲义2.pdf',
+              pageStart: 5,
+              type: 'pdf',
+            },
+          ],
+        },
+      ],
+      relations: [],
+      conflicts: [],
+      unresolvedQuestions: ['如何求复合函数的导数？'],
+      provider: 'knowledge-provider-test',
+      model: 'knowledge-model-x',
+      promptVersion: 'ai-course-v1',
+    };
+
+    const next = await storage.removeDocument(
+      digestOne.documentId,
+      importedTwo.bundle.manifest.revision,
+      ai,
+    );
+
+    // 知识库被 AI 输出重建，而不是只做本地裁剪。
+    assert.equal(next.knowledge.schemaVersion, 2);
+    assert.equal(next.knowledge.version, versionBefore + 1);
+    assert.equal(next.knowledge.provider, 'knowledge-provider-test');
+    assert.equal(next.knowledge.model, 'knowledge-model-x');
+    assert.ok(
+      next.knowledge.nodes.some((node) => node.label === '微分'),
+      'AI 输出的节点应出现',
+    );
+    assert.ok(
+      !next.knowledge.nodes.some((node) => node.label === '极限'),
+      '被删文档的概念不应保留',
+    );
+    assert.deepEqual(
+      next.knowledge.unresolvedQuestions,
+      ['如何求复合函数的导数？'],
+    );
+    // 磁盘上的课程脑图与 course.json 同步为重建后的版本。
+    const savedKnowledge = JSON.parse(
+      new TextDecoder().decode(
+        await api.readFile(directoryName, ['课程脑图.json']),
+      ),
+    ) as { version: number; provider?: string };
+    assert.equal(savedKnowledge.version, next.knowledge.version);
+    assert.equal(savedKnowledge.provider, 'knowledge-provider-test');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('browser storage removeDocument also accepts AI knowledge', async () => {
+  const root = newDeletionRoot();
+  const storage = new BrowserDirectoryStorage(root);
+  await storage.initialize('线性代数');
+  const imported = await storage.importDocument(
+    pdfFile('讲义.pdf'),
+    makeDigest(),
+    importOptions,
+    0,
+  );
+  const ai: AiCourseKnowledge = {
+    theme: '重新综合后的主题。',
+    nodes: [],
+    relations: [],
+    conflicts: [],
+    unresolvedQuestions: [],
+    provider: 'knowledge-provider-test',
+    model: 'knowledge-model-x',
+    promptVersion: 'ai-course-v1',
+  };
+
+  const next = await storage.removeDocument(imported.document.id, 1, ai);
+
+  assert.equal(next.knowledge.schemaVersion, 2);
+  assert.equal(next.knowledge.provider, 'knowledge-provider-test');
+  assert.equal(next.manifest.documents.length, 0);
+  assert.equal(next.manifest.revision, 2);
+});
+
+void test('desktop storage removeDocument rejects stale revision', async () => {  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-delete-'));
   try {
     const api = new FakeWorkspaceApi(root);
     await api.getWorkspaceInfo();
