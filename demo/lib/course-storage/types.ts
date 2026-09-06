@@ -190,6 +190,20 @@ export interface CourseStorage {
     aiKnowledge?: AiCourseKnowledge,
   ): Promise<CourseBundle>;
   openPdf(documentId: string): Promise<File>;
+  /**
+   * 删除一份 PDF 及其全部成果（原文件、总结、脑图），并从课程知识库中移除
+   * 它的贡献；版本号推进并把删除前的状态写入 History。
+   */
+  removeDocument(
+    documentId: string,
+    expectedRevision: number,
+  ): Promise<CourseBundle>;
+  /**
+   * 删除整门课程。桌面端把课程目录移入系统回收站（无回收站时直接删除）；
+   * 浏览器端清空授权文件夹中的全部内容，文件夹本身由系统保留。
+   * 课程列表记录的清理由调用方负责。
+   */
+  deleteCourse(): Promise<void>;
 }
 
 export interface DirectoryPermissionDescriptor {
@@ -225,6 +239,13 @@ export interface BrowserDirectoryHandle {
   requestPermission?(
     descriptor?: DirectoryPermissionDescriptor,
   ): Promise<PermissionState>;
+  /** 与 FileSystemDirectoryHandle.removeEntry 一致；课程删除需要它。 */
+  removeEntry?(
+    name: string,
+    options?: { recursive?: boolean },
+  ): Promise<void>;
+  /** 与 FileSystemDirectoryHandle.values 一致；课程删除时枚举条目用。 */
+  values?(): AsyncIterable<BrowserFileHandle | BrowserDirectoryHandle>;
 }
 
 export interface DirectoryPickerWindow extends Window {

@@ -18,6 +18,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Sparkles,
+  Trash2,
   TriangleAlert,
 } from 'lucide-react';
 
@@ -38,6 +39,7 @@ import { BrowserDirectoryStorage } from '@/lib/course-storage/browser-directory-
 import { DesktopCourseStorage } from '@/lib/course-storage/desktop-course-storage';
 import {
   loadRecentCourses,
+  removeRecentCourse,
   saveRecentCourse,
   type RecentCourse,
 } from '@/lib/course-storage/recent-courses';
@@ -151,6 +153,11 @@ export function CourseLibrary({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<
+    | { kind: 'course'; entry: CourseEntry }
+    | { kind: 'document'; document: DocumentRecord }
+    | null
+  >(null);
 
   const desktopApi =
     typeof window !== 'undefined' ? window.yeyuDesktop : undefined;
@@ -633,6 +640,45 @@ export function CourseLibrary({
     }
   };
 
+  const deleteDocument = async (document: DocumentRecord) => {
+    if (!active?.bundle) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await active.storage.removeDocument(
+        document.id,
+        active.bundle.manifest.revision,
+      );
+      setEntryBundle(active.id, next);
+      setMessage(`已删除“${document.fileName}”及其总结和脑图成果。`);
+    } catch (deleteError) {
+      setError(describeKnowledgeError(deleteError));
+    } finally {
+      setBusy(false);
+      setPendingDelete(null);
+    }
+  };
+
+  const deleteCourseEntry = async (entry: CourseEntry) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await entry.storage.deleteCourse();
+      if (!isDesktop && entry.handle) await removeRecentCourse(entry.id);
+      const remaining = entries.filter((item) => item.id !== entry.id);
+      setEntries(remaining);
+      if (activeId === entry.id) setActiveId(remaining[0]?.id ?? null);
+      setMessage(`已删除课程“${entry.name}”。`);
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error ? deleteError.message : '删除课程失败。',
+      );
+    } finally {
+      setBusy(false);
+      setPendingDelete(null);
+    }
+  };
+
   const sourceDocuments = useMemo(
     () =>
       new Map(
@@ -785,6 +831,14 @@ export function CourseLibrary({
                     重新连接原文件夹
                   </Button>
                 ) : null}
+                <Button
+                  variant="outline"
+                  className="text-rose-700"
+                  onClick={() => setPendingDelete({ kind: 'course', entry: active })}
+                  disabled={busy}
+                >
+                  <Trash2 /> 删除课程
+                </Button>
               </div>
             </div>
           ) : bundle && active ? (
@@ -816,6 +870,15 @@ export function CourseLibrary({
                   >
                     <RefreshCw className={busy ? 'animate-spin' : ''} />{' '}
                     重新加载
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-rose-700"
+                    onClick={() => setPendingDelete({ kind: 'course', entry: active })}
+                    disabled={busy}
+                  >
+                    <Trash2 /> 删除课程
                   </Button>
                   <Button size="sm" onClick={() => setImportOpen(true)}>
                     <FilePlus2 /> 导入 PDF
@@ -1104,6 +1167,20 @@ export function CourseLibrary({
                                 重新生成
                               </Button>
                             )}
+                            <Button
+                              variant="outline"
+                              size="xs"
+                              className="text-rose-700"
+                              onClick={() =>
+                                setPendingDelete({
+                                  kind: 'document',
+                                  document,
+                                })
+                              }
+                              disabled={busy}
+                            >
+                              <Trash2 /> 删除
+                            </Button>
                           </div>
                         </div>
                       ))}
@@ -1163,6 +1240,80 @@ export function CourseLibrary({
               {isDesktop ? '创建课程' : '选择文件夹并创建'}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-[480px]">
+          {pendingDelete?.kind === 'document' ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>删除这份 PDF？</DialogTitle>
+                <DialogDescription>
+                  将从课程中删除“{pendingDelete.document.fileName}
+                  ”：PDF 文件和它的总结、脑图成果会一并删除，课程总总结和总脑图中来自它的内容也会被移除。此操作不可撤销。
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setPendingDelete(null)}
+                  disabled={busy}
+                >
+                  取消
+                </Button>
+                <Button
+                  className="bg-rose-600 text-white hover:bg-rose-700"
+                  onClick={() => void deleteDocument(pendingDelete.document)}
+                  disabled={busy}
+                >
+                  {busy ? (
+                    <LoaderCircle className="animate-spin" />
+                  ) : (
+                    <Trash2 />
+                  )}
+                  删除 PDF
+                </Button>
+              </DialogFooter>
+            </>
+          ) : pendingDelete ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>删除整门课程？</DialogTitle>
+                <DialogDescription>
+                  {isDesktop
+                    ? `工作区中的课程目录“${pendingDelete.entry.name}”将先移入系统回收站（无法回收时直接删除），课程内的 PDF、总结、脑图与笔记会一并删除。`
+                    : `将清空课程文件夹“${pendingDelete.entry.name}”中的全部文件（course.json、PDF、总结、脑图等）并从课程列表移除，文件夹本身会保留。此操作不可撤销。`}
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setPendingDelete(null)}
+                  disabled={busy}
+                >
+                  取消
+                </Button>
+                <Button
+                  className="bg-rose-600 text-white hover:bg-rose-700"
+                  onClick={() => void deleteCourseEntry(pendingDelete.entry)}
+                  disabled={busy}
+                >
+                  {busy ? (
+                    <LoaderCircle className="animate-spin" />
+                  ) : (
+                    <Trash2 />
+                  )}
+                  删除课程
+                </Button>
+              </DialogFooter>
+            </>
+          ) : null}
         </DialogContent>
       </Dialog>
 

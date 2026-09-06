@@ -211,3 +211,46 @@ export async function writeCourseFile(
     throw renameError;
   }
 }
+
+/** 解析并校验课程目录本身的绝对路径，专用于整门课程的删除。 */
+export async function resolveCourseDirectoryPath(
+  coursesRoot: string,
+  directoryName: string,
+): Promise<string> {
+  const clean = assertKnownCourseDirectory(directoryName);
+  const courseRoot = path.join(coursesRoot, clean);
+  const stat = await fs.lstat(courseRoot).catch(() => null);
+  if (!stat?.isDirectory()) {
+    throw new WorkspacePathError('COURSE_NOT_FOUND', '课程目录不存在。');
+  }
+  return courseRoot;
+}
+
+/**
+ * 删除课程内的单个文件或成果目录（目录递归删除）。目标不存在时保持幂等；
+ * 空路径会指向课程根目录本身，直接拒绝。
+ */
+export async function deleteCourseEntry(
+  coursesRoot: string,
+  directoryName: string,
+  relativePath: string[],
+): Promise<void> {
+  if (relativePath.length === 0) {
+    throw new WorkspacePathError('INVALID_NAME', '必须指定要删除的文件。');
+  }
+  const target = await resolveCourseEntryPath(
+    coursesRoot,
+    directoryName,
+    relativePath,
+  );
+  await fs.rm(target, { recursive: true, force: true });
+}
+
+/** 直接删除整门课程目录；主进程会先尝试移入系统回收站，此处是兜底路径。 */
+export async function removeCourseDirectory(
+  coursesRoot: string,
+  directoryName: string,
+): Promise<void> {
+  const target = await resolveCourseDirectoryPath(coursesRoot, directoryName);
+  await fs.rm(target, { recursive: true });
+}

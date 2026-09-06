@@ -28,6 +28,14 @@ const api: YeyuDesktopApi = {
       relativePath,
       data,
     ),
+  deleteFile: (courseDirectory, relativePath) =>
+    ipcRenderer.invoke(
+      DESKTOP_CHANNELS.deleteFile,
+      courseDirectory,
+      relativePath,
+    ),
+  deleteCourseDirectory: (courseDirectory) =>
+    ipcRenderer.invoke(DESKTOP_CHANNELS.deleteCourse, courseDirectory),
   revealWorkspace: () => ipcRenderer.invoke(DESKTOP_CHANNELS.revealWorkspace),
 };
 

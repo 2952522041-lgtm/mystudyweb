@@ -7,9 +7,12 @@ import { DESKTOP_CHANNELS, type WorkspaceInfo } from './api.ts';
 import {
   createCourseDirectory,
   courseFileExists,
+  deleteCourseEntry,
   ensureCourseDirectory,
   ensureWorkspace,
   readCourseFile,
+  removeCourseDirectory,
+  resolveCourseDirectoryPath,
   scanCourses,
   writeCourseFile,
 } from './workspace.ts';
@@ -243,6 +246,37 @@ function registerDesktopIpc(layout: WorkspaceLayout): void {
           Array.isArray(relativePath) ? relativePath : [],
           data,
         );
+      } catch (error) {
+        throw toIpcError(error);
+      }
+    },
+  );
+  ipcMain.handle(
+    DESKTOP_CHANNELS.deleteFile,
+    async (_event, courseDirectory, relativePath) => {
+      try {
+        await deleteCourseEntry(
+          layout.coursesRoot,
+          assertString(courseDirectory, '课程目录名不合法。'),
+          Array.isArray(relativePath) ? relativePath : [],
+        );
+      } catch (error) {
+        throw toIpcError(error);
+      }
+    },
+  );
+  ipcMain.handle(
+    DESKTOP_CHANNELS.deleteCourse,
+    async (_event, courseDirectory) => {
+      const name = assertString(courseDirectory, '课程目录名不合法。');
+      try {
+        const target = await resolveCourseDirectoryPath(layout.coursesRoot, name);
+        try {
+          // 先移入系统回收站，误删可以从回收站恢复；无回收站环境退回直接删除。
+          await shell.trashItem(target);
+        } catch {
+          await removeCourseDirectory(layout.coursesRoot, name);
+        }
       } catch (error) {
         throw toIpcError(error);
       }

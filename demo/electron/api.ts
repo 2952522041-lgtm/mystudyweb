@@ -25,12 +25,16 @@ export const DESKTOP_CHANNELS = {
   ensureDirectory: 'yeyu:ensure-directory',
   readFile: 'yeyu:read-file',
   writeFile: 'yeyu:write-file',
+  deleteFile: 'yeyu:delete-file',
+  deleteCourse: 'yeyu:delete-course',
   revealWorkspace: 'yeyu:reveal-workspace',
 } as const;
 
 /** 桌面 API 的全部方法名；冒烟测试用它校验 preload 的暴露面。 */
 export const DESKTOP_METHOD_NAMES = [
   'createCourseDirectory',
+  'deleteCourseDirectory',
+  'deleteFile',
   'ensureDirectory',
   'exists',
   'getWorkspaceInfo',
@@ -72,5 +76,9 @@ export interface YeyuDesktopApi {
     relativePath: string[],
     data: Uint8Array,
   ): Promise<void>;
+  /** 删除课程内的单个文件或成果目录（目录递归）；路径为空时拒绝。 */
+  deleteFile(courseDirectory: string, relativePath: string[]): Promise<void>;
+  /** 删除整门课程目录：主进程优先移入系统回收站，失败时退回直接删除。 */
+  deleteCourseDirectory(directoryName: string): Promise<void>;
   revealWorkspace(): Promise<void>;
 }

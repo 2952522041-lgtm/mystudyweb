@@ -13,6 +13,7 @@ import {
   applyAiCourseKnowledge,
   emptyCourseKnowledge,
   mergeDocumentDigest,
+  removeDocumentContribution,
 } from '../knowledge/course-merger.ts';
 
 export class MemoryCourseStorage implements CourseStorage {
@@ -143,6 +144,39 @@ export class MemoryCourseStorage implements CourseStorage {
     const file = this.files.get(documentId);
     if (!file) throw new Error('PDF 不存在。');
     return file;
+  }
+
+  async removeDocument(
+    documentId: string,
+    expectedRevision: number,
+  ): Promise<CourseBundle> {
+    const current = await this.load();
+    this.assertRevision(current, expectedRevision);
+    const document = current.manifest.documents.find(
+      (item) => item.id === documentId,
+    );
+    if (!document) throw new Error('课程中找不到这份 PDF。');
+    const now = new Date().toISOString();
+    current.knowledge = removeDocumentContribution(
+      current.knowledge,
+      documentId,
+      now,
+    );
+    current.manifest.documents = current.manifest.documents.filter(
+      (item) => item.id !== documentId,
+    );
+    current.manifest.revision += 1;
+    current.manifest.activeKnowledgeVersion = current.knowledge.version;
+    current.manifest.updatedAt = now;
+    delete current.digests[documentId];
+    this.files.delete(documentId);
+    this.bundle = current;
+    return this.load();
+  }
+
+  async deleteCourse(): Promise<void> {
+    this.bundle = null;
+    this.files.clear();
   }
 
   private assertRevision(bundle: CourseBundle, expectedRevision: number): void {

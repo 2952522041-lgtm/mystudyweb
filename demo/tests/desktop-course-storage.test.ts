@@ -8,9 +8,11 @@ import type { YeyuDesktopApi } from '../electron/api.ts';
 import {
   createCourseDirectory,
   courseFileExists,
+  deleteCourseEntry,
   ensureCourseDirectory,
   ensureWorkspace,
   readCourseFile,
+  removeCourseDirectory,
   scanCourses,
   writeCourseFile,
 } from '../electron/workspace.ts';
@@ -74,6 +76,18 @@ class FakeWorkspaceApi implements YeyuDesktopApi {
       relativePath,
       data,
     );
+  }
+
+  deleteFile(courseDirectory: string, relativePath: string[]) {
+    return deleteCourseEntry(
+      this.layout.coursesRoot,
+      courseDirectory,
+      relativePath,
+    );
+  }
+
+  deleteCourseDirectory(courseDirectory: string) {
+    return removeCourseDirectory(this.layout.coursesRoot, courseDirectory);
   }
 
   async revealWorkspace() {}
@@ -277,6 +291,17 @@ void test('course library keeps both browser and desktop modes available', async
     'BrowserDirectoryStorage',
     'requestPermission',
     'saveRecentCourse',
+  ]) {
+    assert.match(library, new RegExp(requirement));
+  }
+  // 课程与 PDF 的删除能力在 UI 层接线，且带确认流程。
+  for (const requirement of [
+    'removeDocument',
+    'deleteCourse',
+    'removeRecentCourse',
+    '删除课程',
+    '删除这份 PDF',
+    '删除整门课程',
   ]) {
     assert.match(library, new RegExp(requirement));
   }

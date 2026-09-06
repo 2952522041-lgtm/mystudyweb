@@ -20,6 +20,7 @@ import {
   applyAiCourseKnowledge,
   emptyCourseKnowledge,
   mergeDocumentDigest,
+  removeDocumentContribution,
 } from '../knowledge/course-merger.ts';
 import {
   renderCourseSummary,
@@ -89,6 +90,21 @@ async function readJson<T>(
   path: string[],
 ): Promise<T> {
   return JSON.parse(await readText(root, path)) as T;
+}
+
+async function removeEntry(
+  root: BrowserDirectoryHandle,
+  path: string[],
+  recursive = false,
+): Promise<void> {
+  if (!root.removeEntry) {
+    throw new Error('当前浏览器不支持删除课程文件。');
+  }
+  const directory = await getDirectory(root, path.slice(0, -1));
+  if (!directory.removeEntry) {
+    throw new Error('当前浏览器不支持删除课程文件。');
+  }
+  await directory.removeEntry(path.at(-1)!, { recursive });
 }
 
 function assertManifest(value: CourseManifest): void {
@@ -332,6 +348,57 @@ export class BrowserDirectoryStorage implements CourseStorage {
     return (
       await getFileHandle(this.root, ['PDFs', document.storedFileName])
     ).getFile();
+  }
+
+  async removeDocument(
+    documentId: string,
+    expectedRevision: number,
+  ): Promise<CourseBundle> {
+    const current = await this.load();
+    this.assertRevision(current.manifest, expectedRevision);
+    const document = current.manifest.documents.find(
+      (item) => item.id === documentId,
+    );
+    if (!document) throw new Error('课程中找不到这份 PDF。');
+    const now = new Date().toISOString();
+    await removeEntry(this.root, ['PDFs', document.storedFileName]);
+    await removeEntry(this.root, documentDirectory(documentId), true);
+    const knowledge = removeDocumentContribution(
+      current.knowledge,
+      documentId,
+      now,
+    );
+    const digests = { ...current.digests };
+    delete digests[documentId];
+    const bundle: CourseBundle = {
+      manifest: {
+        ...current.manifest,
+        documents: current.manifest.documents.filter(
+          (item) => item.id !== documentId,
+        ),
+        revision: current.manifest.revision + 1,
+        activeKnowledgeVersion: knowledge.version,
+        updatedAt: now,
+      },
+      knowledge,
+      digests,
+    };
+    await this.createRevision(current);
+    await this.writeBundle(bundle, true);
+    return bundle;
+  }
+
+  async deleteCourse(): Promise<void> {
+    if (!this.root.values || !this.root.removeEntry) {
+      throw new Error('当前浏览器不支持删除课程文件夹内容。');
+    }
+    const names: string[] = [];
+    for await (const child of this.root.values()) {
+      names.push(child.name);
+    }
+    for (const name of names) {
+      await this.root.removeEntry(name, { recursive: true });
+    }
   }
 
   private assertRevision(manifest: CourseManifest, expected: number): void {

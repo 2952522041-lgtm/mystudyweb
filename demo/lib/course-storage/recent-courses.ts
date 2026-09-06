@@ -34,6 +34,18 @@ export async function saveRecentCourse(course: RecentCourse): Promise<void> {
   database.close();
 }
 
+export async function removeRecentCourse(id: string): Promise<void> {
+  if (typeof indexedDB === 'undefined') return;
+  const database = await openDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(STORE, 'readwrite');
+    transaction.objectStore(STORE).delete(id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+  database.close();
+}
+
 export async function loadRecentCourses(): Promise<RecentCourse[]> {
   if (typeof indexedDB === 'undefined') return [];
   const database = await openDatabase();

@@ -19,6 +19,7 @@ import {
   applyAiCourseKnowledge,
   emptyCourseKnowledge,
   mergeDocumentDigest,
+  removeDocumentContribution,
 } from '../knowledge/course-merger.ts';
 import {
   renderCourseSummary,
@@ -318,6 +319,51 @@ export class DesktopCourseStorage implements CourseStorage {
     const copy = new Uint8Array(data.byteLength);
     copy.set(data);
     return new File([copy], document.fileName, { type: 'application/pdf' });
+  }
+
+  async removeDocument(
+    documentId: string,
+    expectedRevision: number,
+  ): Promise<CourseBundle> {
+    const current = await this.load();
+    this.assertRevision(current.manifest, expectedRevision);
+    const document = current.manifest.documents.find(
+      (item) => item.id === documentId,
+    );
+    if (!document) throw new Error('课程中找不到这份 PDF。');
+    const now = new Date().toISOString();
+    await this.api.deleteFile(this.directoryName, [
+      'PDFs',
+      document.storedFileName,
+    ]);
+    await this.api.deleteFile(this.directoryName, documentDirectory(documentId));
+    const knowledge = removeDocumentContribution(
+      current.knowledge,
+      documentId,
+      now,
+    );
+    const digests = { ...current.digests };
+    delete digests[documentId];
+    const bundle: CourseBundle = {
+      manifest: {
+        ...current.manifest,
+        documents: current.manifest.documents.filter(
+          (item) => item.id !== documentId,
+        ),
+        revision: current.manifest.revision + 1,
+        activeKnowledgeVersion: knowledge.version,
+        updatedAt: now,
+      },
+      knowledge,
+      digests,
+    };
+    await this.createRevision(current);
+    await this.writeBundle(bundle, true);
+    return bundle;
+  }
+
+  async deleteCourse(): Promise<void> {
+    await this.api.deleteCourseDirectory(this.directoryName);
   }
 
   private assertRevision(manifest: CourseManifest, expected: number): void {

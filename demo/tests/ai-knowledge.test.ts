@@ -23,9 +23,11 @@ import type { YeyuDesktopApi } from '../electron/api.ts';
 import {
   createCourseDirectory,
   courseFileExists,
+  deleteCourseEntry,
   ensureCourseDirectory,
   ensureWorkspace,
   readCourseFile,
+  removeCourseDirectory,
   scanCourses,
   writeCourseFile,
 } from '../electron/workspace.ts';
@@ -898,6 +900,14 @@ class FakeWorkspaceApi implements YeyuDesktopApi {
 
   writeFile(courseDirectory: string, relativePath: string[], data: Uint8Array) {
     return writeCourseFile(this.layout.coursesRoot, courseDirectory, relativePath, data);
+  }
+
+  deleteFile(courseDirectory: string, relativePath: string[]) {
+    return deleteCourseEntry(this.layout.coursesRoot, courseDirectory, relativePath);
+  }
+
+  deleteCourseDirectory(courseDirectory: string) {
+    return removeCourseDirectory(this.layout.coursesRoot, courseDirectory);
   }
 
   async revealWorkspace() {}
