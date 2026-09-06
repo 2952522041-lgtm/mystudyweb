@@ -52,6 +52,7 @@ import type {
   ImportOptions,
 } from '@/lib/course-storage/types';
 import { loadChatSettings, type ChatSettings } from '@/lib/chat-cache';
+import { loadKnowledgeSettings } from '@/lib/knowledge-settings';
 import type { PageImageInput } from '@/lib/chat';
 import { stableDocumentId } from '@/lib/course-storage/file-utils';
 import {
@@ -437,9 +438,10 @@ export function CourseLibrary({
   ) => {
     if (!active?.bundle) throw new Error('请先连接课程文件夹。');
     const bundle = active.bundle;
+    // 知识库成果完全由 AI 生成，使用独立的「知识库 AI」配置；未配置时明确报错，不回退本地规则。
+    // 扫描页 OCR 是视觉任务，仍使用「AI 答疑」的视觉模型配置。
+    const provider = createKnowledgeProviderForSettings(loadKnowledgeSettings());
     const chatSettings = loadChatSettings();
-    // 知识库成果完全由 AI 生成并复用「AI 答疑」配置；未配置时明确报错，不回退本地规则。
-    const provider = createKnowledgeProviderForSettings(chatSettings);
 
     onProgress('正在提取 PDF 文字', 6);
     const recognizePage = makeOcrRecognizer(chatSettings);
@@ -526,8 +528,8 @@ export function CourseLibrary({
     setBusy(true);
     setError(null);
     try {
+      const provider = createKnowledgeProviderForSettings(loadKnowledgeSettings());
       const chatSettings = loadChatSettings();
-      const provider = createKnowledgeProviderForSettings(chatSettings);
       setMessage('正在读取课程中的 PDF 并提取文字…');
       const file = await active.storage.openPdf(document.id);
       const recognizePage = makeOcrRecognizer(chatSettings);
@@ -576,8 +578,7 @@ export function CourseLibrary({
     setError(null);
     try {
       const bundle = active.bundle;
-      const chatSettings = loadChatSettings();
-      const provider = createKnowledgeProviderForSettings(chatSettings);
+      const provider = createKnowledgeProviderForSettings(loadKnowledgeSettings());
       setMessage('AI 正在综合课程总总结与总脑图…');
       const includedDigests = bundle.manifest.documents
         .filter(

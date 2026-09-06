@@ -1,5 +1,8 @@
 import { ChatError } from '../ai-errors.ts';
-import { chatSettingsConfigured, type ChatSettings } from '../chat-cache.ts';
+import {
+  knowledgeSettingsConfigured,
+  type KnowledgeSettings,
+} from '../knowledge-settings.ts';
 import {
   stableDocumentId,
 } from '../course-storage/file-utils.ts';
@@ -772,14 +775,14 @@ function validateCoursePayload(
 }
 
 export function createKnowledgeProviderForSettings(
-  settings: ChatSettings,
+  settings: KnowledgeSettings,
   fetchImpl?: typeof fetch,
   cache?: KnowledgeDigestCache,
 ): KnowledgeProvider {
-  if (!chatSettingsConfigured(settings)) {
+  if (!knowledgeSettingsConfigured(settings)) {
     throw new KnowledgeError(
       'not_configured',
-      '生成总结、脑图和课程知识库都复用「AI 答疑」的接口配置。请先在阅读器设置的 AI 答疑中填写接口地址、API Key 并确认模型，再使用知识库功能。',
+      '生成总结、脑图和课程知识库使用独立的「知识库 AI」配置。请先在设置的「知识库 AI」中填写接口地址、API Key 和模型，再使用知识库功能。',
     );
   }
   const model = settings.model.trim();

@@ -162,9 +162,9 @@ export function CourseImportDialog({
         />
 
         <div className="rounded-xl border border-violet-100 bg-violet-50/60 px-3 py-2 text-[11px] leading-5 text-violet-800">
-          总结、脑图和课程合并都由 AI 生成，并完全复用「AI 答疑」中保存的接口地址、API
-          Key 与模型（不新增第二套设置）。文字型 PDF
-          会先在本地提取；扫描或手写页面会使用同一套视觉模型进行
+          总结、脑图和课程合并都由 AI 生成，使用「阅读服务设置 → 知识库
+          AI」中保存的接口地址、API Key 与模型。文字型 PDF
+          会先在本地提取；扫描或手写页面会使用「AI 答疑」中的视觉模型进行
           OCR，并把对应页面图像发送给该服务。识别结果与 AI 分析会缓存在本机。
         </div>
 

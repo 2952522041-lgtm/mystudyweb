@@ -71,6 +71,12 @@ import {
   saveChatSettings,
   type ChatSettings,
 } from '@/lib/chat-cache';
+import {
+  DEFAULT_KNOWLEDGE_SETTINGS,
+  loadKnowledgeSettings,
+  saveKnowledgeSettings,
+  type KnowledgeSettings,
+} from '@/lib/knowledge-settings';
 import { ChatError } from '@/lib/chat';
 import {
   loadPdfjs,
@@ -539,6 +545,8 @@ function PdfReader({
   const [chatSettings, setChatSettings] = useState<ChatSettings>(
     DEFAULT_CHAT_SETTINGS,
   );
+  const [knowledgeSettings, setKnowledgeSettings] =
+    useState<KnowledgeSettings>(DEFAULT_KNOWLEDGE_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('translation');
   const [rightMode, setRightMode] = useState<ReaderRightModeName>(
@@ -629,6 +637,7 @@ function PdfReader({
       const loaded = loadReaderSettings();
       setSettings(loaded);
       setChatSettings(loadChatSettings());
+      setKnowledgeSettings(loadKnowledgeSettings());
     }, 0);
     return () => clearTimeout(timer);
   }, []);
@@ -1093,6 +1102,7 @@ function PdfReader({
   const applySettings = (
     nextSettings: ReaderSettings,
     nextChatSettings: ChatSettings,
+    nextKnowledgeSettings: KnowledgeSettings,
   ) => {
     const translationChanged =
       JSON.stringify(settings) !== JSON.stringify(nextSettings);
@@ -1100,8 +1110,10 @@ function PdfReader({
       JSON.stringify(chatSettings) !== JSON.stringify(nextChatSettings);
     setSettings(nextSettings);
     setChatSettings(nextChatSettings);
+    setKnowledgeSettings(nextKnowledgeSettings);
     saveReaderSettings(nextSettings);
     saveChatSettings(nextChatSettings);
+    saveKnowledgeSettings(nextKnowledgeSettings);
     setSettingsOpen(false);
     if (translationChanged || ocrChanged) {
       // Translation or OCR provider/model changes alter cache identity: drop
@@ -1785,6 +1797,7 @@ function PdfReader({
             initialTab={settingsTab}
             translationSettings={settings}
             chatSettings={chatSettings}
+            knowledgeSettings={knowledgeSettings}
             onClose={() => setSettingsOpen(false)}
             onSave={applySettings}
           />

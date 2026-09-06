@@ -1,7 +1,7 @@
 # 项目交接文档
 
 > 写给下一位接手的人。读完这份 + `README.md` + `PRODUCT_DESIGN.md` + `docs/TECHNICAL_SOLUTION.md` 就能上手。
-> 最后更新：2026-09-02
+> 最后更新：2026-09-07
 
 ## 一、项目是什么
 
@@ -29,7 +29,7 @@
 | 翻译 / AI 双模式      | ✅   | 右侧顶部切换，左侧阅读位置保持不变                                                     |
 | 当前页视觉答疑        | ✅   | 同时发送规范化文字和离屏渲染 PNG，支持图片、图表、表格和公式理解                       |
 | 通用知识与联网搜索    | ✅   | 页内上下文不再是硬边界；明确联网意图通过智谱 Web Search API 检索并引用真实 URL         |
-| 独立 AI 配置          | ✅   | 答疑 API 地址、Key、模型与翻译完全隔离，要求视觉模型                                   |
+| 独立 AI 配置          | ✅   | 翻译、答疑、知识库 AI 分别保存接口地址、Key 与模型，互不串用；知识库生成是纯文字任务，不要求视觉模型（2026-09-07 起知识库不再复用答疑配置，升级时自动沿用旧答疑配置） |
 | 每页独立会话          | ✅   | IndexedDB 本地保存；翻页切换、返回恢复，流式回答归属原页面                             |
 | AI 回答展示           | ✅   | Markdown + GFM + KaTeX，支持表格、代码和 LaTeX 公式                                    |
 | 本地课程目录          | ✅   | File System Access API；创建/重连/重新授权，目录是唯一可信数据源                       |
@@ -50,7 +50,7 @@ demo/
 ├─ app/page.tsx            # 阅读器主页面、稳定页码与右侧模式协调
 ├─ app/globals.css         # 主题与布局类
 ├─ components/ai-chat-panel.tsx       # 每页对话、流式状态、Markdown/公式展示
-├─ components/reader-settings-dialog.tsx # 翻译与 AI 独立设置
+├─ components/reader-settings-dialog.tsx # 翻译/答疑/知识库三套独立设置
 ├─ components/course-library.tsx          # 本地课程工作台
 ├─ components/course-import-dialog.tsx    # PDF 导入与独立生成选项
 ├─ components/knowledge-mindmap.tsx       # 课程/PDF 可追溯脑图
@@ -61,6 +61,7 @@ demo/
 ├─ lib/chat.ts             # 多模态答疑适配器、SSE、错误分类和安全提示词
 ├─ lib/web-search.ts       # 联网意图识别、智谱搜索请求、检索词与来源上下文构造
 ├─ lib/chat-cache.ts       # 独立 AI 设置与逐页会话存储
+├─ lib/knowledge-settings.ts # 知识库 AI 独立设置（含旧答疑配置迁移）
 ├─ lib/page-vision.ts      # 固定质量离屏渲染与页面视觉输入
 ├─ lib/ocr.ts              # 视觉 OCR 适配、规范化和逐页缓存
 ├─ lib/reader-cache.ts     # KV 存储（IndexedDB/内存）、译文缓存、进度、设置
@@ -115,7 +116,7 @@ python3 -m unittest discover tests   # 根目录文档完整性测试
 6. **真实双栏 PDF 尚未纳入仓库测试夹具**。已用 18 页 Springer 论文实测窄栏缝、跨栏标题和页眉页脚，并把关键几何特征固化为单元测试；若许可证允许，可再加入脱敏的小型 PDF 夹具。
 7. **vinext 是 beta**（1.0.0-beta.5），升级时注意 RSC 相关破坏性变更。
 8. **真实视觉与搜索供应商需要人工冒烟**。自动测试使用模拟多模态与搜索响应；上线前需用目标供应商检查图片字段兼容、CORS、请求体大小限制、公式理解质量，以及 `/web_search` 权限、费用与来源质量。
-9. **知识库生成已接入 AI（2026-08-31，GLM，见第十五节）**。单 PDF 总结/脑图、课程总总结/总脑图全部由 KnowledgeProvider 生成并完全复用 AI 答疑配置；本地规则摘要 `createDocumentDigest` 仅保留用于旧数据兼容和测试，不再用于新导入。剩余工作：真实供应商下的人工质量调优（提示词在 `demo/lib/knowledge/ai-knowledge-provider.ts`，改提示词必须递增 promptVersion）与超长课程（几十份 PDF）一次综合的 token 上限策略。
+9. **知识库生成已接入 AI（2026-08-31，GLM，见第十五节）**。单 PDF 总结/脑图、课程总总结/总脑图全部由 KnowledgeProvider 生成；2026-09-07 起使用独立的「知识库 AI」设置（`demo/lib/knowledge-settings.ts`），不再复用 AI 答疑配置，旧用户首次加载自动沿用答疑配置。本地规则摘要 `createDocumentDigest` 仅保留用于旧数据兼容和测试，不再用于新导入。剩余工作：真实供应商下的人工质量调优（提示词在 `demo/lib/knowledge/ai-knowledge-provider.ts`，改提示词必须递增 promptVersion）与超长课程（几十份 PDF）一次综合的 token 上限策略。
 
 ## 六、踩过的坑（重要）
 

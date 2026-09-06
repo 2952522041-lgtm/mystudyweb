@@ -27,25 +27,36 @@ import {
   type TranslationPresetId,
 } from '@/lib/reader-cache';
 import { validateChatSettings, type ChatSettings } from '@/lib/chat-cache';
+import {
+  validateKnowledgeSettings,
+  type KnowledgeSettings,
+} from '@/lib/knowledge-settings';
 
-export type SettingsTab = 'translation' | 'chat';
+export type SettingsTab = 'translation' | 'chat' | 'knowledge';
 
 export function ReaderSettingsDialog({
   initialTab,
   translationSettings,
   chatSettings,
+  knowledgeSettings,
   onClose,
   onSave,
 }: {
   initialTab: SettingsTab;
   translationSettings: ReaderSettings;
   chatSettings: ChatSettings;
+  knowledgeSettings: KnowledgeSettings;
   onClose: () => void;
-  onSave: (translation: ReaderSettings, chat: ChatSettings) => void;
+  onSave: (
+    translation: ReaderSettings,
+    chat: ChatSettings,
+    knowledge: KnowledgeSettings,
+  ) => void;
 }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [translationDraft, setTranslationDraft] = useState(translationSettings);
   const [chatDraft, setChatDraft] = useState(chatSettings);
+  const [knowledgeDraft, setKnowledgeDraft] = useState(knowledgeSettings);
   const [error, setError] = useState<string | null>(null);
 
   const save = () => {
@@ -63,7 +74,15 @@ export function ReaderSettingsDialog({
         return;
       }
     }
-    onSave(translationDraft, chatDraft);
+    if (tab === 'knowledge' || knowledgeDraft.apiKey.trim().length > 0) {
+      const knowledgeError = validateKnowledgeSettings(knowledgeDraft);
+      if (knowledgeError) {
+        setTab('knowledge');
+        setError(knowledgeError);
+        return;
+      }
+    }
+    onSave(translationDraft, chatDraft, knowledgeDraft);
   };
 
   const chooseTranslationPreset = (presetId: TranslationPresetId) => {
@@ -83,7 +102,8 @@ export function ReaderSettingsDialog({
         <DialogHeader>
           <DialogTitle className="text-lg">阅读服务设置</DialogTitle>
           <DialogDescription>
-            页面翻译与 AI 答疑分别保存接口、API Key 和模型，互不串用。
+            页面翻译、AI 答疑与知识库 AI
+            分别保存接口、API Key 和模型，互不串用。
           </DialogDescription>
         </DialogHeader>
 
@@ -94,9 +114,10 @@ export function ReaderSettingsDialog({
             setError(null);
           }}
         >
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="translation">页面翻译</TabsTrigger>
             <TabsTrigger value="chat">AI 答疑</TabsTrigger>
+            <TabsTrigger value="knowledge">知识库 AI</TabsTrigger>
           </TabsList>
 
           <TabsContent value="translation" className="space-y-4 pt-3">
@@ -315,6 +336,75 @@ export function ReaderSettingsDialog({
             <p className="text-[11px] leading-5 text-slate-500">
               AI 配置只保存在本机浏览器中，不会与翻译配置共享。OCR
               识别文字会缓存在本机，不保存页面图像。
+            </p>
+          </TabsContent>
+
+          <TabsContent value="knowledge" className="space-y-4 pt-3">
+            <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-[11px] leading-5 text-sky-800">
+              知识库 AI 用于生成单 PDF 总结、PDF 脑图、课程总总结和总脑图，是纯文字任务，不需要视觉模型。扫描或手写页面的
+              OCR 仍使用「AI 答疑」中配置的视觉模型。成果按接口与模型缓存，更换模型后重新生成不会复用旧结果。
+            </div>
+            <div className="space-y-1.5">
+              <label
+                htmlFor="knowledge-base-url"
+                className="text-xs font-medium text-slate-700"
+              >
+                知识库 AI 接口地址
+              </label>
+              <Input
+                id="knowledge-base-url"
+                value={knowledgeDraft.baseUrl}
+                onChange={(event) =>
+                  setKnowledgeDraft((previous) => ({
+                    ...previous,
+                    baseUrl: event.target.value,
+                  }))
+                }
+                placeholder="https://api.openai.com/v1"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label
+                htmlFor="knowledge-api-key"
+                className="text-xs font-medium text-slate-700"
+              >
+                知识库 AI API Key
+              </label>
+              <Input
+                id="knowledge-api-key"
+                type="password"
+                value={knowledgeDraft.apiKey}
+                onChange={(event) =>
+                  setKnowledgeDraft((previous) => ({
+                    ...previous,
+                    apiKey: event.target.value,
+                  }))
+                }
+                placeholder="sk-…"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label
+                htmlFor="knowledge-model"
+                className="text-xs font-medium text-slate-700"
+              >
+                模型
+              </label>
+              <Input
+                id="knowledge-model"
+                value={knowledgeDraft.model}
+                onChange={(event) =>
+                  setKnowledgeDraft((previous) => ({
+                    ...previous,
+                    model: event.target.value,
+                  }))
+                }
+                placeholder="知识库生成用的模型名称"
+              />
+            </div>
+            <p className="text-[11px] leading-5 text-slate-500">
+              知识库配置只保存在本机，不会与翻译、答疑配置共享，也不会写入课程目录。首次升级前已配置过
+              AI 答疑时，这里会自动沿用那份配置。
             </p>
           </TabsContent>
         </Tabs>

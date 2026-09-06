@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import type { ChatSettings } from '../lib/chat-cache.ts';
+import type { KnowledgeSettings } from '../lib/knowledge-settings.ts';
 import type {
   AiCourseKnowledge,
   BrowserDirectoryHandle,
@@ -52,12 +52,11 @@ import {
 } from '../lib/knowledge/mindmap-layout.ts';
 import { createMemoryStore, type KVStore } from '../lib/reader-cache.ts';
 
-/** 与「AI 答疑」完全相同结构的配置：知识库必须原样复用。 */
-const settings: ChatSettings = {
+/** 知识库 AI 的独立配置：不再依赖「AI 答疑」设置。 */
+const settings: KnowledgeSettings = {
   baseUrl: 'https://kb.example.com/v1',
   apiKey: 'kb-secret-key-123',
   model: 'knowledge-model-x',
-  visionConfirmed: true,
 };
 
 const FINGERPRINT = 'a'.repeat(64);
@@ -304,7 +303,7 @@ void test('chunker covers every page in order and tags pages, splitting overlong
   }
 });
 
-void test('knowledge provider reuses AI chat settings verbatim and never logs the key', async () => {
+void test('knowledge provider uses its own settings verbatim and never logs the key', async () => {
   const { requests, provider } = makeProvider([chunkAnalysisReply(), digestReply()]);
   const digest = await provider.analyzeDocument({
     fingerprint: FINGERPRINT,
@@ -349,8 +348,8 @@ void test('chunk analysis allows long output and bounds the section count in the
   assert.match(chunkPrompt, /每页一节/);
 });
 
-void test('provider rejects unconfigured AI chat settings instead of falling back', async () => {
-  const unconfigured: ChatSettings = { ...settings, apiKey: '', visionConfirmed: false };
+void test('provider rejects unconfigured knowledge settings instead of falling back', async () => {
+  const unconfigured: KnowledgeSettings = { ...settings, apiKey: '' };
   const { fetchImpl } = createMockFetch([digestReply()]);
   let fetchCalls = 0;
   const countingFetch = (async (...args: Parameters<typeof fetch>) => {
@@ -366,7 +365,7 @@ void test('provider rejects unconfigured AI chat settings instead of falling bac
     (error: unknown) =>
       error instanceof KnowledgeError &&
       error.code === 'not_configured' &&
-      /AI 答疑/.test(error.message),
+      /知识库/.test(error.message),
   );
   assert.equal(fetchCalls, 0);
 });
@@ -497,7 +496,7 @@ void test('second analysis of the same PDF reuses the cached digest without new 
   assert.deepEqual(second, first);
 
   // 更换模型后缓存身份不同，必须重新请求。
-  const otherSettings: ChatSettings = { ...settings, model: 'model-b' };
+  const otherSettings: KnowledgeSettings = { ...settings, model: 'model-b' };
   const { fetchImpl } = createMockFetch([chunkAnalysisReply(), digestReply()]);
   const otherProvider = createKnowledgeProviderForSettings(
     otherSettings,
