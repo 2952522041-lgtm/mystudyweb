@@ -331,6 +331,24 @@ void test('knowledge provider reuses AI chat settings verbatim and never logs th
   assert.match(system.content, /one JSON value/);
 });
 
+void test('chunk analysis allows long output and bounds the section count in the prompt', async () => {
+  const { requests, provider } = makeProvider([chunkAnalysisReply(), digestReply()]);
+  await provider.analyzeDocument({
+    fingerprint: FINGERPRINT,
+    fileName: FILE_NAME,
+    documentId: DOCUMENT_ID,
+    pages: PAGES,
+  });
+
+  // 分块分析曾是 4096 输出上限，页数多但文字稀疏的分块会被 length 截断。
+  assert.equal(requests[0].body.max_tokens, 8192);
+  assert.equal(requests[1].body.max_tokens, 8192);
+  const chunkPrompt = (requests[0].body.messages as Array<{ content: string }>)[1]
+    .content;
+  assert.match(chunkPrompt, /sections 最多 8 个/);
+  assert.match(chunkPrompt, /每页一节/);
+});
+
 void test('provider rejects unconfigured AI chat settings instead of falling back', async () => {
   const unconfigured: ChatSettings = { ...settings, apiKey: '', visionConfirmed: false };
   const { fetchImpl } = createMockFetch([digestReply()]);
@@ -504,7 +522,7 @@ void test('single-PDF summary and mindmap come from the mocked AI response', asy
   });
 
   assert.equal(digest.schemaVersion, 2);
-  assert.equal(digest.promptVersion, 'ai-digest-v1');
+  assert.equal(digest.promptVersion, 'ai-digest-v2');
   assert.ok(digest.overview.length > 80, 'overview should be a real synthesis');
   assert.equal(digest.sourcePages, digest.sourcePages); // sanity
   assert.deepEqual(digest.sourcePages, [1, 2, 3]);

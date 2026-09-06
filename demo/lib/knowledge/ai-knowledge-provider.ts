@@ -25,8 +25,10 @@ import { buildPdfChunks, type PdfChunk } from './pdf-chunks.ts';
 
 export const KNOWLEDGE_PROVIDER_ID = 'openai-compatible-knowledge';
 /** 知识库提示词版本：修改提示词必须递增，缓存与课程成果都会记录它。 */
-export const KNOWLEDGE_DIGEST_PROMPT_VERSION = 'ai-digest-v1';
+export const KNOWLEDGE_DIGEST_PROMPT_VERSION = 'ai-digest-v2';
 export const KNOWLEDGE_COURSE_PROMPT_VERSION = 'ai-course-v1';
+/** 分块分析与综合共用的输出 token 上限；过小会触发 finish_reason=length 截断。 */
+export const KNOWLEDGE_MAX_OUTPUT_TOKENS = 8192;
 
 export type KnowledgeStage =
   | 'cached'
@@ -563,7 +565,7 @@ function chunkAnalysisPrompt(input: {
     '要求：',
     '- 只根据分块中出现的内容分析，不得引入外部知识补全结论。',
     '- 所有页码只能取自 <page number> 标签，禁止编造。',
-    '- sections 按文档顺序归纳；concepts 提取 3-10 个核心概念并给出真实来源页码。',
+    '- sections 最多 8 个，按内容主题归纳而不是每页一节，保持文档顺序；concepts 提取 3-10 个核心概念并给出真实来源页码。',
     '- 保留公式、符号、变量、术语和专有名词；默认使用简体中文，专业术语可保留英文。',
     '- 只输出 JSON。',
   ].join('\n');
@@ -833,7 +835,7 @@ export function createKnowledgeProviderForSettings(
             pageCount,
             chunk,
           }),
-          maxTokens: 4096,
+          maxTokens: KNOWLEDGE_MAX_OUTPUT_TOKENS,
           signal: input.signal,
           contextLabel: `分块分析（第 ${chunk.pageStart}–${chunk.pageEnd} 页）`,
         });
@@ -848,7 +850,7 @@ export function createKnowledgeProviderForSettings(
           pageCount,
           chunkResults,
         }),
-        maxTokens: 8192,
+        maxTokens: KNOWLEDGE_MAX_OUTPUT_TOKENS,
         signal: input.signal,
         contextLabel: '单文档综合',
       });
@@ -882,7 +884,7 @@ export function createKnowledgeProviderForSettings(
           digests: input.digests,
           userNodeLabels: input.userNodeLabels ?? [],
         }),
-        maxTokens: 8192,
+        maxTokens: KNOWLEDGE_MAX_OUTPUT_TOKENS,
         signal: input.signal,
         contextLabel: '课程综合',
       });
