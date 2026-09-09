@@ -35,6 +35,7 @@ import {
 import { DocumentSummaryPanel } from '@/components/document-summary-panel';
 import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
 import { SelectionToolbar } from '@/components/selection-toolbar';
+import { SharedCourseViewer } from '@/components/shared-course-viewer';
 import {
   ReaderSettingsDialog,
   type SettingsTab,
@@ -85,10 +86,7 @@ import {
   type TextLayer,
 } from '@/lib/pdfjs';
 import { itemsFromPdfJs, normalizePage, pageHasText } from '@/lib/pdf-text';
-import {
-  shouldBuildTextLayer,
-  textLayerScale,
-} from '@/lib/pdf-text-layer';
+import { shouldBuildTextLayer, textLayerScale } from '@/lib/pdf-text-layer';
 import {
   createOcrProviderForSettings,
   createOcrService,
@@ -135,6 +133,7 @@ import {
   emptyCourseKnowledge,
   mergeDocumentDigest,
 } from '@/lib/knowledge/course-merger';
+import { isSharedView } from '@/lib/lan-share-api';
 
 const TARGET_LANGUAGES = ['简体中文', '繁體中文', '日本語', '한국어'] as const;
 const TRANSLATION_STABLE_DELAY = 300;
@@ -545,8 +544,9 @@ function PdfReader({
   const [chatSettings, setChatSettings] = useState<ChatSettings>(
     DEFAULT_CHAT_SETTINGS,
   );
-  const [knowledgeSettings, setKnowledgeSettings] =
-    useState<KnowledgeSettings>(DEFAULT_KNOWLEDGE_SETTINGS);
+  const [knowledgeSettings, setKnowledgeSettings] = useState<KnowledgeSettings>(
+    DEFAULT_KNOWLEDGE_SETTINGS,
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('translation');
   const [rightMode, setRightMode] = useState<ReaderRightModeName>(
@@ -846,84 +846,86 @@ function PdfReader({
       setImporting(true);
       setImportError(null);
       try {
-      const buffer = await file.arrayBuffer();
-      const fingerprint = await computeFileFingerprint(buffer);
-      const pdfjs = await loadPdfjs();
-      // getDocument may transfer the buffer to the worker, so hand it a copy.
-      const doc = await pdfjs.getDocument({
-        data: new Uint8Array(buffer.slice(0)),
-      }).promise;
+        const buffer = await file.arrayBuffer();
+        const fingerprint = await computeFileFingerprint(buffer);
+        const pdfjs = await loadPdfjs();
+        // getDocument may transfer the buffer to the worker, so hand it a copy.
+        const doc = await pdfjs.getDocument({
+          data: new Uint8Array(buffer.slice(0)),
+        }).promise;
 
-      const sizes: PageView[] = [];
-      for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
-        const pdfPage = await doc.getPage(pageNumber);
-        const viewport = pdfPage.getViewport({ scale: 1 });
-        sizes.push({ width: viewport.width, height: viewport.height });
-      }
-
-      // Scanned-PDF rule: sample the first pages; no text layer means the
-      // MVP cannot translate this document.
-      let scanDetected = true;
-      for (
-        let pageNumber = 1;
-        pageNumber <= Math.min(3, doc.numPages);
-        pageNumber += 1
-      ) {
-        const pdfPage = await doc.getPage(pageNumber);
-        const viewport = pdfPage.getViewport({ scale: 1 });
-        const content = await pdfPage.getTextContent();
-        if (
-          pageHasText(
-            itemsFromPdfJs(
-              content.items as Array<{
-                str?: string;
-                transform?: number[];
-                width?: number;
-                height?: number;
-              }>,
-              viewport.height,
-            ),
-          )
-        ) {
-          scanDetected = false;
-          break;
+        const sizes: PageView[] = [];
+        for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
+          const pdfPage = await doc.getPage(pageNumber);
+          const viewport = pdfPage.getViewport({ scale: 1 });
+          sizes.push({ width: viewport.width, height: viewport.height });
         }
-      }
 
-      const restored = await serviceRef.current?.progress.load(fingerprint);
-      positionedRef.current = false;
-      setRenderedPages(new Set());
-      setTranslationStates({});
-      translationStatesRef.current = {};
-      prefetchedTranslationsRef.current.clear();
-      setPrefetchedTranslationPage(null);
-      pageElementsRef.current.clear();
-      setPdfDoc(doc);
-      setPageSizes(sizes);
-      setDocMeta({
-        fingerprint,
-        fileName: file.name,
-        pageCount: doc.numPages,
-        scanDetected,
-        restoredPage:
-          restored && restored.lastPage > 1 ? restored.lastPage : null,
-      });
-      setZoom(restored?.zoom ?? DEFAULT_ZOOM);
-      setTargetLanguage(restored?.targetLanguage ?? '简体中文');
-      const openingPage = clampPage(
-        requestedPage ?? restored?.lastPage ?? 1,
-        doc.numPages,
-      );
-      setPage(openingPage);
-      setTranslationPage(openingPage);
-      if (origin === 'dialog') onStandaloneImportRef.current?.(file);
-      setImportOpen(false);
-    } catch {
-      setImportError('无法解析该 PDF 文件，文件可能已损坏或已加密。');
-    } finally {
-      setImporting(false);
-    }
-  }, []);
+        // Scanned-PDF rule: sample the first pages; no text layer means the
+        // MVP cannot translate this document.
+        let scanDetected = true;
+        for (
+          let pageNumber = 1;
+          pageNumber <= Math.min(3, doc.numPages);
+          pageNumber += 1
+        ) {
+          const pdfPage = await doc.getPage(pageNumber);
+          const viewport = pdfPage.getViewport({ scale: 1 });
+          const content = await pdfPage.getTextContent();
+          if (
+            pageHasText(
+              itemsFromPdfJs(
+                content.items as Array<{
+                  str?: string;
+                  transform?: number[];
+                  width?: number;
+                  height?: number;
+                }>,
+                viewport.height,
+              ),
+            )
+          ) {
+            scanDetected = false;
+            break;
+          }
+        }
+
+        const restored = await serviceRef.current?.progress.load(fingerprint);
+        positionedRef.current = false;
+        setRenderedPages(new Set());
+        setTranslationStates({});
+        translationStatesRef.current = {};
+        prefetchedTranslationsRef.current.clear();
+        setPrefetchedTranslationPage(null);
+        pageElementsRef.current.clear();
+        setPdfDoc(doc);
+        setPageSizes(sizes);
+        setDocMeta({
+          fingerprint,
+          fileName: file.name,
+          pageCount: doc.numPages,
+          scanDetected,
+          restoredPage:
+            restored && restored.lastPage > 1 ? restored.lastPage : null,
+        });
+        setZoom(restored?.zoom ?? DEFAULT_ZOOM);
+        setTargetLanguage(restored?.targetLanguage ?? '简体中文');
+        const openingPage = clampPage(
+          requestedPage ?? restored?.lastPage ?? 1,
+          doc.numPages,
+        );
+        setPage(openingPage);
+        setTranslationPage(openingPage);
+        if (origin === 'dialog') onStandaloneImportRef.current?.(file);
+        setImportOpen(false);
+      } catch {
+        setImportError('无法解析该 PDF 文件，文件可能已损坏或已加密。');
+      } finally {
+        setImporting(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (initialFile) {
@@ -1807,7 +1809,7 @@ function PdfReader({
   );
 }
 
-export default function Home() {
+function DesktopHome() {
   const [view, setView] = useState<'courses' | 'reader'>('courses');
   const [readerFile, setReaderFile] = useState<File | null>(null);
   const [readerContext, setReaderContext] =
@@ -1835,7 +1837,9 @@ export default function Home() {
                 <span className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-400 to-indigo-500 shadow-sm">
                   <BookOpen className="size-4" />
                 </span>
-                <span className="text-sm font-semibold tracking-wide">页语</span>
+                <span className="text-sm font-semibold tracking-wide">
+                  页语
+                </span>
               </div>
               <nav className="flex h-full items-center" aria-label="主导航">
                 <button
@@ -1869,4 +1873,9 @@ export default function Home() {
       ) : null}
     </>
   );
+}
+
+export default function Home() {
+  if (isSharedView()) return <SharedCourseViewer />;
+  return <DesktopHome />;
 }

@@ -37,6 +37,10 @@ const api: YeyuDesktopApi = {
   deleteCourseDirectory: (courseDirectory) =>
     ipcRenderer.invoke(DESKTOP_CHANNELS.deleteCourse, courseDirectory),
   revealWorkspace: () => ipcRenderer.invoke(DESKTOP_CHANNELS.revealWorkspace),
+  getLanShareStatus: () => ipcRenderer.invoke(DESKTOP_CHANNELS.lanShareStatus),
+  startLanShare: (password, port) =>
+    ipcRenderer.invoke(DESKTOP_CHANNELS.lanShareStart, password, port),
+  stopLanShare: () => ipcRenderer.invoke(DESKTOP_CHANNELS.lanShareStop),
 };
 
 // 只暴露白名单方法；ipcRenderer、fs 和路径解析都不会出现在 window 上。

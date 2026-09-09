@@ -28,6 +28,9 @@ export const DESKTOP_CHANNELS = {
   deleteFile: 'yeyu:delete-file',
   deleteCourse: 'yeyu:delete-course',
   revealWorkspace: 'yeyu:reveal-workspace',
+  lanShareStatus: 'yeyu:lan-share-status',
+  lanShareStart: 'yeyu:lan-share-start',
+  lanShareStop: 'yeyu:lan-share-stop',
 } as const;
 
 /** 桌面 API 的全部方法名；冒烟测试用它校验 preload 的暴露面。 */
@@ -38,9 +41,12 @@ export const DESKTOP_METHOD_NAMES = [
   'ensureDirectory',
   'exists',
   'getWorkspaceInfo',
+  'getLanShareStatus',
   'listCourses',
   'readFile',
   'revealWorkspace',
+  'startLanShare',
+  'stopLanShare',
   'writeFile',
 ] as const;
 
@@ -54,15 +60,18 @@ export interface DesktopCourseSummary {
   manifest: DesktopCourseManifest;
 }
 
+export interface LanShareStatus {
+  running: boolean;
+  port: number | null;
+  addresses: string[];
+}
+
 /** 主进程暴露给 renderer 的唯一文件入口；绝不暴露 ipcRenderer 或 fs 本身。 */
 export interface YeyuDesktopApi {
   getWorkspaceInfo(): Promise<WorkspaceInfo>;
   listCourses(): Promise<DesktopCourseSummary[]>;
   createCourseDirectory(name: string): Promise<{ directoryName: string }>;
-  exists(
-    courseDirectory: string,
-    relativePath: string[],
-  ): Promise<boolean>;
+  exists(courseDirectory: string, relativePath: string[]): Promise<boolean>;
   ensureDirectory(
     courseDirectory: string,
     relativePath: string[],
@@ -81,4 +90,7 @@ export interface YeyuDesktopApi {
   /** 删除整门课程目录：主进程优先移入系统回收站，失败时退回直接删除。 */
   deleteCourseDirectory(directoryName: string): Promise<void>;
   revealWorkspace(): Promise<void>;
+  getLanShareStatus?(): Promise<LanShareStatus>;
+  startLanShare?(password: string, port: number): Promise<LanShareStatus>;
+  stopLanShare?(): Promise<void>;
 }

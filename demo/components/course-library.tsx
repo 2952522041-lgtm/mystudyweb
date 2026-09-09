@@ -5,11 +5,13 @@ import {
   BookOpen,
   Check,
   Clock3,
+  Copy,
   FilePlus2,
   FileText,
   Folder,
   FolderCheck,
   FolderPlus,
+  Globe2,
   GitMerge,
   LibraryBig,
   LoaderCircle,
@@ -57,6 +59,7 @@ import { loadChatSettings, type ChatSettings } from '@/lib/chat-cache';
 import { loadKnowledgeSettings } from '@/lib/knowledge-settings';
 import type { PageImageInput } from '@/lib/chat';
 import { stableDocumentId } from '@/lib/course-storage/file-utils';
+import type { LanShareStatus } from '@/electron/api';
 import {
   createKnowledgeProviderForSettings,
   describeKnowledgeError,
@@ -158,6 +161,17 @@ export function CourseLibrary({
     | { kind: 'document'; document: DocumentRecord }
     | null
   >(null);
+  const [shareStatus, setShareStatus] = useState<LanShareStatus>({
+    running: false,
+    port: null,
+    addresses: [],
+  });
+  const [shareOpen, setShareOpen] = useState(false);
+  const [sharePassword, setSharePassword] = useState('');
+  const [sharePort, setSharePort] = useState('37891');
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [shareCopied, setShareCopied] = useState(false);
 
   const desktopApi =
     typeof window !== 'undefined' ? window.yeyuDesktop : undefined;
@@ -265,6 +279,14 @@ export function CourseLibrary({
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    if (!desktopApi?.getLanShareStatus) return;
+    void desktopApi
+      .getLanShareStatus()
+      .then(setShareStatus)
+      .catch(() => undefined);
   }, []);
 
   const active = entries.find((entry) => entry.id === activeId) ?? null;
@@ -425,6 +447,60 @@ export function CourseLibrary({
     }
   };
 
+  const startLanShare = async () => {
+    if (!desktopApi?.startLanShare) return;
+    const port = Number(sharePort);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      setShareError('端口必须是 1024–65535 之间的整数。');
+      return;
+    }
+    setShareBusy(true);
+    setShareError(null);
+    try {
+      const status = await desktopApi.startLanShare(sharePassword, port);
+      setShareStatus(status);
+      setSharePassword('');
+      setMessage('局域网共享已开启。请保持主电脑上的页语运行且不要休眠。');
+    } catch (shareStartError) {
+      setShareError(
+        shareStartError instanceof Error
+          ? shareStartError.message
+          : '局域网共享启动失败。',
+      );
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const stopLanShare = async () => {
+    if (!desktopApi?.stopLanShare) return;
+    setShareBusy(true);
+    setShareError(null);
+    try {
+      await desktopApi.stopLanShare();
+      setShareStatus({ running: false, port: null, addresses: [] });
+      setMessage('局域网共享已关闭，之前的查看端会话已经失效。');
+    } catch (shareStopError) {
+      setShareError(
+        shareStopError instanceof Error
+          ? shareStopError.message
+          : '局域网共享关闭失败。',
+      );
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const copyShareAddress = async (address: string) => {
+    try {
+      await navigator.clipboard.writeText(address);
+      setShareCopied(true);
+      window.setTimeout(() => setShareCopied(false), 1600);
+    } catch {
+      setShareError('无法复制地址，请手动选择并复制。');
+    }
+  };
+
   const makeOcrRecognizer = (chatSettings: ChatSettings) => {
     const ocrProvider = createOcrProviderForSettings(chatSettings);
     const ocrCache = createOcrService();
@@ -447,7 +523,9 @@ export function CourseLibrary({
     const bundle = active.bundle;
     // 知识库成果完全由 AI 生成，使用独立的「知识库 AI」配置；未配置时明确报错，不回退本地规则。
     // 扫描页 OCR 是视觉任务，仍使用「AI 答疑」的视觉模型配置。
-    const provider = createKnowledgeProviderForSettings(loadKnowledgeSettings());
+    const provider = createKnowledgeProviderForSettings(
+      loadKnowledgeSettings(),
+    );
     const chatSettings = loadChatSettings();
 
     onProgress('正在提取 PDF 文字', 6);
@@ -470,7 +548,11 @@ export function CourseLibrary({
       documentId: stableDocumentId(extracted.fingerprint),
       pages: extracted.pages,
       onStage: (stage, detail) => {
-        if (stage === 'chunk-analysis' && detail?.chunkIndex && detail?.chunkCount) {
+        if (
+          stage === 'chunk-analysis' &&
+          detail?.chunkIndex &&
+          detail?.chunkCount
+        ) {
           onProgress(
             `AI 正在分块分析（${detail.chunkIndex} / ${detail.chunkCount}）`,
             22 + Math.round((detail.chunkIndex / detail.chunkCount) * 40),
@@ -535,7 +617,9 @@ export function CourseLibrary({
     setBusy(true);
     setError(null);
     try {
-      const provider = createKnowledgeProviderForSettings(loadKnowledgeSettings());
+      const provider = createKnowledgeProviderForSettings(
+        loadKnowledgeSettings(),
+      );
       const chatSettings = loadChatSettings();
       setMessage('正在读取课程中的 PDF 并提取文字…');
       const file = await active.storage.openPdf(document.id);
@@ -558,8 +642,14 @@ export function CourseLibrary({
         pages: extracted.pages,
         bypassCache: true,
         onStage: (stage, detail) => {
-          if (stage === 'chunk-analysis' && detail?.chunkIndex && detail?.chunkCount) {
-            setMessage(`AI 正在分块分析（${detail.chunkIndex} / ${detail.chunkCount}）`);
+          if (
+            stage === 'chunk-analysis' &&
+            detail?.chunkIndex &&
+            detail?.chunkCount
+          ) {
+            setMessage(
+              `AI 正在分块分析（${detail.chunkIndex} / ${detail.chunkCount}）`,
+            );
           } else if (stage === 'synthesize') {
             setMessage('AI 正在综合整份文档摘要…');
           }
@@ -585,12 +675,15 @@ export function CourseLibrary({
     setError(null);
     try {
       const bundle = active.bundle;
-      const provider = createKnowledgeProviderForSettings(loadKnowledgeSettings());
+      const provider = createKnowledgeProviderForSettings(
+        loadKnowledgeSettings(),
+      );
       setMessage('AI 正在综合课程总总结与总脑图…');
       const includedDigests = bundle.manifest.documents
         .filter(
           (item) =>
-            (item.includedInCourse || item.id === document.id) && bundle.digests[item.id],
+            (item.includedInCourse || item.id === document.id) &&
+            bundle.digests[item.id],
         )
         .map((item) => bundle.digests[item.id]);
       const aiKnowledge = await provider.synthesizeCourseKnowledge({
@@ -785,11 +878,42 @@ export function CourseLibrary({
               >
                 <Folder className="size-3.5" /> 打开工作区文件夹
               </Button>
+              <div className="mt-4 border-t border-slate-100 pt-4">
+                <p className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                  <Globe2
+                    className={`size-4 ${shareStatus.running ? 'text-emerald-600' : 'text-slate-400'}`}
+                  />
+                  局域网共享
+                  <span
+                    className={`ml-auto rounded-full px-2 py-0.5 text-[10px] ${shareStatus.running ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}
+                  >
+                    {shareStatus.running ? '运行中' : '已关闭'}
+                  </span>
+                </p>
+                <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                  {shareStatus.running
+                    ? `端口 ${shareStatus.port} · ${shareStatus.addresses.length} 个可访问地址`
+                    : '用密码把已有课程以只读方式分享给同一局域网的电脑。'}
+                </p>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="mt-3 w-full"
+                  onClick={() => {
+                    setShareError(null);
+                    setShareOpen(true);
+                  }}
+                >
+                  <Globe2 className="size-3.5" />
+                  {shareStatus.running ? '查看共享状态' : '开启局域网共享'}
+                </Button>
+              </div>
             </>
           ) : (
             <>
               <p className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                <ShieldCheck className="size-4 text-emerald-600" /> 本地文件夹模式
+                <ShieldCheck className="size-4 text-emerald-600" />{' '}
+                本地文件夹模式
               </p>
               <p className="mt-2 text-[10px] leading-4 text-slate-500">
                 课程资料只写入你授权的目录。浏览器数据被清除后，重新连接原文件夹即可恢复。
@@ -826,9 +950,10 @@ export function CourseLibrary({
                 建立你的本地课程知识库
               </h1>
               <p className="mx-auto mt-3 max-w-lg text-sm leading-7 text-slate-500">
-                一门课程可包含多份
-                PDF，并持续生成带页码来源的课程总结和脑图。
-                {isDesktop ? '课程数据保存在固定工作区，无需手动选择文件夹。' : '文件夹是唯一可信数据源。'}
+                一门课程可包含多份 PDF，并持续生成带页码来源的课程总结和脑图。
+                {isDesktop
+                  ? '课程数据保存在固定工作区，无需手动选择文件夹。'
+                  : '文件夹是唯一可信数据源。'}
               </p>
               <div className="mt-8 flex flex-wrap justify-center gap-3">
                 <Button onClick={() => setCreateOpen(true)}>
@@ -876,7 +1001,9 @@ export function CourseLibrary({
                 <Button
                   variant="outline"
                   className="text-rose-700"
-                  onClick={() => setPendingDelete({ kind: 'course', entry: active })}
+                  onClick={() =>
+                    setPendingDelete({ kind: 'course', entry: active })
+                  }
                   disabled={busy}
                 >
                   <Trash2 /> 删除课程
@@ -917,7 +1044,9 @@ export function CourseLibrary({
                     variant="outline"
                     size="sm"
                     className="text-rose-700"
-                    onClick={() => setPendingDelete({ kind: 'course', entry: active })}
+                    onClick={() =>
+                      setPendingDelete({ kind: 'course', entry: active })
+                    }
                     disabled={busy}
                   >
                     <Trash2 /> 删除课程
@@ -1235,6 +1364,145 @@ export function CourseLibrary({
         </div>
       </main>
 
+      <Dialog open={shareOpen} onOpenChange={setShareOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>局域网共享</DialogTitle>
+            <DialogDescription>
+              Windows
+              电脑通过浏览器查看主电脑当前工作区中的课程；查看端没有上传、编辑、删除或
+              AI 功能。
+            </DialogDescription>
+          </DialogHeader>
+          {shareStatus.running ? (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                <p className="flex items-center gap-2 text-sm font-semibold text-emerald-800">
+                  <Globe2 className="size-4" />
+                  共享服务运行中 · 端口 {shareStatus.port}
+                </p>
+                <p className="mt-2 text-xs leading-5 text-emerald-700">
+                  请保持页语运行、主电脑联网且不休眠。地址使用普通
+                  HTTP，密码和资料传输未加密。
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-slate-700">
+                  可供其他电脑访问的地址
+                </p>
+                {shareStatus.addresses.length > 0 ? (
+                  <div className="mt-2 space-y-2">
+                    {shareStatus.addresses.map((address) => (
+                      <div
+                        key={address}
+                        className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2"
+                      >
+                        <code className="min-w-0 flex-1 break-all text-xs text-slate-700">
+                          {address}
+                        </code>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-label="复制访问地址"
+                          onClick={() => void copyShareAddress(address)}
+                        >
+                          <Copy />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+                    已绑定局域网端口，但暂未检测到非回环网卡地址。请检查主电脑的校园网连接和系统防火墙。
+                  </p>
+                )}
+                {shareCopied ? (
+                  <p className="mt-2 text-xs text-emerald-700">地址已复制。</p>
+                ) : null}
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShareOpen(false)}>
+                  关闭窗口
+                </Button>
+                <Button
+                  className="bg-rose-600 text-white hover:bg-rose-700"
+                  onClick={() => void stopLanShare()}
+                  disabled={shareBusy}
+                >
+                  {shareBusy ? (
+                    <LoaderCircle className="animate-spin" />
+                  ) : (
+                    <Globe2 />
+                  )}{' '}
+                  停止共享
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <label className="block space-y-2">
+                <span className="text-xs font-semibold text-slate-700">
+                  访问密码
+                </span>
+                <Input
+                  type="password"
+                  autoComplete="new-password"
+                  value={sharePassword}
+                  onChange={(event) => setSharePassword(event.target.value)}
+                  placeholder="至少 6 个字符"
+                  autoFocus
+                />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-xs font-semibold text-slate-700">
+                  服务端口
+                </span>
+                <Input
+                  type="number"
+                  min={1024}
+                  max={65535}
+                  value={sharePort}
+                  onChange={(event) => setSharePort(event.target.value)}
+                />
+              </label>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-600">
+                <p className="font-semibold text-slate-700">使用范围与保护</p>
+                <p className="mt-1">
+                  仅绑定主电脑的局域网服务端口；接口只读工作区内合法课程的必要
+                  PDF 和已有成果，不提供任意路径访问。普通 HTTP
+                  不提供加密传输，请仅在可信校园网使用。
+                </p>
+              </div>
+              {shareError ? (
+                <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">
+                  {shareError}
+                </p>
+              ) : null}
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setShareOpen(false)}
+                  disabled={shareBusy}
+                >
+                  取消
+                </Button>
+                <Button
+                  onClick={() => void startLanShare()}
+                  disabled={shareBusy || sharePassword.length < 6}
+                >
+                  {shareBusy ? (
+                    <LoaderCircle className="animate-spin" />
+                  ) : (
+                    <Globe2 />
+                  )}{' '}
+                  开启共享
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
@@ -1299,8 +1567,8 @@ export function CourseLibrary({
                 <DialogDescription>
                   将从课程中删除“{pendingDelete.document.fileName}
                   ”：PDF 文件和它的总结、脑图成果会一并删除。已纳入课程时，AI
-                  会基于剩余资料重新综合课程总总结和总脑图（未配置知识库
-                  AI 则仅移除它的内容）。此操作不可撤销。
+                  会基于剩余资料重新综合课程总总结和总脑图（未配置知识库 AI
+                  则仅移除它的内容）。此操作不可撤销。
                 </DialogDescription>
               </DialogHeader>
               <DialogFooter>

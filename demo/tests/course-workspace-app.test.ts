@@ -9,6 +9,11 @@ void test('production app exposes the course workspace and reader handoff', asyn
     read('../app/page.tsx'),
     read('../components/course-library.tsx'),
   ]);
+  const [sharedViewer, sharedReader, shareApi] = await Promise.all([
+    read('../components/shared-course-viewer.tsx'),
+    read('../components/shared-pdf-reader.tsx'),
+    read('../lib/lan-share-api.ts'),
+  ]);
 
   for (const requirement of [
     'CourseLibrary',
@@ -32,6 +37,32 @@ void test('production app exposes the course workspace and reader handoff', asyn
   ]) {
     assert.match(library, new RegExp(requirement));
   }
+  for (const requirement of ['isSharedView', 'SharedCourseViewer']) {
+    assert.match(page, new RegExp(requirement));
+  }
+  assert.match(sharedViewer, /局域网共享/);
+  for (const requirement of [
+    '只读',
+    '刷新',
+    '退出',
+    'loadSharedPdf',
+    'onOpenSource',
+    '不会发起生成',
+  ]) {
+    assert.match(sharedViewer + sharedReader, new RegExp(requirement));
+  }
+  for (const requirement of [
+    '/api/share/session',
+    '/api/share/login',
+    '/api/share/courses',
+    "credentials: 'same-origin'",
+  ]) {
+    assert.match(shareApi, new RegExp(requirement.replaceAll('/', '\\/')));
+  }
+  assert.doesNotMatch(
+    sharedViewer,
+    /startLanShare|deleteCourse|removeDocument|synthesizeCourse/,
+  );
 });
 
 void test('directory storage writes recoverable artifacts and never receives settings', async () => {

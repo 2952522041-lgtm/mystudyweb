@@ -30,6 +30,7 @@ import {
 } from './navigation.ts';
 import { isSmokeRun, probePreloadBridge } from './smoke.ts';
 import { handleSquirrelStartup } from './squirrel.ts';
+import { LanShareServer } from './lan-share.ts';
 
 // Windows Squirrel 安装/更新/卸载事件必须在最早期处理（HANDOFF 13.2）。
 if (handleSquirrelStartup()) {
@@ -168,7 +169,10 @@ function assertString(value: unknown, message: string): string {
   return value;
 }
 
-function registerDesktopIpc(layout: WorkspaceLayout): void {
+function registerDesktopIpc(
+  layout: WorkspaceLayout,
+  lanShareServer: LanShareServer,
+): void {
   ipcMain.handle(
     DESKTOP_CHANNELS.workspaceInfo,
     async (): Promise<WorkspaceInfo> => {
@@ -270,7 +274,10 @@ function registerDesktopIpc(layout: WorkspaceLayout): void {
     async (_event, courseDirectory) => {
       const name = assertString(courseDirectory, '课程目录名不合法。');
       try {
-        const target = await resolveCourseDirectoryPath(layout.coursesRoot, name);
+        const target = await resolveCourseDirectoryPath(
+          layout.coursesRoot,
+          name,
+        );
         try {
           // 先移入系统回收站，误删可以从回收站恢复；无回收站环境退回直接删除。
           await shell.trashItem(target);
@@ -287,6 +294,19 @@ function registerDesktopIpc(layout: WorkspaceLayout): void {
     const failure = await shell.openPath(layout.root);
     if (failure) throw new Error(failure);
   });
+  ipcMain.handle(DESKTOP_CHANNELS.lanShareStatus, () =>
+    lanShareServer.getStatus(),
+  );
+  ipcMain.handle(
+    DESKTOP_CHANNELS.lanShareStart,
+    async (_event, password, port) => {
+      if (typeof password !== 'string' || typeof port !== 'number') {
+        throw new Error('局域网共享参数不合法。');
+      }
+      return lanShareServer.start(password, port);
+    },
+  );
+  ipcMain.handle(DESKTOP_CHANNELS.lanShareStop, () => lanShareServer.stop());
 }
 
 async function createWindow(): Promise<BrowserWindow> {
@@ -341,8 +361,15 @@ if (!hasSingleInstanceLock) {
         app.getPath('documents'),
         process.env.YEYU_WORKSPACE_ROOT,
       );
+      const lanShareServer = new LanShareServer(
+        layout,
+        staticClientDirectory(),
+      );
       await ensureWorkspace(layout);
-      registerDesktopIpc(layout);
+      registerDesktopIpc(layout, lanShareServer);
+      app.on('before-quit', () => {
+        void lanShareServer.stop();
+      });
       const window = await createWindow();
       if (isSmokeRun()) {
         // YEYU_SMOKE=1：探测完 preload 桥接后立即退出，供自动化冒烟测试断言。
