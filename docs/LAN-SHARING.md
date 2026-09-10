@@ -35,3 +35,5 @@ Test-NetConnection 192.168.1.20 -Port 37891
 ## 当前验证范围
 
 本机已覆盖认证、会话、停止/重启、端口占用、路径穿越、符号链接逃逸、中文文件名、缺失成果、资料更新和只读 API 测试，并完成生产 Web 与 Electron 编译验证。若当前没有 Windows 校园网实机，仍需在真实 Windows 电脑上完成上述 `Test-NetConnection` 和浏览器 PDF/来源页码流程验证。
+
+数据保护验收记录（包括备份核验和临时课程目录访问前后文件哈希比对）见 [`docs/LAN-SHARING-DATA-PROTECTION.md`](LAN-SHARING-DATA-PROTECTION.md)。

@@ -59,11 +59,17 @@ export async function scanCourses(
   const courses: DesktopCourseSummary[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    const courseDirectory = path.join(coursesRoot, entry.name);
     try {
-      const raw = await fs.readFile(
-        path.join(coursesRoot, entry.name, 'course.json'),
-        'utf8',
-      );
+      // readdir's Dirent check and the manifest check are both intentional:
+      // course.json must never be followed if a partially updated workspace
+      // replaces it with a symlink between scans.
+      const courseStat = await fs.lstat(courseDirectory);
+      if (!courseStat.isDirectory() || courseStat.isSymbolicLink()) continue;
+      const manifestPath = path.join(courseDirectory, 'course.json');
+      const manifestStat = await fs.lstat(manifestPath);
+      if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) continue;
+      const raw = await fs.readFile(manifestPath, 'utf8');
       courses.push({
         directoryName: entry.name,
         manifest: assertManifest(JSON.parse(raw)),
@@ -82,9 +88,7 @@ export async function createCourseDirectory(
   coursesRoot: string,
   name: string,
 ): Promise<{ directoryName: string }> {
-  const existing = await fs
-    .readdir(coursesRoot)
-    .catch(() => [] as string[]);
+  const existing = await fs.readdir(coursesRoot).catch(() => [] as string[]);
   const directoryName = uniqueCourseDirectoryName(
     existing,
     sanitizeCourseDirectoryName(name),

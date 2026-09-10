@@ -68,8 +68,15 @@ function launchElectron(
   args: string[],
   env: NodeJS.ProcessEnv,
 ): Promise<LaunchResult> {
+  // Electron 44 may hang during shutdown when a session exposes both Wayland
+  // and X11 under the managed desktop runner. Prefer the available X11
+  // backend for this real-process test; production startup remains unchanged.
+  const launchArgs =
+    process.platform === 'linux' && env.DISPLAY && env.WAYLAND_DISPLAY
+      ? ['--ozone-platform=x11', ...args]
+      : args;
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(command, launchArgs, {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -152,7 +159,11 @@ async function launchAndProbe(
     process.stderr.write(
       '[electron-smoke] OS 沙箱不可用（容器限制），改用 --no-sandbox 重试桥接冒烟。\n',
     );
-    ({ code, stdout, stderr } = await launchElectron(command, [...args, '--no-sandbox'], env));
+    ({ code, stdout, stderr } = await launchElectron(
+      command,
+      [...args, '--no-sandbox'],
+      env,
+    ));
   }
   const result = parseSmokeResult(stdout);
   assert.equal(

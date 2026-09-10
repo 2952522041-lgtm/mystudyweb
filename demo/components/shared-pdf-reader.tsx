@@ -1,6 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   BookOpen,
   ChevronLeft,
@@ -186,6 +193,7 @@ export function SharedPdfReader({
   );
   const stageRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLElement>());
+  const pendingPageRef = useRef<number | null>(initialPage);
 
   useEffect(() => {
     let cancelled = false;
@@ -194,6 +202,7 @@ export function SharedPdfReader({
     setPdfDoc(null);
     setPage(initialPage);
     setVisiblePages(new Set([initialPage]));
+    pendingPageRef.current = initialPage;
     void (async () => {
       try {
         const buffer = await file.arrayBuffer();
@@ -212,11 +221,11 @@ export function SharedPdfReader({
           sizes.push({ width: viewport.width, height: viewport.height });
         }
         if (cancelled) return;
+        const firstPage = Math.min(Math.max(initialPage, 1), loaded.numPages);
         setPageSizes(sizes);
-        setPage(Math.min(Math.max(initialPage, 1), loaded.numPages));
-        setVisiblePages(
-          new Set([Math.min(Math.max(initialPage, 1), loaded.numPages)]),
-        );
+        setPage(firstPage);
+        setVisiblePages(new Set([firstPage]));
+        pendingPageRef.current = firstPage;
         setPdfDoc(loaded);
       } catch {
         if (!cancelled)
@@ -251,6 +260,24 @@ export function SharedPdfReader({
       ),
     [pageSizes, pageWidth],
   );
+
+  // A source link can arrive before PDF.js has committed the page elements.
+  // Wait until the complete page layout exists, then scroll the actual target
+  // element; changing the numeric page state alone does not move the viewport.
+  useLayoutEffect(() => {
+    const target = pendingPageRef.current;
+    if (!pdfDoc || pageSizes.length !== pdfDoc.numPages || target === null) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      const element = pageRefs.current.get(target);
+      if (!element) return;
+      element.scrollIntoView({ behavior: 'auto', block: 'start' });
+      pendingPageRef.current = null;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [pdfDoc, pageSizes.length, pageWidth, visiblePages]);
+
   const pageNumbers = Array.from(
     { length: pdfDoc?.numPages ?? 0 },
     (_, index) => index + 1,
@@ -278,18 +305,14 @@ export function SharedPdfReader({
     );
     for (const element of pageRefs.current.values()) observer.observe(element);
     return () => observer.disconnect();
-  }, [pdfDoc, pageSizes.length]);
+  }, [pdfDoc, pageSizes.length, pageWidth]);
 
   const goToPage = useCallback(
     (next: number) => {
       const target = Math.min(Math.max(next, 1), pdfDoc?.numPages ?? 1);
+      pendingPageRef.current = target;
       setPage(target);
       setVisiblePages((previous) => new Set([...previous, target]));
-      requestAnimationFrame(() =>
-        pageRefs.current
-          .get(target)
-          ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
-      );
     },
     [pdfDoc?.numPages],
   );
@@ -391,8 +414,8 @@ export function SharedPdfReader({
         </div>
       </header>
 
-      <section className="relative min-h-0 flex-1">
-        <div className="flex h-full min-h-0">
+      <section className="relative flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1">
           <section
             className="reader-pane min-w-0 flex-1"
             aria-label="PDF 原文阅读区"
@@ -452,7 +475,7 @@ export function SharedPdfReader({
                       const height = pageHeights[number - 1] || width / 0.707;
                       return (
                         <article
-                          key={`${number}-${Math.round(width)}`}
+                          key={number}
                           ref={(node) => {
                             if (node) pageRefs.current.set(number, node);
                             else pageRefs.current.delete(number);
@@ -559,6 +582,71 @@ export function SharedPdfReader({
             )}
           </aside>
         </div>
+        <aside
+          className="flex max-h-[38vh] shrink-0 flex-col border-t border-slate-200 bg-[#fffdf9] lg:hidden"
+          aria-label="已有课程成果（窄窗口）"
+        >
+          <div className="border-b border-slate-200/80 px-5 py-3">
+            <p className="text-xs font-semibold text-slate-800">已有成果</p>
+            <p className="mt-1 text-[11px] text-slate-500">
+              窄窗口可在下方切换查看 PDF 总结或脑图。
+            </p>
+          </div>
+          {digest && (hasSummary || hasMindmap) ? (
+            <Tabs
+              value={panel}
+              onValueChange={(value) =>
+                setPanel(value as 'summary' | 'mindmap')
+              }
+              className="min-h-0 flex-1 gap-0"
+            >
+              <TabsList className="mx-4 mt-3">
+                {hasSummary ? (
+                  <TabsTrigger value="summary">
+                    <FileText /> PDF 总结
+                  </TabsTrigger>
+                ) : null}
+                {hasMindmap ? (
+                  <TabsTrigger value="mindmap">
+                    <Network /> PDF 脑图
+                  </TabsTrigger>
+                ) : null}
+              </TabsList>
+              {hasSummary ? (
+                <TabsContent
+                  value="summary"
+                  className="max-h-[32vh] overflow-y-auto data-[hidden]:hidden"
+                >
+                  <DocumentSummaryPanel
+                    digest={digest}
+                    onOpenSource={goToPage}
+                  />
+                </TabsContent>
+              ) : null}
+              {hasMindmap ? (
+                <TabsContent
+                  value="mindmap"
+                  className="max-h-[32vh] overflow-y-auto data-[hidden]:hidden"
+                >
+                  <KnowledgeMindmap
+                    knowledge={documentKnowledge(digest)}
+                    onOpenSource={(_, sourcePage) => goToPage(sourcePage)}
+                  />
+                </TabsContent>
+              ) : null}
+            </Tabs>
+          ) : (
+            <div className="flex min-h-40 flex-col items-center justify-center px-8 text-center">
+              <FileText className="size-8 text-slate-300" />
+              <h2 className="mt-3 text-sm font-semibold text-slate-700">
+                暂无该 PDF 的可查看成果
+              </h2>
+              <p className="mt-2 text-xs leading-5 text-slate-500">
+                主电脑尚未生成这份 PDF 的总结或脑图。查看端不会发起生成。
+              </p>
+            </div>
+          )}
+        </aside>
       </section>
       <footer className="status-bar">
         <span>局域网共享 · 只读 · {file.name}</span>

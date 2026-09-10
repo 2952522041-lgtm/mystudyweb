@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import {
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   rm,
   symlink,
@@ -12,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { LanShareServer } from '../electron/lan-share.ts';
+import { getLanShareAddresses, LanShareServer } from '../electron/lan-share.ts';
 import {
   createCourseDirectory,
   ensureWorkspace,
@@ -78,6 +80,26 @@ function cookieFrom(result: HttpResult): string {
   const setCookie = result.headers['set-cookie'];
   assert.ok(Array.isArray(setCookie) && setCookie[0]);
   return setCookie[0]!.split(';', 1)[0]!;
+}
+
+async function snapshotFiles(root: string): Promise<Record<string, string>> {
+  const snapshot: Record<string, string> = {};
+  const visit = async (directory: string, prefix: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const relative = prefix ? path.join(prefix, entry.name) : entry.name;
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(fullPath, relative);
+      } else if (entry.isFile()) {
+        snapshot[relative] = createHash('sha256')
+          .update(await readFile(fullPath))
+          .digest('hex');
+      }
+    }
+  };
+  await visit(root, '');
+  return snapshot;
 }
 
 const manifestFor = (
@@ -469,11 +491,19 @@ void test('LAN share rejects path escapes, symlinks, and mutating endpoints', as
   const fixture = await createFixture(root);
   await writeFile(path.join(client, 'index.html'), 'share');
   const outside = await mkdtemp(path.join(os.tmpdir(), 'yeyu-share-outside-'));
+  await writeFile(path.join(outside, 'secret.txt'), 'secret');
+  await symlink(
+    path.join(outside, 'secret.txt'),
+    path.join(client, 'linked.js'),
+  );
   const server = new LanShareServer(fixture.layout, client, {
     host: '127.0.0.1',
   });
   try {
     const started = await server.start('路径测试-abcdef', 0);
+    const linkedAsset = await request(started.port!, '/linked.js');
+    assert.equal(linkedAsset.status, 403);
+    assert.doesNotMatch(linkedAsset.body.toString('utf8'), /secret/);
     const login = await request(started.port!, '/api/share/login', {
       method: 'POST',
       body: JSON.stringify({ password: '路径测试-abcdef' }),
@@ -562,12 +592,108 @@ void test('LAN share rejects path escapes, symlinks, and mutating endpoints', as
       await readFile(path.join(courseRoot, 'course.json'), 'utf8'),
       before,
     );
+
+    const manifestPath = path.join(courseRoot, 'course.json');
+    const outsideManifestPath = path.join(outside, 'course.json');
+    await writeFile(outsideManifestPath, before);
+    await rm(manifestPath);
+    await symlink(outsideManifestPath, manifestPath);
+    const symlinkedManifestList = await request(
+      started.port!,
+      '/api/share/courses',
+      { cookie },
+    );
+    assert.equal(symlinkedManifestList.status, 200);
+    assert.deepEqual(
+      json<{ courses: unknown[] }>(symlinkedManifestList).courses,
+      [],
+    );
+    await rm(manifestPath);
+    await writeFile(manifestPath, before);
     await server.stop();
   } finally {
     await server.stop();
     await rm(root, { recursive: true, force: true });
     await rm(client, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
+  }
+});
+
+void test('LAN share advertises only non-loopback IPv4 addresses', () => {
+  const addresses = getLanShareAddresses(37891, {
+    campus: [
+      {
+        address: '192.168.1.20',
+        netmask: '255.255.255.0',
+        mac: '00:00:00:00:00:01',
+        cidr: '192.168.1.20/24',
+        family: 'IPv4',
+        internal: false,
+      },
+      {
+        address: 'fe80::1',
+        netmask: 'ffff:ffff:ffff:ffff::',
+        mac: '00:00:00:00:00:02',
+        cidr: 'fe80::1/64',
+        scopeid: 1,
+        family: 'IPv6',
+        internal: false,
+      },
+    ],
+    loopback: [
+      {
+        address: '127.0.0.1',
+        netmask: '255.0.0.0',
+        mac: '00:00:00:00:00:00',
+        cidr: '127.0.0.1/8',
+        family: 'IPv4',
+        internal: true,
+      },
+    ],
+  } as ReturnType<typeof import('node:os').networkInterfaces>);
+  assert.deepEqual(addresses, ['http://192.168.1.20:37891/share?yeyu-share=1']);
+});
+
+void test('read-only sharing leaves the temporary course workspace unchanged', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-lan-share-'));
+  const client = await mkdtemp(path.join(os.tmpdir(), 'yeyu-share-client-'));
+  const fixture = await createFixture(root);
+  await writeFile(path.join(client, 'index.html'), 'share');
+  const server = new LanShareServer(fixture.layout, client, {
+    host: '127.0.0.1',
+  });
+  try {
+    const started = await server.start('只读校验-abcdef', 0);
+    const login = await request(started.port!, '/api/share/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: '只读校验-abcdef' }),
+    });
+    const cookie = cookieFrom(login);
+    const before = await snapshotFiles(fixture.layout.root);
+    await request(started.port!, '/api/share/courses', { cookie });
+    await request(
+      started.port!,
+      `/api/share/courses/${encodeURIComponent(fixture.manifest.id)}`,
+      { cookie },
+    );
+    await request(
+      started.port!,
+      `/api/share/courses/${encodeURIComponent(fixture.manifest.id)}/documents/${encodeURIComponent(fixture.document.id)}/file`,
+      { cookie },
+    );
+    await request(
+      started.port!,
+      `/api/share/courses/${encodeURIComponent(fixture.manifest.id)}/documents/${encodeURIComponent(fixture.document.id)}/artifacts/summary`,
+      { cookie },
+    );
+    const after = await snapshotFiles(fixture.layout.root);
+    assert.deepEqual(after, before);
+    assert.ok(Object.keys(before).some((file) => file.endsWith('course.json')));
+    assert.ok(Object.keys(before).some((file) => file.includes('PDFs')));
+  } finally {
+    await server.stop();
+    await rm(root, { recursive: true, force: true });
+    await rm(client, { recursive: true, force: true });
   }
 });
 

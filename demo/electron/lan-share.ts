@@ -7,7 +7,11 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { LanShareStatus } from './api.ts';
 import { readCourseFile, scanCourses } from './workspace.ts';
 import type { DesktopCourseManifest, DesktopCourseSummary } from './api.ts';
-import type { WorkspaceLayout } from './workspace-paths.ts';
+import {
+  assertSafeRelativeSegments,
+  WorkspacePathError,
+  type WorkspaceLayout,
+} from './workspace-paths.ts';
 
 export const DEFAULT_LAN_SHARE_PORT = 37891;
 export const LAN_SHARE_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -137,25 +141,17 @@ function sessionCookie(value: string, maxAge: number): string {
   return `${SESSION_COOKIE}=${encodeURIComponent(value)}; Max-Age=${Math.max(0, Math.floor(maxAge))}; Path=/; HttpOnly; SameSite=Strict`;
 }
 
-function addressForUrl(address: string, port: number, family: string): string {
-  const host = family === 'IPv6' ? `[${address}]` : address;
-  return `http://${host}:${port}/share?yeyu-share=1`;
-}
-
-/** 只返回非回环地址；localhost 不会被当成局域网唯一地址。 */
-export function getLanShareAddresses(port: number): string[] {
+/** 只返回实际由 IPv4 监听器覆盖的非回环地址。 */
+export function getLanShareAddresses(
+  port: number,
+  interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): string[] {
   const addresses: string[] = [];
-  for (const entries of Object.values(networkInterfaces())) {
+  for (const entries of Object.values(interfaces)) {
     for (const entry of entries ?? []) {
       if (entry.internal) continue;
-      if (entry.family !== 'IPv4' && entry.family !== 'IPv6') {
-        continue;
-      }
-      const family = entry.family;
-      const address = entry.address.includes('%')
-        ? entry.address.replaceAll('%', '%25')
-        : entry.address;
-      const url = addressForUrl(address, port, family);
+      if (entry.family !== 'IPv4') continue;
+      const url = `http://${entry.address}:${port}/share?yeyu-share=1`;
       if (!addresses.includes(url)) addresses.push(url);
     }
   }
@@ -175,7 +171,9 @@ function stringValue(value: unknown, fallback = ''): string {
 }
 
 function integerValue(value: unknown, fallback = 0): number {
-  return typeof value === 'number' && Number.isInteger(value) ? value : fallback;
+  return typeof value === 'number' && Number.isInteger(value)
+    ? value
+    : fallback;
 }
 
 function publicSources(value: unknown): Array<Record<string, unknown>> {
@@ -245,10 +243,14 @@ function publicDigest(value: unknown): Record<string, unknown> | null {
     concepts,
     relations,
     unresolvedQuestions: Array.isArray(value.unresolvedQuestions)
-      ? value.unresolvedQuestions.filter((item): item is string => typeof item === 'string')
+      ? value.unresolvedQuestions.filter(
+          (item): item is string => typeof item === 'string',
+        )
       : [],
     sourcePages: Array.isArray(value.sourcePages)
-      ? value.sourcePages.filter((item): item is number => Number.isInteger(item))
+      ? value.sourcePages.filter((item): item is number =>
+          Number.isInteger(item),
+        )
       : [],
     promptVersion: stringValue(value.promptVersion),
     ...(typeof value.provider === 'string' ? { provider: value.provider } : {}),
@@ -298,7 +300,9 @@ function publicKnowledge(
             id: stringValue(conflict.id),
             nodeId: stringValue(conflict.nodeId),
             descriptions: Array.isArray(conflict.descriptions)
-              ? conflict.descriptions.filter((item): item is string => typeof item === 'string')
+              ? conflict.descriptions.filter(
+                  (item): item is string => typeof item === 'string',
+                )
               : [],
             sources: publicSources(conflict.sources),
           },
@@ -313,12 +317,16 @@ function publicKnowledge(
     relations,
     conflicts,
     unresolvedQuestions: Array.isArray(value.unresolvedQuestions)
-      ? value.unresolvedQuestions.filter((item): item is string => typeof item === 'string')
+      ? value.unresolvedQuestions.filter(
+          (item): item is string => typeof item === 'string',
+        )
       : [],
     updatedAt: stringValue(value.updatedAt, manifest.updatedAt),
     ...(typeof value.provider === 'string' ? { provider: value.provider } : {}),
     ...(typeof value.model === 'string' ? { model: value.model } : {}),
-    ...(typeof value.promptVersion === 'string' ? { promptVersion: value.promptVersion } : {}),
+    ...(typeof value.promptVersion === 'string'
+      ? { promptVersion: value.promptVersion }
+      : {}),
   };
 }
 
@@ -360,6 +368,45 @@ function defaultKnowledge(
     unresolvedQuestions: [],
     updatedAt: manifest.updatedAt,
   };
+}
+
+/**
+ * Read a bundled client asset only when every path component is a real entry.
+ * This protects both direct file links and a linked directory inside the
+ * static output; lexical path checks alone would still follow either link.
+ */
+async function readStaticFile(
+  rootDirectory: string,
+  relativeSegments: string[],
+): Promise<Buffer> {
+  let segments: string[];
+  try {
+    segments = assertSafeRelativeSegments(relativeSegments);
+  } catch (error) {
+    throw error instanceof WorkspacePathError
+      ? error
+      : new WorkspacePathError('PATH_ESCAPE', '禁止访问。');
+  }
+  const rootStat = await fs.lstat(rootDirectory);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new WorkspacePathError('PATH_ESCAPE', '共享页面资源目录不合法。');
+  }
+  let current = rootDirectory;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    const stat = await fs.lstat(current);
+    if (stat.isSymbolicLink()) {
+      throw new WorkspacePathError(
+        'PATH_ESCAPE',
+        '共享页面资源包含符号链接，已拒绝访问。',
+      );
+    }
+  }
+  const targetStat = await fs.lstat(current);
+  if (!targetStat.isFile()) {
+    throw new WorkspacePathError('COURSE_NOT_FOUND', '页面资源不存在。');
+  }
+  return fs.readFile(current);
 }
 
 async function readJson(
@@ -692,9 +739,7 @@ export class LanShareServer {
     } catch {
       try {
         return publicKnowledge(
-          await readJson(this.layout, course.directoryName, [
-            '课程脑图.json',
-          ]),
+          await readJson(this.layout, course.directoryName, ['课程脑图.json']),
           course.manifest,
         );
       } catch {
@@ -849,22 +894,44 @@ export class LanShareServer {
       sendText(response, 405, '只支持 GET。');
       return;
     }
-    const decoded = decodeURIComponent(pathname);
-    const relative =
-      decoded === '/' || decoded === '/share' || decoded === '/share/'
-        ? 'index.html'
-        : decoded.replace(/^\/+/, '');
-    const filePath = path.resolve(this.clientDirectory, relative);
-    if (
-      filePath !== this.clientDirectory &&
-      !filePath.startsWith(this.clientDirectory + path.sep)
-    ) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(pathname);
+    } catch {
       sendText(response, 403, '禁止访问。');
       return;
     }
-    const stat = await fs.stat(filePath).catch(() => null);
-    if (!stat?.isFile()) {
-      sendText(response, 404, '页面不存在。');
+    const relativeSegments =
+      decoded === '/' || decoded === '/share' || decoded === '/share/'
+        ? ['index.html']
+        : decoded.replace(/^\/+/, '').split('/');
+    let filePath: string;
+    try {
+      // Keep the lexical boundary check in assertSafeRelativeSegments and the
+      // lstat walk in readStaticFile: neither pathname normalization nor
+      // fs.stat alone prevents a linked asset from escaping the bundle.
+      assertSafeRelativeSegments(relativeSegments);
+      filePath = path.resolve(this.clientDirectory, ...relativeSegments);
+      if (
+        filePath === this.clientDirectory ||
+        !filePath.startsWith(this.clientDirectory + path.sep)
+      ) {
+        sendText(response, 403, '禁止访问。');
+        return;
+      }
+    } catch {
+      sendText(response, 403, '禁止访问。');
+      return;
+    }
+    let data: Buffer;
+    try {
+      data = await readStaticFile(this.clientDirectory, relativeSegments);
+    } catch (error) {
+      if (error instanceof WorkspacePathError && error.code === 'PATH_ESCAPE') {
+        sendText(response, 403, '禁止访问。');
+      } else {
+        sendText(response, 404, '页面不存在。');
+      }
       return;
     }
     response.statusCode = 200;
@@ -887,7 +954,7 @@ export class LanShareServer {
       response.end();
       return;
     }
-    response.end(await fs.readFile(filePath));
+    response.end(data);
   }
 
   private async handleRequest(

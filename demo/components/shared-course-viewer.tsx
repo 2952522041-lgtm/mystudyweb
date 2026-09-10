@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   BookOpen,
   CircleAlert,
@@ -312,13 +312,16 @@ export function SharedCourseViewer() {
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const requestVersionRef = useRef(0);
 
   const signedOut = (message?: string) => {
+    requestVersionRef.current += 1;
     setAuthenticated(false);
     setCourses([]);
     setSelectedId(null);
     setDetail(null);
     setReader(null);
+    setRefreshing(false);
     if (message) setError(message);
   };
 
@@ -331,25 +334,31 @@ export function SharedCourseViewer() {
   };
 
   const refresh = async (preferredId = selectedId) => {
+    const requestVersion = ++requestVersionRef.current;
     setRefreshing(true);
     setError(null);
+    setDetail(null);
+    setReader(null);
     try {
       const result = await listSharedCourses();
+      if (requestVersion !== requestVersionRef.current) return;
       setCourses(result.courses);
       const nextId = result.courses.some((course) => course.id === preferredId)
         ? preferredId
         : (result.courses[0]?.id ?? null);
       setSelectedId(nextId);
       if (nextId) {
-        setDetail(await loadSharedCourse(nextId));
+        const nextDetail = await loadSharedCourse(nextId);
+        if (requestVersion !== requestVersionRef.current) return;
+        setDetail(nextDetail);
       } else {
         setDetail(null);
       }
-      setReader(null);
     } catch (requestError) {
+      if (requestVersion !== requestVersionRef.current) return;
       handleRequestError(requestError);
     } finally {
-      setRefreshing(false);
+      if (requestVersion === requestVersionRef.current) setRefreshing(false);
     }
   };
 
@@ -384,33 +393,43 @@ export function SharedCourseViewer() {
 
   const openDocument = async (document: DocumentRecord, initialPage = 1) => {
     if (!selectedId) return;
+    const courseId = selectedId;
+    const requestVersion = ++requestVersionRef.current;
     setRefreshing(true);
     setError(null);
+    setReader(null);
     try {
       const file = await loadSharedPdf(
-        selectedId,
+        courseId,
         document.id,
         document.fileName,
       );
+      if (requestVersion !== requestVersionRef.current) return;
       setReader({ file, document, initialPage });
     } catch (requestError) {
+      if (requestVersion !== requestVersionRef.current) return;
       handleRequestError(requestError);
     } finally {
-      setRefreshing(false);
+      if (requestVersion === requestVersionRef.current) setRefreshing(false);
     }
   };
 
   const selectCourse = async (course: SharedCourseListItem) => {
+    const requestVersion = ++requestVersionRef.current;
     setSelectedId(course.id);
+    setDetail(null);
     setReader(null);
     setRefreshing(true);
     setError(null);
     try {
-      setDetail(await loadSharedCourse(course.id));
+      const nextDetail = await loadSharedCourse(course.id);
+      if (requestVersion !== requestVersionRef.current) return;
+      setDetail(nextDetail);
     } catch (requestError) {
+      if (requestVersion !== requestVersionRef.current) return;
       handleRequestError(requestError);
     } finally {
-      setRefreshing(false);
+      if (requestVersion === requestVersionRef.current) setRefreshing(false);
     }
   };
 
@@ -432,6 +451,7 @@ export function SharedCourseViewer() {
   };
 
   const logout = async () => {
+    requestVersionRef.current += 1;
     try {
       await logoutFromSharedService();
     } catch {
