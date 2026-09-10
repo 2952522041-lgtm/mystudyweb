@@ -4,7 +4,7 @@ import http from 'node:http';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { build } from 'esbuild';
@@ -111,6 +111,19 @@ function assertRect(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function isActuallyVisible(element) {
+  if (!(element instanceof HTMLElement)) return false;
+  const style = getComputedStyle(element);
+  const rect = element.getBoundingClientRect();
+  return (
+    style.display !== 'none' &&
+    style.visibility !== 'hidden' &&
+    style.pointerEvents !== 'none' &&
+    rect.width > 0 &&
+    rect.height > 0
+  );
+}
+
 function assertPageVisible(stage, page) {
   const stageRect = stage.getBoundingClientRect();
   const pageRect = page.getBoundingClientRect();
@@ -174,18 +187,29 @@ async function assertNarrowArtifacts() {
     getComputedStyle(panel).display !== 'none',
     '窄窗口成果面板被隐藏且没有替代入口',
   );
-  assertRect(
-    panel.textContent?.includes('课程 A PDF 摘要') ?? false,
-    '窄窗口没有显示 PDF 总结内容',
+  const summaryContent = [...panel.querySelectorAll('[role="tabpanel"]')].find(
+    (element) => element.textContent?.includes('课程 A PDF 摘要'),
   );
-  const mindmapTab = [...document.querySelectorAll('[role="tab"]')].find(
+  assertRect(
+    isActuallyVisible(summaryContent),
+    '窄窗口没有显示实际可见的 PDF 总结内容',
+  );
+  const mindmapTab = [...panel.querySelectorAll('[role="tab"]')].find(
     (element) => element.textContent?.includes('PDF 脑图'),
   );
   if (!(mindmapTab instanceof HTMLElement)) throw new Error('找不到 PDF 脑图标签');
-  mindmapTab.click();
-  await waitFor('窄窗口 PDF 脑图内容', () =>
-    panel.textContent?.includes('A 脑图概念') ?? false,
+  assertRect(
+    isActuallyVisible(mindmapTab) && !mindmapTab.hasAttribute('disabled'),
+    '窄窗口 PDF 脑图标签不可见或不可点击',
   );
+  mindmapTab.focus();
+  mindmapTab.click();
+  await waitFor('窄窗口 PDF 脑图内容', () => {
+    const content = [...panel.querySelectorAll('[role="tabpanel"]')].find(
+      (element) => element.textContent?.includes('A 脑图概念'),
+    );
+    return isActuallyVisible(content);
+  });
   return {
     viewportWidth: window.innerWidth,
     panelVisible: true,
@@ -370,13 +394,13 @@ const MOCK_COURSES: MockCourse[] = [
   },
 ];
 
-function mockCourse(course: MockCourse) {
+function mockCourse(course: MockCourse, pageCount = 6) {
   const document = {
     id: course.documentId,
     fingerprint: `${course.id}-fingerprint`,
     fileName: course.documentName,
     storedFileName: course.documentName,
-    pageCount: 6,
+    pageCount,
     status: 'course-merged',
     includedInCourse: true,
     includeConversationInsights: false,
@@ -595,6 +619,174 @@ async function startMockShareServer(bundle: string) {
   };
 }
 
+function createFormalMultiPagePdf(pageCount = 6): Buffer {
+  const pageObjectIndexes = Array.from(
+    { length: pageCount },
+    (_, index) => 3 + index,
+  );
+  const contentObjectIndexes = Array.from(
+    { length: pageCount },
+    (_, index) => 3 + pageCount + index,
+  );
+  const fontObjectIndex = 3 + pageCount * 2;
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${pageObjectIndexes.map((index) => `${index} 0 R`).join(' ')}] /Count ${pageCount} >>`,
+    ...pageObjectIndexes.map(
+      (_, index) =>
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << /Font << /F1 ${fontObjectIndex} 0 R >> >> /Contents ${contentObjectIndexes[index]} 0 R >>`,
+    ),
+    ...contentObjectIndexes.map((_, index) => {
+      const stream = `BT /F1 22 Tf 40 340 Td (Real PDF page ${index + 1}) Tj ET\nBT /F1 12 Tf 40 300 Td (Shared viewer regression fixture) Tj ET`;
+      return `<< /Length ${Buffer.byteLength(stream, 'latin1')} >>\nstream\n${stream}\nendstream`;
+    }),
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  let document = '%PDF-1.4\n%\xff\xff\xff\xff\n';
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(document, 'latin1'));
+    document += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(document, 'latin1');
+  document += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  document += offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`)
+    .join('');
+  document += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(document, 'latin1');
+}
+
+async function startFormalShareServer(publicDirectory: string, pdf: Buffer) {
+  let loggedIn = false;
+  const course = MOCK_COURSES[0]!;
+  const detail = mockCourse(course);
+  const root = path.resolve(publicDirectory);
+  const contentTypes: Record<string, string> = {
+    '.css': 'text/css; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.mjs': 'text/javascript; charset=utf-8',
+    '.pdf': 'application/pdf',
+    '.svg': 'image/svg+xml',
+  };
+  const sendStatic = async (
+    requestPath: string,
+    response: http.ServerResponse,
+  ) => {
+    let relativePath: string;
+    try {
+      relativePath = decodeURIComponent(
+        requestPath === '/' ? '/index.html' : requestPath,
+      ).replace(/^\/+/, '');
+    } catch {
+      sendEmpty(response, 400);
+      return;
+    }
+    const target = path.resolve(root, relativePath);
+    if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+      sendEmpty(response, 403);
+      return;
+    }
+    try {
+      const file = await readFile(target);
+      const extension = path.extname(target).toLowerCase();
+      response.statusCode = 200;
+      response.setHeader(
+        'Content-Type',
+        contentTypes[extension] ?? 'application/octet-stream',
+      );
+      response.setHeader('Content-Length', String(file.byteLength));
+      response.end(file);
+    } catch {
+      sendEmpty(response, 404);
+    }
+  };
+  const server = http.createServer(async (request, response) => {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    if (url.pathname === '/api/share/session') {
+      if (!loggedIn) {
+        sendJson(response, 401, { error: '请先登录。' });
+        return;
+      }
+      sendJson(response, 200, { expiresAt: Date.now() + 3600000 });
+      return;
+    }
+    if (url.pathname === '/api/share/login' && request.method === 'POST') {
+      request.resume();
+      loggedIn = true;
+      sendJson(response, 200, { expiresAt: Date.now() + 3600000 });
+      return;
+    }
+    if (url.pathname === '/api/share/logout' && request.method === 'POST') {
+      request.resume();
+      loggedIn = false;
+      sendEmpty(response, 204);
+      return;
+    }
+    if (!loggedIn && url.pathname.startsWith('/api/share/')) {
+      sendJson(response, 401, { error: '登录已过期。' });
+      return;
+    }
+    if (url.pathname === '/api/share/courses') {
+      sendJson(response, 200, {
+        courses: [
+          {
+            id: course.id,
+            name: course.name,
+            updatedAt: '2026-09-10T01:00:00.000Z',
+            documentCount: 1,
+          },
+        ],
+      });
+      return;
+    }
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (
+      parts.length === 4 &&
+      parts[0] === 'api' &&
+      parts[1] === 'share' &&
+      parts[2] === 'courses' &&
+      parts[3] === course.id
+    ) {
+      sendJson(response, 200, detail);
+      return;
+    }
+    if (
+      parts.length === 7 &&
+      parts[0] === 'api' &&
+      parts[1] === 'share' &&
+      parts[2] === 'courses' &&
+      parts[3] === course.id &&
+      parts[4] === 'documents' &&
+      parts[5] === course.documentId &&
+      parts[6] === 'file'
+    ) {
+      response.statusCode = 200;
+      response.setHeader('Content-Type', 'application/pdf');
+      response.setHeader('Content-Length', String(pdf.byteLength));
+      response.end(pdf);
+      return;
+    }
+    await sendStatic(url.pathname, response);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw new Error('正式构建浏览器测试服务没有分配端口。');
+  }
+  return {
+    url: `http://127.0.0.1:${address.port}/?yeyu-share=1`,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
 const browserSmokeMain = `
 const { app, BrowserWindow } = require('electron');
 const marker = ${JSON.stringify(BROWSER_RESULT_MARKER)};
@@ -624,6 +816,236 @@ app.whenReady().then(async () => {
       ));
     }
     process.stdout.write(marker + ' ' + JSON.stringify({ ok: true, results }) + '\\n');
+  } catch (error) {
+    exitCode = 1;
+    process.stdout.write(marker + ' ' + JSON.stringify({ ok: false, error: String(error) }) + '\\n');
+  } finally {
+    if (window && !window.isDestroyed()) window.destroy();
+    app.exit(exitCode);
+  }
+});
+`;
+
+const formalBrowserMain = `
+const { app, BrowserWindow } = require('electron');
+const marker = ${JSON.stringify(BROWSER_RESULT_MARKER)};
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const execute = (window, expression) =>
+  window.webContents.executeJavaScript(expression, true);
+const setup = String.raw\`(() => {
+  const waitFor = async (description, predicate, timeout = 12000) => {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error('等待超时：' + description);
+  };
+  const buttonWithText = (text) => {
+    const button = [...document.querySelectorAll('button')].find(
+      (element) => element.textContent?.includes(text),
+    );
+    if (!button) throw new Error('找不到按钮：' + text);
+    return button;
+  };
+  const setInputValue = (input, value) => {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const visible = (element) => {
+    if (!(element instanceof HTMLElement)) return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      style.pointerEvents !== 'none' &&
+      rect.width > 0 &&
+      rect.height > 0;
+  };
+  const canvasHasInk = (canvas) => {
+    if (!(canvas instanceof HTMLCanvasElement) || canvas.width === 0) return false;
+    const context = canvas.getContext('2d');
+    if (!context) return false;
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let nonWhitePixels = 0;
+    for (let index = 0; index < data.length; index += 32) {
+      if (
+        data[index + 3] > 0 &&
+        (data[index] < 245 || data[index + 1] < 245 || data[index + 2] < 245)
+      ) {
+        nonWhitePixels += 1;
+        if (nonWhitePixels >= 20) return true;
+      }
+    }
+    return false;
+  };
+  const pagePosition = (stage, page) => {
+    const stageRect = stage.getBoundingClientRect();
+    const pageRect = page.getBoundingClientRect();
+    if (!(pageRect.top < stageRect.bottom && pageRect.bottom > stageRect.top)) {
+      throw new Error('目标 PDF 页面没有进入可视区域');
+    }
+    return { scrollTop: stage.scrollTop, pageTop: pageRect.top };
+  };
+  window.__formalSharedViewer = {
+    async openSource() {
+      await waitFor(
+        '正式共享页面样式',
+        () => [...document.querySelectorAll('link[rel="stylesheet"]')].some(
+          (link) => link.getAttribute('href')?.includes('/_next/static/css/'),
+        ),
+      );
+      await waitFor(
+        '正式共享登录表单',
+        () => document.querySelector('input[type="password"]') instanceof HTMLInputElement,
+      );
+      const input = document.querySelector('input[type="password"]');
+      if (!(input instanceof HTMLInputElement)) throw new Error('找不到密码输入框');
+      setInputValue(input, 'test-password');
+      buttonWithText('登录查看').click();
+      await waitFor('正式页面课程 A', () => document.querySelector('h1')?.textContent?.trim() === '课程 A');
+      buttonWithText('打开文档并跳转').click();
+      await waitFor('真实 PDF.js 第 3 页绘制', () => {
+        const canvas = document.querySelector('canvas[aria-label="第 3 页内容"]');
+        return canvasHasInk(canvas);
+      });
+      const stage = document.querySelector('[aria-label="PDF 连续阅读画布"]');
+      const page = document.querySelector('[data-page="3"]');
+      if (!(stage instanceof HTMLElement) || !(page instanceof HTMLElement)) {
+        throw new Error('正式 PDF 页面布局未完成');
+      }
+      await waitFor('真实 PDF.js 来源第 3 页进入可视区域', () => {
+        const stageRect = stage.getBoundingClientRect();
+        const pageRect = page.getBoundingClientRect();
+        return pageRect.top < stageRect.bottom &&
+          pageRect.bottom > stageRect.top &&
+          stage.scrollTop > 0;
+      });
+      const position = pagePosition(stage, page);
+      if (position.scrollTop <= 0) throw new Error('正式页面来源跳转没有滚动阅读区域');
+      return { sourcePage: 3, realPdfRendered: true, formalStylesLoaded: true, ...position };
+    },
+    async reopenDocument() {
+      const back = document.querySelector('button[aria-label="返回课程"]');
+      if (!(back instanceof HTMLElement)) throw new Error('找不到返回课程按钮');
+      back.click();
+      await waitFor('返回正式课程 A', () => document.querySelector('h1')?.textContent?.trim() === '课程 A');
+      buttonWithText('PDF 资料').click();
+      await waitFor('正式课程 PDF 资料按钮', () =>
+        [...document.querySelectorAll('button')].some((element) =>
+          element.textContent?.includes('打开 PDF'),
+        ),
+      );
+      buttonWithText('打开 PDF').click();
+      await waitFor('真实 PDF.js 第 1 页绘制', () => {
+        const canvas = document.querySelector('canvas[aria-label="第 1 页内容"]');
+        return canvasHasInk(canvas);
+      });
+      return { reopened: true, firstPageRendered: true };
+    },
+    async zoomAndPrepareNarrowMindmap() {
+      await waitFor('窄窗口视口', () => window.innerWidth <= 800);
+      const zoom = document.querySelector('button[aria-label="放大"]');
+      if (!(zoom instanceof HTMLElement)) throw new Error('找不到放大按钮');
+      zoom.click();
+      await waitFor('正式 PDF 缩放到 105%', () => document.body.textContent?.includes('105%'));
+      const stage = document.querySelector('[aria-label="PDF 连续阅读画布"]');
+      const page = document.querySelector('[data-page="6"]');
+      if (!(stage instanceof HTMLElement) || !(page instanceof HTMLElement)) {
+        throw new Error('找不到正式 PDF 未读页面');
+      }
+      stage.scrollTo({ top: page.offsetTop, behavior: 'auto' });
+      stage.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await waitFor('正式 PDF 缩放后第 6 页绘制', () => {
+        const canvas = document.querySelector('canvas[aria-label="第 6 页内容"]');
+        return canvasHasInk(canvas);
+      });
+      const position = pagePosition(stage, page);
+      const panel = document.querySelector('[aria-label="已有课程成果（窄窗口）"]');
+      if (!visible(panel)) throw new Error('正式样式下窄窗口成果面板不可见');
+      const mindmapTab = [...panel.querySelectorAll('[role="tab"]')].find(
+        (element) => element.textContent?.includes('PDF 脑图'),
+      );
+      if (!visible(mindmapTab) || mindmapTab.hasAttribute('disabled')) {
+        throw new Error('窄窗口面板内 PDF 脑图标签不可见或不可点击');
+      }
+      const rect = mindmapTab.getBoundingClientRect();
+      return {
+        lazyPage: 6,
+        realLazyPageRendered: true,
+        ...position,
+        clickX: rect.left + rect.width / 2,
+        clickY: rect.top + rect.height / 2,
+        panelVisible: true,
+      };
+    },
+    async assertNarrowMindmap() {
+      const panel = document.querySelector('[aria-label="已有课程成果（窄窗口）"]');
+      const visibleContent = [...(panel?.querySelectorAll('[role="tabpanel"]') ?? [])].find(
+        (element) => element.textContent?.includes('A 脑图概念') && visible(element),
+      );
+      if (!visibleContent) {
+        const tabs = [...(panel?.querySelectorAll('[role="tab"]') ?? [])]
+          .map(
+            (element) =>
+              String(element.textContent?.trim()) +
+              ':' +
+              (element.getAttribute('data-active') ??
+                element.getAttribute('aria-selected')),
+          )
+          .join('|');
+        const contents = [...(panel?.querySelectorAll('[role="tabpanel"]') ?? [])]
+          .map(
+            (element) =>
+              String(element.getAttribute('data-state')) +
+              ':' +
+              element.hasAttribute('hidden') +
+              ':' +
+              String(element.textContent?.slice(0, 80)),
+          )
+          .join('|');
+        throw new Error(
+          '窄窗口切换后 PDF 脑图内容不可见 tabs=' +
+            tabs +
+            ' contents=' +
+            contents,
+        );
+      }
+      return { mindmapVisible: true, contentVisible: true };
+    },
+  };
+})()\`;
+app.disableHardwareAcceleration();
+app.whenReady().then(async () => {
+  let window;
+  let exitCode = 0;
+  try {
+    window = new BrowserWindow({
+      width: 1280,
+      height: 900,
+      show: true,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    await window.loadURL(process.env.YEYU_SHARED_TEST_URL);
+    await execute(window, setup);
+    const source = await execute(window, 'window.__formalSharedViewer.openSource()');
+    const reopened = await execute(window, 'window.__formalSharedViewer.reopenDocument()');
+    window.setSize(700, 900);
+    await sleep(100);
+    const narrow = await execute(window, 'window.__formalSharedViewer.zoomAndPrepareNarrowMindmap()');
+    await window.webContents.sendInputEvent({ type: 'mouseMove', x: narrow.clickX, y: narrow.clickY });
+    await window.webContents.sendInputEvent({ type: 'mouseDown', x: narrow.clickX, y: narrow.clickY, button: 'left', clickCount: 1 });
+    await window.webContents.sendInputEvent({ type: 'mouseUp', x: narrow.clickX, y: narrow.clickY, button: 'left', clickCount: 1 });
+    const mindmap = await execute(window, 'window.__formalSharedViewer.assertNarrowMindmap()');
+    process.stdout.write(marker + ' ' + JSON.stringify({ ok: true, source, reopened, narrow, mindmap }) + '\\n');
   } catch (error) {
     exitCode = 1;
     process.stdout.write(marker + ' ' + JSON.stringify({ ok: false, error: String(error) }) + '\\n');
@@ -664,7 +1086,11 @@ async function buildBrowserBundle(directory: string): Promise<string> {
   return result.outputFiles[0]!.text;
 }
 
-async function launchBrowserRegression(url: string, profileDirectory: string) {
+async function launchBrowserRegression(
+  url: string,
+  profileDirectory: string,
+  mainScript = browserSmokeMain,
+) {
   const launchArgs = [
     '--no-sandbox',
     '--disable-gpu',
@@ -676,7 +1102,7 @@ async function launchBrowserRegression(url: string, profileDirectory: string) {
     `--user-data-dir=${profileDirectory}`,
     path.join(profileDirectory, 'main.cjs'),
   ];
-  await writeFile(path.join(profileDirectory, 'main.cjs'), browserSmokeMain);
+  await writeFile(path.join(profileDirectory, 'main.cjs'), mainScript);
   return new Promise<{ stdout: string; stderr: string; result: unknown }>(
     (resolve, reject) => {
       const child = spawn(electronBinary, launchArgs, {
@@ -764,6 +1190,100 @@ function runBrowserBehavior(): Promise<BrowserBehaviorResults> {
   return browserBehaviorPromise;
 }
 
+function runCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: { ...process.env, CI: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          `正式构建浏览器测试的桌面 Web 构建失败（exit ${code}）。\n${output}`,
+        ),
+      );
+    });
+  });
+}
+
+type FormalBrowserResult = {
+  source?: {
+    sourcePage?: number;
+    realPdfRendered?: boolean;
+    formalStylesLoaded?: boolean;
+    scrollTop?: number;
+  };
+  reopened?: { reopened?: boolean; firstPageRendered?: boolean };
+  narrow?: {
+    lazyPage?: number;
+    realLazyPageRendered?: boolean;
+    panelVisible?: boolean;
+    scrollTop?: number;
+  };
+  mindmap?: { mindmapVisible?: boolean; contentVisible?: boolean };
+};
+
+let formalBrowserPromise: Promise<FormalBrowserResult> | null = null;
+
+function runFormalBrowserBehavior(): Promise<FormalBrowserResult> {
+  if (!formalBrowserPromise) {
+    formalBrowserPromise = (async () => {
+      const temporary = await mkdtemp(
+        path.join(os.tmpdir(), 'yeyu-formal-shared-viewer-'),
+      );
+      try {
+        const packageManager =
+          process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+        await runCommand(packageManager, ['desktop:web'], demoRoot);
+        const pdf = createFormalMultiPagePdf();
+        const server = await startFormalShareServer(
+          path.join(demoRoot, 'dist', 'client'),
+          pdf,
+        );
+        try {
+          const launched = await launchBrowserRegression(
+            server.url,
+            temporary,
+            formalBrowserMain,
+          );
+          const result = launched.result as {
+            ok: boolean;
+            source?: FormalBrowserResult['source'];
+            reopened?: FormalBrowserResult['reopened'];
+            narrow?: FormalBrowserResult['narrow'];
+            mindmap?: FormalBrowserResult['mindmap'];
+            error?: string;
+          };
+          assert.equal(result.ok, true, result.error ?? launched.stdout);
+          return result;
+        } finally {
+          await server.close();
+        }
+      } finally {
+        await rm(temporary, { recursive: true, force: true });
+      }
+    })();
+  }
+  return formalBrowserPromise;
+}
+
 void test(
   'shared source links scroll the actual rendered PDF page',
   { skip: noDisplay },
@@ -821,5 +1341,24 @@ void test(
     const results = await runBrowserBehavior();
     assert.equal(results[5]?.latePdfIgnored, true);
     assert.equal(results[5]?.selectedCourse, '课程 B');
+  },
+);
+
+void test(
+  'formal build browser flow renders real PDF.js pages and narrow artifacts',
+  { skip: noDisplay },
+  async () => {
+    const result = await runFormalBrowserBehavior();
+    assert.equal(result.source?.sourcePage, 3);
+    assert.equal(result.source?.realPdfRendered, true);
+    assert.equal(result.source?.formalStylesLoaded, true);
+    assert.ok(Number(result.source?.scrollTop) > 0);
+    assert.equal(result.reopened?.firstPageRendered, true);
+    assert.equal(result.narrow?.lazyPage, 6);
+    assert.equal(result.narrow?.realLazyPageRendered, true);
+    assert.equal(result.narrow?.panelVisible, true);
+    assert.ok(Number(result.narrow?.scrollTop) > 0);
+    assert.equal(result.mindmap?.mindmapVisible, true);
+    assert.equal(result.mindmap?.contentVisible, true);
   },
 );
