@@ -104,8 +104,10 @@ import {
   resolvePageTranslation,
   saveReaderSettings,
   usingRemoteProvider,
+  type CachedTranslation,
   type ReaderSettings,
 } from '@/lib/reader-cache';
+import { publishCachedTranslation } from '@/lib/shared-translation';
 import {
   clampPage,
   fillColumnPageWidth,
@@ -618,6 +620,24 @@ function PdfReader({
     [],
   );
 
+  const publishCourseTranslation = useCallback(
+    (cached: CachedTranslation) => {
+      const storage = courseContext?.storage;
+      const documentId = courseContext?.document.id;
+      if (!storage?.publishTranslation || !documentId) return;
+      // The built-in provider is a UI demo and must never become a shared
+      // course artifact. Standalone PDFs have no course storage and also stop
+      // here, so temporary reader data remains local.
+      if (cached.provider === 'mock') return;
+      void publishCachedTranslation(storage, cached, documentId).catch(() => {
+        // A transient publish failure must not turn a completed local
+        // translation into a failed translation. The explicit migration
+        // action reports failures to the user.
+      });
+    },
+    [courseContext?.document.id, courseContext?.storage],
+  );
+
   const translationStatesRef = useRef<Record<string, PageTranslationState>>({});
   const updateTranslationState = useCallback(
     (key: string, state: PageTranslationState) => {
@@ -1049,6 +1069,7 @@ function PdfReader({
           },
         });
         if (cancelled) return;
+        publishCourseTranslation(outcome.cacheEntry);
         updateTranslationState(key, {
           status: outcome.status,
           paragraphs: outcome.result.paragraphs,
@@ -1077,6 +1098,7 @@ function PdfReader({
     retryToken,
     translationKey,
     updateTranslationState,
+    publishCourseTranslation,
   ]);
 
   const retranslate = () => {
@@ -1215,7 +1237,7 @@ function PdfReader({
           );
           if (normalized.text.trim().length === 0 || controller.signal.aborted)
             return;
-          await resolvePageTranslation({
+          const outcome = await resolvePageTranslation({
             provider,
             cache: serviceRef.current!.cache,
             fingerprint: docMeta.fingerprint,
@@ -1228,6 +1250,7 @@ function PdfReader({
             signal: controller.signal,
           });
           if (!controller.signal.aborted) {
+            publishCourseTranslation(outcome.cacheEntry);
             completed = true;
             setPrefetchedTranslationPage(nextPage);
           }
@@ -1243,7 +1266,15 @@ function PdfReader({
       controller.abort();
       if (!completed) prefetchedTranslations.delete(identity);
     };
-  }, [pdfDoc, docMeta, isReady, translationPage, targetLanguage, retryToken]);
+  }, [
+    pdfDoc,
+    docMeta,
+    isReady,
+    translationPage,
+    targetLanguage,
+    retryToken,
+    publishCourseTranslation,
+  ]);
 
   const openSettings = (tab: SettingsTab = 'translation') => {
     setSettingsTab(tab);

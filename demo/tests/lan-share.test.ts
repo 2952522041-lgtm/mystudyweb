@@ -279,6 +279,142 @@ async function addEmptyCourse(layoutRoot: string, name: string, id: string) {
   );
 }
 
+function publishedTranslation(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    schemaVersion: 1,
+    documentId: fixture.document.id,
+    fingerprint: fixture.document.fingerprint,
+    pageNumber: 2,
+    sourceHash: 'a'.repeat(64),
+    targetLanguage: '简体中文',
+    provider: 'openai-compatible',
+    model: 'test-model',
+    promptVersion: 4,
+    paragraphs: ['这是已发布的译文。'],
+    updatedAt: '2026-09-10T01:00:00.000Z',
+    ...overrides,
+  };
+}
+
+void test('LAN share exposes only authenticated, valid published translations', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-lan-share-'));
+  const client = await mkdtemp(path.join(os.tmpdir(), 'yeyu-share-client-'));
+  const outside = await mkdtemp(path.join(os.tmpdir(), 'yeyu-share-outside-'));
+  const fixture = await createFixture(root);
+  const courseRoot = path.join(
+    fixture.layout.coursesRoot,
+    fixture.directoryName,
+  );
+  await writeCourseFile(
+    fixture.layout.coursesRoot,
+    fixture.directoryName,
+    ['Translations', fixture.document.id, 'valid.json'],
+    new TextEncoder().encode(JSON.stringify(publishedTranslation(fixture))),
+  );
+  await writeCourseFile(
+    fixture.layout.coursesRoot,
+    fixture.directoryName,
+    ['Translations', fixture.document.id, 'corrupt.json'],
+    Buffer.from('{not-json'),
+  );
+  await writeCourseFile(
+    fixture.layout.coursesRoot,
+    fixture.directoryName,
+    ['Translations', fixture.document.id, 'wrong-document.json'],
+    new TextEncoder().encode(
+      JSON.stringify(
+        publishedTranslation(fixture, {
+          documentId: 'another-document',
+        }),
+      ),
+    ),
+  );
+  await writeCourseFile(
+    fixture.layout.coursesRoot,
+    fixture.directoryName,
+    ['Translations', fixture.document.id, 'demo.json'],
+    new TextEncoder().encode(
+      JSON.stringify(publishedTranslation(fixture, { provider: 'mock' })),
+    ),
+  );
+  await writeCourseFile(
+    fixture.layout.coursesRoot,
+    fixture.directoryName,
+    ['Translations', fixture.document.id, 'oversized.json'],
+    new TextEncoder().encode(
+      JSON.stringify(
+        publishedTranslation(fixture, {
+          paragraphs: ['x'.repeat(200_001)],
+        }),
+      ),
+    ),
+  );
+  await writeFile(
+    path.join(outside, 'secret.json'),
+    JSON.stringify({ secret: true }),
+  );
+  await symlink(
+    path.join(outside, 'secret.json'),
+    path.join(courseRoot, 'Translations', fixture.document.id, 'linked.json'),
+  );
+  await writeFile(path.join(client, 'index.html'), 'share');
+  const server = new LanShareServer(fixture.layout, client, {
+    host: '127.0.0.1',
+  });
+  try {
+    const started = await server.start('翻译读取-abcdef', 0);
+    const translationPath = `/api/share/courses/${encodeURIComponent(fixture.manifest.id)}/documents/${encodeURIComponent(fixture.document.id)}/translations`;
+    assert.equal((await request(started.port!, translationPath)).status, 401);
+    const login = await request(started.port!, '/api/share/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: '翻译读取-abcdef' }),
+    });
+    assert.equal(login.status, 200);
+    const cookie = cookieFrom(login);
+    const response = await request(started.port!, translationPath, { cookie });
+    assert.equal(response.status, 200);
+    const payload = json<{ translations: Array<Record<string, unknown>> }>(
+      response,
+    );
+    assert.equal(payload.translations.length, 1);
+    assert.deepEqual(payload.translations[0]?.paragraphs, [
+      '这是已发布的译文。',
+    ]);
+    assert.doesNotMatch(
+      response.body.toString('utf8'),
+      /secret|sourceText|ocr|apiKey|chat/iu,
+    );
+    assert.equal(
+      (
+        await request(started.port!, translationPath, {
+          method: 'POST',
+          cookie,
+          body: '{}',
+        })
+      ).status,
+      405,
+    );
+    const filtered = await request(
+      started.port!,
+      `${translationPath}?language=${encodeURIComponent('日本語')}`,
+      { cookie },
+    );
+    assert.equal(filtered.status, 200);
+    assert.deepEqual(
+      json<{ translations: unknown[] }>(filtered).translations,
+      [],
+    );
+  } finally {
+    await server.stop();
+    await rm(root, { recursive: true, force: true });
+    await rm(client, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
 void test('LAN share authenticates every data endpoint and reads Chinese files', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-lan-share-'));
   const client = await mkdtemp(path.join(os.tmpdir(), 'yeyu-share-client-'));

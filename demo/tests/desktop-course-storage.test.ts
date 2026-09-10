@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,7 +19,20 @@ import {
 } from '../electron/workspace.ts';
 import { resolveWorkspaceLayout } from '../electron/workspace-paths.ts';
 import { DesktopCourseStorage } from '../lib/course-storage/desktop-course-storage.ts';
-import type { DocumentDigest, ImportOptions } from '../lib/course-storage/types.ts';
+import {
+  publishCachedTranslation,
+  sharedTranslationFromCache,
+  type SharedTranslationRecord,
+} from '../lib/shared-translation.ts';
+import {
+  createMemoryStore,
+  createTranslationCache,
+  type CachedTranslation,
+} from '../lib/reader-cache.ts';
+import type {
+  DocumentDigest,
+  ImportOptions,
+} from '../lib/course-storage/types.ts';
 
 /** 用真实的 workspace 文件层模拟主进程 IPC，验证 DesktopCourseStorage 端到端行为。 */
 class FakeWorkspaceApi implements YeyuDesktopApi {
@@ -65,11 +79,7 @@ class FakeWorkspaceApi implements YeyuDesktopApi {
     );
   }
 
-  writeFile(
-    courseDirectory: string,
-    relativePath: string[],
-    data: Uint8Array,
-  ) {
+  writeFile(courseDirectory: string, relativePath: string[], data: Uint8Array) {
     return writeCourseFile(
       this.layout.coursesRoot,
       courseDirectory,
@@ -136,6 +146,26 @@ function pdfFile(name = '讲义.pdf', body = 'fake-pdf-bytes'): File {
   return new File([new TextEncoder().encode(body)], name, {
     type: 'application/pdf',
   });
+}
+
+async function snapshotFiles(root: string): Promise<Record<string, string>> {
+  const snapshot: Record<string, string> = {};
+  const visit = async (directory: string, prefix: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const relative = prefix ? path.join(prefix, entry.name) : entry.name;
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(fullPath, relative);
+      } else if (entry.isFile()) {
+        snapshot[relative] = createHash('sha256')
+          .update(await readFile(fullPath))
+          .digest('hex');
+      }
+    }
+  };
+  await visit(root, '');
+  return snapshot;
 }
 
 void test('desktop storage initialize writes a recoverable course bundle', async () => {
@@ -220,15 +250,13 @@ void test('desktop storage import, scan recovery, conflict and history', async (
 
     // 重复导入同一指纹会被拒绝。
     await assert.rejects(
-      () =>
-        storage.importDocument(pdfFile(), digest, importOptions, 1),
+      () => storage.importDocument(pdfFile(), digest, importOptions, 1),
       /已经在课程中/,
     );
 
     // revision 冲突保护。
     await assert.rejects(
-      () =>
-        storage.mergeDocument(result.document.id, 0),
+      () => storage.mergeDocument(result.document.id, 0),
       /外部修改/,
     );
 
@@ -259,8 +287,127 @@ void test('desktop storage refuses to write artifact content that embeds keys', 
     });
     await assert.rejects(
       () =>
-        storage.importDocument(pdfFile(), leaky, importOptions, initial.manifest.revision),
+        storage.importDocument(
+          pdfFile(),
+          leaky,
+          importOptions,
+          initial.manifest.revision,
+        ),
       /服务密钥/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('desktop storage publishes versioned translations without changing course artifacts', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-translations-'));
+  try {
+    const api = new FakeWorkspaceApi(root);
+    await api.getWorkspaceInfo();
+    const { directoryName } = await api.createCourseDirectory('翻译课程');
+    const storage = new DesktopCourseStorage(api, directoryName);
+    const initial = await storage.initialize('翻译课程');
+    const digest = makeDigest({
+      documentId: 'doc-translation000001',
+      fingerprint: 'fingerprint-translation000001',
+      sourcePages: [1, 2],
+    });
+    const imported = await storage.importDocument(
+      pdfFile('翻译讲义.pdf'),
+      digest,
+      importOptions,
+      initial.manifest.revision,
+    );
+    const courseRoot = path.join(
+      resolveWorkspaceLayout(root).coursesRoot,
+      directoryName,
+    );
+    const before = await snapshotFiles(courseRoot);
+    const cache =
+      createTranslationCache(createMemoryStore<CachedTranslation>());
+    await cache.save({
+      key: '',
+      fingerprint: digest.fingerprint,
+      pageNumber: 1,
+      sourceHash: '1'.repeat(64),
+      paragraphs: ['第一页缓存译文。'],
+      targetLanguage: '简体中文',
+      provider: 'test-provider',
+      model: 'test-model',
+      updatedAt: '2026-09-10T02:00:00.000Z',
+    });
+    await cache.save({
+      key: '',
+      fingerprint: digest.fingerprint,
+      pageNumber: 2,
+      sourceHash: '2'.repeat(64),
+      paragraphs: ['第二页日本語译文。'],
+      targetLanguage: '日本語',
+      provider: 'test-provider',
+      model: 'test-model',
+      updatedAt: '2026-09-10T02:01:00.000Z',
+    });
+    const cached = await cache.list();
+    assert.equal(cached.length, 2, '缓存命中后应可枚举待发布译文');
+    await Promise.all(
+      cached.map((entry) =>
+        publishCachedTranslation(storage, entry, digest.documentId),
+      ),
+    );
+    // Repeating the operation overwrites the same hashed records and does not
+    // create duplicate files or change course revision/artifacts.
+    await storage.publishTranslation(
+      digest.documentId,
+      sharedTranslationFromCache(cached[0]!, digest.documentId),
+    );
+    const after = await snapshotFiles(courseRoot);
+    const existingAfter = Object.fromEntries(
+      Object.entries(after).filter(
+        ([file]) => !file.startsWith('Translations/'),
+      ),
+    );
+    assert.deepEqual(existingAfter, before);
+    const translationFiles = Object.keys(after).filter((file) =>
+      file.startsWith('Translations/'),
+    );
+    assert.equal(translationFiles.length, 2);
+    assert.equal(
+      (await storage.load()).manifest.revision,
+      imported.bundle.manifest.revision,
+    );
+    for (const file of translationFiles) {
+      const record = JSON.parse(
+        await readFile(path.join(courseRoot, file), 'utf8'),
+      ) as SharedTranslationRecord;
+      assert.equal(record.documentId, digest.documentId);
+      assert.equal(record.fingerprint, digest.fingerprint);
+      for (const forbidden of [
+        'sourceText',
+        'ocrImage',
+        'apiKey',
+        'conversation',
+      ]) {
+        assert.equal(
+          Object.prototype.hasOwnProperty.call(record, forbidden),
+          false,
+          `译文记录不应包含 ${forbidden}`,
+        );
+      }
+    }
+    await assert.rejects(
+      () =>
+        storage.publishTranslation(
+          digest.documentId,
+          sharedTranslationFromCache(
+            {
+              ...cached[0]!,
+              provider: 'mock',
+            },
+            digest.documentId,
+          ),
+        ),
+      /演示译文不能发布/,
     );
   } finally {
     await rm(root, { recursive: true, force: true });

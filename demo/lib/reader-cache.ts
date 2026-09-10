@@ -109,6 +109,8 @@ export interface CachedTranslation {
   provider: string;
   model: string;
   updatedAt: string;
+  /** Added after the original IndexedDB format; old records default to v4. */
+  promptVersion?: number;
 }
 
 export interface TranslationCache {
@@ -121,6 +123,23 @@ export interface TranslationCache {
     model: string;
   }): Promise<CachedTranslation | undefined>;
   save(input: CachedTranslation): Promise<void>;
+  list(): Promise<CachedTranslation[]>;
+}
+
+function isCachedTranslation(value: unknown): value is CachedTranslation {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<CachedTranslation>;
+  return (
+    typeof candidate.key === 'string' &&
+    typeof candidate.fingerprint === 'string' &&
+    typeof candidate.pageNumber === 'number' &&
+    typeof candidate.sourceHash === 'string' &&
+    Array.isArray(candidate.paragraphs) &&
+    typeof candidate.targetLanguage === 'string' &&
+    typeof candidate.provider === 'string' &&
+    typeof candidate.model === 'string' &&
+    typeof candidate.updatedAt === 'string'
+  );
 }
 
 /**
@@ -149,6 +168,12 @@ export function createTranslationCache(
     async save(input) {
       const key = storageKey(input);
       await store.set(key, { ...input, key });
+    },
+    async list() {
+      const values = await Promise.all(
+        (await store.keys()).map((key) => store.get(key)),
+      );
+      return values.filter(isCachedTranslation);
     },
   };
 }
@@ -194,6 +219,7 @@ export function createReaderService(options?: {
 export interface PageTranslationOutcome {
   status: 'cached' | 'complete';
   result: TranslationResult;
+  cacheEntry: CachedTranslation;
 }
 
 /**
@@ -238,6 +264,7 @@ export async function resolvePageTranslation(input: {
           provider: hit.provider,
           model: hit.model,
         },
+        cacheEntry: hit,
       };
     }
   }
@@ -246,7 +273,7 @@ export async function resolvePageTranslation(input: {
     signal,
     onPartial,
   });
-  await cache.save({
+  const cacheEntry: CachedTranslation = {
     key: translationCacheKey({
       sourceHash,
       targetLanguage: request.targetLanguage,
@@ -262,8 +289,10 @@ export async function resolvePageTranslation(input: {
     provider: result.provider,
     model: result.model,
     updatedAt: new Date().toISOString(),
-  });
-  return { status: 'complete', result };
+    promptVersion: PROMPT_VERSION,
+  };
+  await cache.save(cacheEntry);
+  return { status: 'complete', result, cacheEntry };
 }
 
 export interface ReaderSettings {

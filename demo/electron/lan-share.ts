@@ -5,7 +5,7 @@ import path from 'node:path';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 
 import type { LanShareStatus } from './api.ts';
-import { readCourseFile, scanCourses } from './workspace.ts';
+import { listCourseFiles, readCourseFile, scanCourses } from './workspace.ts';
 import type { DesktopCourseManifest, DesktopCourseSummary } from './api.ts';
 import {
   assertSafeRelativeSegments,
@@ -19,6 +19,9 @@ const MAX_LOGIN_BODY_BYTES = 4096;
 const LOGIN_WINDOW_MS = 5 * 60 * 1000;
 const LOGIN_BLOCK_MS = 30 * 1000;
 const MAX_LOGIN_FAILURES = 5;
+const MAX_TRANSLATION_FILES = 2000;
+const MAX_TRANSLATION_RESPONSE_BYTES = 4 * 1024 * 1024;
+const SHARED_TRANSLATION_MAX_BYTES = 512 * 1024;
 const SESSION_COOKIE = 'yeyu_share_session';
 
 interface LoginAttempt {
@@ -31,6 +34,20 @@ interface ShareSession {
   expiresAt: number;
 }
 
+interface PublishedTranslationRecord {
+  schemaVersion: 1;
+  documentId: string;
+  fingerprint: string;
+  pageNumber: number;
+  sourceHash: string;
+  targetLanguage: string;
+  provider: string;
+  model: string;
+  promptVersion: number;
+  paragraphs: string[];
+  updatedAt: string;
+}
+
 interface LanShareOptions {
   sessionTtlMs?: number;
   now?: () => number;
@@ -40,6 +57,7 @@ interface LanShareOptions {
 
 interface ShareDocument {
   id: string;
+  fingerprint: string;
   fileName: string;
   storedFileName: string;
   pageCount: number;
@@ -334,6 +352,7 @@ function isShareDocument(value: unknown): value is ShareDocument {
   if (!isRecord(value)) return false;
   return (
     typeof value.id === 'string' &&
+    typeof value.fingerprint === 'string' &&
     typeof value.fileName === 'string' &&
     typeof value.storedFileName === 'string' &&
     typeof value.pageCount === 'number' &&
@@ -436,7 +455,19 @@ function publicManifest(
     createdAt: manifest.createdAt,
     updatedAt: manifest.updatedAt,
     activeKnowledgeVersion: manifest.activeKnowledgeVersion,
-    documents,
+    documents: documents.map((document) => ({
+      id: document.id,
+      fingerprint: document.fingerprint,
+      fileName: document.fileName,
+      storedFileName: document.storedFileName,
+      pageCount: document.pageCount,
+      status: document.status,
+      includedInCourse: document.includedInCourse,
+      hasSummary: document.hasSummary,
+      hasMindmap: document.hasMindmap,
+      importedAt: document.importedAt,
+      updatedAt: document.updatedAt,
+    })),
   };
 }
 
@@ -766,6 +797,56 @@ export class LanShareServer {
     }
   }
 
+  private async readPublishedTranslations(
+    course: ShareCourse,
+    document: ShareDocument,
+    language: string | null,
+  ): Promise<PublishedTranslationRecord[]> {
+    if (language !== null && (language.length === 0 || language.length > 128)) {
+      throw new WorkspacePathError('INVALID_NAME', '目标语言参数不合法。');
+    }
+    const files = await listCourseFiles(
+      this.layout.coursesRoot,
+      course.directoryName,
+      ['Translations', document.id],
+    );
+    const translations: PublishedTranslationRecord[] = [];
+    let responseBytes = 0;
+    for (const fileName of files.slice(0, MAX_TRANSLATION_FILES)) {
+      if (!fileName.endsWith('.json')) continue;
+      let data: Uint8Array;
+      try {
+        data = await readCourseFile(
+          this.layout.coursesRoot,
+          course.directoryName,
+          ['Translations', document.id, fileName],
+        );
+      } catch {
+        continue;
+      }
+      if (data.byteLength > SHARED_TRANSLATION_MAX_BYTES) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(new TextDecoder().decode(data)) as unknown;
+      } catch {
+        continue;
+      }
+      const valid = validatePublishedTranslation(parsed, {
+        documentId: document.id,
+        fingerprint: document.fingerprint,
+        pageCount: document.pageCount,
+      });
+      if (!valid || valid.provider === 'mock') continue;
+      if (language !== null && valid.targetLanguage !== language) continue;
+      const encoded = JSON.stringify(translationPublicValue(valid));
+      responseBytes += Buffer.byteLength(encoded, 'utf8');
+      if (responseBytes > MAX_TRANSLATION_RESPONSE_BYTES) break;
+      translations.push(valid);
+    }
+    translations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return translations;
+  }
+
   private async handleCourseApi(
     request: IncomingMessage,
     response: ServerResponse,
@@ -830,6 +911,41 @@ export class LanShareServer {
     const document = course.documents.find((item) => item.id === documentId);
     if (!document) {
       sendJson(response, 404, { error: '这份 PDF 不存在，可能已被删除。' });
+      return;
+    }
+    if (parts[3] === 'translations') {
+      if (parts.length !== 4) {
+        sendJson(response, 404, { error: '资料接口不存在。' });
+        return;
+      }
+      try {
+        const translations = await this.readPublishedTranslations(
+          course,
+          document,
+          url.searchParams.get('language'),
+        );
+        sendJson(response, 200, {
+          translations: translations.map(translationPublicValue),
+        });
+      } catch (error) {
+        if (
+          error instanceof WorkspacePathError &&
+          error.code === 'INVALID_NAME'
+        ) {
+          sendJson(response, 400, { error: error.message });
+        } else if (
+          error instanceof WorkspacePathError &&
+          error.code === 'PATH_ESCAPE'
+        ) {
+          sendJson(response, 403, {
+            error: '译文目录包含不安全的符号链接，已拒绝访问。',
+          });
+        } else {
+          sendJson(response, 404, {
+            error: '译文目录暂时无法读取，请刷新后重试。',
+          });
+        }
+      }
       return;
     }
     if (parts[3] === 'file') {
@@ -1009,4 +1125,94 @@ export class LanShareServer {
     }
     await this.serveClient(request, response, url.pathname);
   }
+}
+
+function validatePublishedTranslation(
+  value: unknown,
+  expected: { documentId: string; fingerprint: string; pageCount: number },
+): PublishedTranslationRecord | null {
+  if (!isRecord(value)) return null;
+  const record = value;
+  const allowed = new Set([
+    'schemaVersion',
+    'documentId',
+    'fingerprint',
+    'pageNumber',
+    'sourceHash',
+    'targetLanguage',
+    'provider',
+    'model',
+    'promptVersion',
+    'paragraphs',
+    'updatedAt',
+  ]);
+  const bounded = (item: unknown, maximum: number): item is string =>
+    typeof item === 'string' && item.length > 0 && item.length <= maximum;
+  const integer = (item: unknown): item is number =>
+    typeof item === 'number' && Number.isInteger(item);
+  if (Object.keys(record).some((key) => !allowed.has(key))) return null;
+  if (
+    record.schemaVersion !== 1 ||
+    !bounded(record.documentId, 256) ||
+    !bounded(record.fingerprint, 256) ||
+    record.documentId !== expected.documentId ||
+    record.fingerprint !== expected.fingerprint ||
+    !bounded(record.sourceHash, 128) ||
+    !/^[a-f0-9]{64}$/i.test(record.sourceHash) ||
+    !bounded(record.targetLanguage, 128) ||
+    !bounded(record.provider, 128) ||
+    !bounded(record.model, 256) ||
+    !integer(record.pageNumber) ||
+    record.pageNumber < 1 ||
+    record.pageNumber > expected.pageCount ||
+    !integer(record.promptVersion) ||
+    record.promptVersion < 1 ||
+    record.promptVersion > 10_000 ||
+    !Array.isArray(record.paragraphs) ||
+    record.paragraphs.length === 0 ||
+    record.paragraphs.length > 200 ||
+    !bounded(record.updatedAt, 64) ||
+    !Number.isFinite(Date.parse(record.updatedAt))
+  ) {
+    return null;
+  }
+  let totalLength = 0;
+  for (const paragraph of record.paragraphs) {
+    if (!bounded(paragraph, 20_000)) return null;
+    totalLength += paragraph.length;
+    if (totalLength > 200_000) return null;
+  }
+  return {
+    schemaVersion: 1,
+    documentId: record.documentId,
+    fingerprint: record.fingerprint,
+    pageNumber: record.pageNumber,
+    sourceHash: record.sourceHash,
+    targetLanguage: record.targetLanguage,
+    provider: record.provider,
+    model: record.model,
+    promptVersion: record.promptVersion,
+    paragraphs: [...record.paragraphs],
+    updatedAt: record.updatedAt,
+  };
+}
+
+function translationPublicValue(
+  value: PublishedTranslationRecord,
+): PublishedTranslationRecord {
+  // Keep the response as the same closed presentation schema stored on disk.
+  // In particular, never add source text, OCR payloads, or local settings.
+  return {
+    schemaVersion: value.schemaVersion,
+    documentId: value.documentId,
+    fingerprint: value.fingerprint,
+    pageNumber: value.pageNumber,
+    sourceHash: value.sourceHash,
+    targetLanguage: value.targetLanguage,
+    provider: value.provider,
+    model: value.model,
+    promptVersion: value.promptVersion,
+    paragraphs: value.paragraphs,
+    updatedAt: value.updatedAt,
+  };
 }

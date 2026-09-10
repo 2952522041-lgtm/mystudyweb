@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BookOpen,
   CircleAlert,
@@ -314,7 +314,7 @@ export function SharedCourseViewer() {
   const [refreshing, setRefreshing] = useState(false);
   const requestVersionRef = useRef(0);
 
-  const signedOut = (message?: string) => {
+  const signedOut = useCallback((message?: string) => {
     requestVersionRef.current += 1;
     setAuthenticated(false);
     setCourses([]);
@@ -323,7 +323,11 @@ export function SharedCourseViewer() {
     setReader(null);
     setRefreshing(false);
     if (message) setError(message);
-  };
+  }, []);
+  const sessionExpired = useCallback(
+    () => signedOut('登录已过期或共享服务已停止，请重新登录。'),
+    [signedOut],
+  );
 
   const handleRequestError = (requestError: unknown) => {
     if (requestError instanceof SharedApiError && requestError.status === 401) {
@@ -534,11 +538,14 @@ export function SharedCourseViewer() {
       <SharedPdfReader
         file={reader.file}
         fileKey={`${reader.document.id}-${reader.file.size}`}
+        courseId={selectedId!}
+        documentId={reader.document.id}
         digest={detail?.digests[reader.document.id]}
         hasSummary={reader.document.hasSummary}
         hasMindmap={reader.document.hasMindmap}
         initialPage={reader.initialPage}
         onBack={() => setReader(null)}
+        onSessionExpired={sessionExpired}
       />
     );
   }

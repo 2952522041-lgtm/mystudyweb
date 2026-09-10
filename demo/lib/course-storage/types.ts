@@ -206,6 +206,11 @@ export interface CourseStorage {
    * 课程列表记录的清理由调用方负责。
    */
   deleteCourse(): Promise<void>;
+  /** 发布已完成的页面译文；仅桌面固定工作区实现此能力。 */
+  publishTranslation?(
+    documentId: string,
+    translation: import('../shared-translation.ts').SharedTranslationRecord,
+  ): Promise<void>;
 }
 
 export interface DirectoryPermissionDescriptor {
@@ -242,10 +247,7 @@ export interface BrowserDirectoryHandle {
     descriptor?: DirectoryPermissionDescriptor,
   ): Promise<PermissionState>;
   /** 与 FileSystemDirectoryHandle.removeEntry 一致；课程删除需要它。 */
-  removeEntry?(
-    name: string,
-    options?: { recursive?: boolean },
-  ): Promise<void>;
+  removeEntry?(name: string, options?: { recursive?: boolean }): Promise<void>;
   /** 与 FileSystemDirectoryHandle.values 一致；课程删除时枚举条目用。 */
   values?(): AsyncIterable<BrowserFileHandle | BrowserDirectoryHandle>;
 }

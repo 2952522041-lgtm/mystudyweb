@@ -13,10 +13,12 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
+  Languages,
   LoaderCircle,
   Minus,
   Network,
   Plus,
+  RefreshCw,
 } from 'lucide-react';
 
 import { DocumentSummaryPanel } from '@/components/document-summary-panel';
@@ -32,6 +34,8 @@ import {
 } from '@/lib/pdfjs';
 import { itemsFromPdfJs } from '@/lib/pdf-text';
 import { shouldBuildTextLayer, textLayerScale } from '@/lib/pdf-text-layer';
+import { loadSharedTranslations, SharedApiError } from '@/lib/lan-share-api';
+import type { SharedTranslationRecord } from '@/lib/shared-translation';
 
 interface PageSize {
   width: number;
@@ -162,22 +166,204 @@ function documentKnowledge(digest: DocumentDigest) {
   };
 }
 
+function formatTranslationTime(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '时间未知';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function SharedTranslationPanel({
+  courseId,
+  documentId,
+  page,
+  onSessionExpired,
+}: {
+  courseId: string;
+  documentId: string;
+  page: number;
+  onSessionExpired?: () => void;
+}) {
+  const [records, setRecords] = useState<SharedTranslationRecord[]>([]);
+  const [selectedLanguage, setSelectedLanguage] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void loadSharedTranslations(courseId, documentId)
+      .then((payload) => {
+        if (!cancelled) setRecords(payload.translations);
+      })
+      .catch((loadError) => {
+        if (cancelled) return;
+        if (loadError instanceof SharedApiError && loadError.status === 401) {
+          onSessionExpired?.();
+        }
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : '译文暂时无法读取，请刷新后重试。',
+        );
+        setRecords([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [courseId, documentId, refreshToken, onSessionExpired]);
+
+  const languages = useMemo(() => {
+    const seen = new Set<string>();
+    return [...records]
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map((record) => record.targetLanguage)
+      .filter((language) => {
+        if (seen.has(language)) return false;
+        seen.add(language);
+        return true;
+      });
+  }, [records]);
+
+  useEffect(() => {
+    if (languages.length === 0) {
+      setSelectedLanguage('');
+      return;
+    }
+    let recent = '';
+    try {
+      recent =
+        window.localStorage.getItem(
+          `yeyu-shared-translation-language:${documentId}`,
+        ) ?? '';
+    } catch {
+      // Browser storage can be disabled; most recently updated remains valid.
+    }
+    setSelectedLanguage(
+      recent && languages.includes(recent) ? recent : languages[0]!,
+    );
+  }, [documentId, languages]);
+
+  const current = records.find(
+    (record) =>
+      record.pageNumber === page && record.targetLanguage === selectedLanguage,
+  );
+
+  const selectLanguage = (language: string) => {
+    setSelectedLanguage(language);
+    try {
+      window.localStorage.setItem(
+        `yeyu-shared-translation-language:${documentId}`,
+        language,
+      );
+    } catch {
+      // The choice is still applied for this session.
+    }
+  };
+
+  return (
+    <section className="flex min-h-0 flex-col" aria-label="页面翻译面板">
+      <div className="flex items-center gap-2 border-b border-slate-200/80 px-5 py-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold text-slate-800">页面翻译</p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            只显示主电脑已经完成并发布的译文。
+          </p>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label="刷新译文"
+          onClick={() => setRefreshToken((value) => value + 1)}
+          disabled={loading}
+        >
+          <RefreshCw className={loading ? 'animate-spin' : undefined} />
+        </Button>
+      </div>
+      {languages.length > 0 ? (
+        <label className="flex items-center gap-2 px-5 py-3 text-xs text-slate-600">
+          <span className="shrink-0">目标语言</span>
+          <select
+            aria-label="译文目标语言"
+            className="min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-800"
+            value={selectedLanguage}
+            onChange={(event) => selectLanguage(event.target.value)}
+          >
+            {languages.map((language) => (
+              <option key={language} value={language}>
+                {language}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+        {loading ? (
+          <div className="flex min-h-40 items-center justify-center text-xs text-slate-500">
+            <LoaderCircle className="mr-2 size-4 animate-spin" /> 正在读取译文…
+          </div>
+        ) : error ? (
+          <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-3 text-xs leading-5 text-rose-700">
+            {error}
+          </p>
+        ) : !current ? (
+          <div className="flex min-h-40 flex-col items-center justify-center px-3 text-center">
+            <Languages className="size-7 text-slate-300" />
+            <p className="mt-3 text-sm font-medium text-slate-700">
+              主电脑尚未翻译第 {page} 页
+            </p>
+            <p className="mt-2 text-xs leading-5 text-slate-500">
+              主电脑完成翻译并发布后，点击“刷新译文”即可查看。
+            </p>
+          </div>
+        ) : (
+          <article className="translation-copy pt-1">
+            <p className="mb-4 text-[11px] text-slate-500">
+              {current.targetLanguage} ·{' '}
+              {formatTranslationTime(current.updatedAt)}
+              {current.model ? ` · ${current.model}` : ''}
+            </p>
+            {current.paragraphs.map((paragraph, index) => (
+              <p key={`${current.sourceHash}-${index}`}>{paragraph}</p>
+            ))}
+          </article>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export function SharedPdfReader({
   file,
   fileKey,
+  courseId,
+  documentId,
   digest,
   hasSummary,
   hasMindmap,
   initialPage = 1,
   onBack,
+  onSessionExpired,
 }: {
   file: File;
   fileKey: string;
+  courseId: string;
+  documentId: string;
   digest?: DocumentDigest;
   hasSummary: boolean;
   hasMindmap: boolean;
   initialPage?: number;
   onBack: () => void;
+  onSessionExpired?: () => void;
 }) {
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [pageSizes, setPageSizes] = useState<PageSize[]>([]);
@@ -188,8 +374,8 @@ export function SharedPdfReader({
   const [visiblePages, setVisiblePages] = useState<Set<number>>(
     () => new Set([initialPage]),
   );
-  const [panel, setPanel] = useState<'summary' | 'mindmap'>(
-    hasSummary ? 'summary' : 'mindmap',
+  const [panel, setPanel] = useState<'summary' | 'mindmap' | 'translation'>(
+    hasSummary ? 'summary' : hasMindmap ? 'mindmap' : 'translation',
   );
   const stageRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLElement>());
@@ -334,6 +520,10 @@ export function SharedPdfReader({
     }
     if (closest !== page) setPage(closest);
   };
+
+  const hasArtifactPanel = Boolean(digest && (hasSummary || hasMindmap));
+  const hasTranslationPanel = Boolean(courseId && documentId);
+  const panelContent = hasArtifactPanel || hasTranslationPanel;
 
   return (
     <main className="flex h-screen min-h-[620px] flex-col overflow-hidden bg-background text-foreground">
@@ -526,11 +716,11 @@ export function SharedPdfReader({
                 只读查看，不会触发生成或上传。
               </p>
             </div>
-            {digest && (hasSummary || hasMindmap) ? (
+            {panelContent ? (
               <Tabs
                 value={panel}
                 onValueChange={(value) =>
-                  setPanel(value as 'summary' | 'mindmap')
+                  setPanel(value as 'summary' | 'mindmap' | 'translation')
                 }
                 className="min-h-0 flex-1 gap-0"
               >
@@ -545,6 +735,11 @@ export function SharedPdfReader({
                       <Network /> PDF 脑图
                     </TabsTrigger>
                   ) : null}
+                  {hasTranslationPanel ? (
+                    <TabsTrigger value="translation">
+                      <Languages /> 页面翻译
+                    </TabsTrigger>
+                  ) : null}
                 </TabsList>
                 {hasSummary ? (
                   <TabsContent
@@ -552,7 +747,7 @@ export function SharedPdfReader({
                     className="min-h-0 overflow-y-auto data-[hidden]:hidden"
                   >
                     <DocumentSummaryPanel
-                      digest={digest}
+                      digest={digest!}
                       onOpenSource={goToPage}
                     />
                   </TabsContent>
@@ -563,8 +758,21 @@ export function SharedPdfReader({
                     className="min-h-0 overflow-y-auto data-[hidden]:hidden"
                   >
                     <KnowledgeMindmap
-                      knowledge={documentKnowledge(digest)}
+                      knowledge={documentKnowledge(digest!)}
                       onOpenSource={(_, sourcePage) => goToPage(sourcePage)}
+                    />
+                  </TabsContent>
+                ) : null}
+                {hasTranslationPanel ? (
+                  <TabsContent
+                    value="translation"
+                    className="min-h-0 overflow-y-auto data-[hidden]:hidden"
+                  >
+                    <SharedTranslationPanel
+                      courseId={courseId}
+                      documentId={documentId}
+                      page={page}
+                      onSessionExpired={onSessionExpired}
                     />
                   </TabsContent>
                 ) : null}
@@ -589,14 +797,14 @@ export function SharedPdfReader({
           <div className="border-b border-slate-200/80 px-5 py-3">
             <p className="text-xs font-semibold text-slate-800">已有成果</p>
             <p className="mt-1 text-[11px] text-slate-500">
-              窄窗口可在下方切换查看 PDF 总结或脑图。
+              窄窗口可在下方切换查看 PDF 总结、脑图或页面翻译。
             </p>
           </div>
-          {digest && (hasSummary || hasMindmap) ? (
+          {panelContent ? (
             <Tabs
               value={panel}
               onValueChange={(value) =>
-                setPanel(value as 'summary' | 'mindmap')
+                setPanel(value as 'summary' | 'mindmap' | 'translation')
               }
               className="min-h-0 flex-1 gap-0"
             >
@@ -611,6 +819,11 @@ export function SharedPdfReader({
                     <Network /> PDF 脑图
                   </TabsTrigger>
                 ) : null}
+                {hasTranslationPanel ? (
+                  <TabsTrigger value="translation">
+                    <Languages /> 页面翻译
+                  </TabsTrigger>
+                ) : null}
               </TabsList>
               {hasSummary ? (
                 <TabsContent
@@ -618,7 +831,7 @@ export function SharedPdfReader({
                   className="max-h-[32vh] overflow-y-auto data-[hidden]:hidden"
                 >
                   <DocumentSummaryPanel
-                    digest={digest}
+                    digest={digest!}
                     onOpenSource={goToPage}
                   />
                 </TabsContent>
@@ -629,8 +842,21 @@ export function SharedPdfReader({
                   className="max-h-[32vh] overflow-y-auto data-[hidden]:hidden"
                 >
                   <KnowledgeMindmap
-                    knowledge={documentKnowledge(digest)}
+                    knowledge={documentKnowledge(digest!)}
                     onOpenSource={(_, sourcePage) => goToPage(sourcePage)}
+                  />
+                </TabsContent>
+              ) : null}
+              {hasTranslationPanel ? (
+                <TabsContent
+                  value="translation"
+                  className="max-h-[32vh] overflow-y-auto data-[hidden]:hidden"
+                >
+                  <SharedTranslationPanel
+                    courseId={courseId}
+                    documentId={documentId}
+                    page={page}
+                    onSessionExpired={onSessionExpired}
                   />
                 </TabsContent>
               ) : null}

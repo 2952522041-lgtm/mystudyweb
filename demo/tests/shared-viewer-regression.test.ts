@@ -602,6 +602,43 @@ async function startMockShareServer(bundle: string) {
       response.end(body);
       return;
     }
+    if (
+      parts.length === 7 &&
+      parts[4] === 'documents' &&
+      parts[6] === 'translations'
+    ) {
+      sendJson(response, 200, {
+        translations: [
+          {
+            schemaVersion: 1,
+            documentId: course.documentId,
+            fingerprint: `${course.id}-fingerprint`,
+            pageNumber: 3,
+            sourceHash: 'a'.repeat(64),
+            targetLanguage: '简体中文',
+            provider: 'test-provider',
+            model: 'test-model',
+            promptVersion: 4,
+            paragraphs: [`${course.name} 第 3 页译文`],
+            updatedAt: '2026-09-10T02:00:00.000Z',
+          },
+          {
+            schemaVersion: 1,
+            documentId: course.documentId,
+            fingerprint: `${course.id}-fingerprint`,
+            pageNumber: 6,
+            sourceHash: 'b'.repeat(64),
+            targetLanguage: '简体中文',
+            provider: 'test-provider',
+            model: 'test-model',
+            promptVersion: 4,
+            paragraphs: [`${course.name} 第 6 页译文`],
+            updatedAt: '2026-09-10T02:01:00.000Z',
+          },
+        ],
+      });
+      return;
+    }
     sendJson(response, 404, { error: '不存在。' });
   });
   await new Promise<void>((resolve, reject) => {
@@ -768,6 +805,35 @@ async function startFormalShareServer(publicDirectory: string, pdf: Buffer) {
       response.setHeader('Content-Type', 'application/pdf');
       response.setHeader('Content-Length', String(pdf.byteLength));
       response.end(pdf);
+      return;
+    }
+    if (
+      parts.length === 7 &&
+      parts[0] === 'api' &&
+      parts[1] === 'share' &&
+      parts[2] === 'courses' &&
+      parts[3] === course.id &&
+      parts[4] === 'documents' &&
+      parts[5] === course.documentId &&
+      parts[6] === 'translations'
+    ) {
+      sendJson(response, 200, {
+        translations: [
+          {
+            schemaVersion: 1,
+            documentId: course.documentId,
+            fingerprint: `${course.id}-fingerprint`,
+            pageNumber: 6,
+            sourceHash: 'c'.repeat(64),
+            targetLanguage: '简体中文',
+            provider: 'formal-test-provider',
+            model: 'formal-test-model',
+            promptVersion: 4,
+            paragraphs: ['正式真实 PDF 第 6 页译文'],
+            updatedAt: '2026-09-10T02:02:00.000Z',
+          },
+        ],
+      });
       return;
     }
     await sendStatic(url.pathname, response);
@@ -947,7 +1013,7 @@ const setup = String.raw\`(() => {
       });
       return { reopened: true, firstPageRendered: true };
     },
-    async zoomAndPrepareNarrowMindmap() {
+    async zoomAndPrepareNarrowPanels() {
       await waitFor('窄窗口视口', () => window.innerWidth <= 800);
       const zoom = document.querySelector('button[aria-label="放大"]');
       if (!(zoom instanceof HTMLElement)) throw new Error('找不到放大按钮');
@@ -960,6 +1026,10 @@ const setup = String.raw\`(() => {
       }
       stage.scrollTo({ top: page.offsetTop, behavior: 'auto' });
       stage.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await waitFor('正式 PDF 当前页更新为第 6 页', () => {
+        const input = document.querySelector('input[inputmode="numeric"]');
+        return input instanceof HTMLInputElement && input.value === '6';
+      });
       await waitFor('正式 PDF 缩放后第 6 页绘制', () => {
         const canvas = document.querySelector('canvas[aria-label="第 6 页内容"]');
         return canvasHasInk(canvas);
@@ -973,15 +1043,94 @@ const setup = String.raw\`(() => {
       if (!visible(mindmapTab) || mindmapTab.hasAttribute('disabled')) {
         throw new Error('窄窗口面板内 PDF 脑图标签不可见或不可点击');
       }
-      const rect = mindmapTab.getBoundingClientRect();
+      const translationTab = [...panel.querySelectorAll('[role="tab"]')].find(
+        (element) => element.textContent?.includes('页面翻译'),
+      );
+      if (!visible(translationTab) || translationTab.hasAttribute('disabled')) {
+        throw new Error('窄窗口面板内页面翻译标签不可见或不可点击');
+      }
+      const mindmapRect = mindmapTab.getBoundingClientRect();
+      const translationRect = translationTab.getBoundingClientRect();
       return {
         lazyPage: 6,
         realLazyPageRendered: true,
         ...position,
-        clickX: rect.left + rect.width / 2,
-        clickY: rect.top + rect.height / 2,
+        translationClickX: translationRect.left + translationRect.width / 2,
+        translationClickY: translationRect.top + translationRect.height / 2,
+        mindmapClickX: mindmapRect.left + mindmapRect.width / 2,
+        mindmapClickY: mindmapRect.top + mindmapRect.height / 2,
         panelVisible: true,
       };
+    },
+    async assertNarrowTranslation() {
+      const panel = document.querySelector('[aria-label="已有课程成果（窄窗口）"]');
+      await waitFor('窄窗口页面翻译加载完成', () =>
+        [...(panel?.querySelectorAll('[role="tabpanel"]') ?? [])].some(
+          (element) =>
+            element.textContent?.includes('正式真实 PDF 第 6 页译文') &&
+            visible(element),
+        ),
+      );
+      const visibleContent = [...(panel?.querySelectorAll('[role="tabpanel"]') ?? [])].find(
+        (element) =>
+          element.textContent?.includes('正式真实 PDF 第 6 页译文') &&
+          visible(element),
+      );
+      if (!visibleContent) {
+        throw new Error(
+          '窄窗口页面翻译内容不可见 page=' +
+            String(document.querySelector('input')?.value) +
+            ' tabs=' +
+            [...(panel?.querySelectorAll('[role="tab"]') ?? [])]
+              .map((element) =>
+                String(element.textContent) + ':' +
+                String(element.getAttribute('aria-selected')),
+              )
+              .join('|') +
+            ' contents=' +
+            [...(panel?.querySelectorAll('[role="tabpanel"]') ?? [])]
+              .map((element) =>
+                String(element.getAttribute('data-state')) + ':' +
+                String(element.textContent?.slice(0, 120)),
+              )
+              .join('|'),
+        );
+      }
+      await waitFor('页面翻译刷新按钮可用', () => {
+        const button = panel?.querySelector('button[aria-label="刷新译文"]');
+        return visible(button) && !button?.hasAttribute('disabled');
+      });
+      const refreshButton = panel?.querySelector('button[aria-label="刷新译文"]');
+      if (!visible(refreshButton) || refreshButton.hasAttribute('disabled')) {
+        throw new Error('页面翻译刷新按钮不可见或不可点击');
+      }
+      const refreshRect = refreshButton.getBoundingClientRect();
+      return {
+        translationVisible: true,
+        page: 6,
+        refreshClickX: refreshRect.left + refreshRect.width / 2,
+        refreshClickY: refreshRect.top + refreshRect.height / 2,
+      };
+    },
+    async assertNarrowTranslationRefresh() {
+      const stage = document.querySelector('[aria-label="PDF 连续阅读画布"]');
+      const pageInput = document.querySelector('input[inputmode="numeric"]');
+      const panel = document.querySelector('[aria-label="已有课程成果（窄窗口）"]');
+      await waitFor('刷新后的窄窗口页面翻译', () =>
+        [...(panel?.querySelectorAll('[role="tabpanel"]') ?? [])].some(
+          (element) =>
+            element.textContent?.includes('正式真实 PDF 第 6 页译文') &&
+            visible(element),
+        ),
+      );
+      if (!(stage instanceof HTMLElement) || !(pageInput instanceof HTMLInputElement)) {
+        throw new Error('刷新后找不到 PDF 阅读状态');
+      }
+      if (pageInput.value !== '6' || !document.body.textContent?.includes('105%')) {
+        throw new Error('刷新译文改变了当前页或缩放状态');
+      }
+      if (stage.scrollTop <= 0) throw new Error('刷新译文改变了 PDF 滚动位置');
+      return { page: 6, zoom: 105, scrollPreserved: true };
     },
     async assertNarrowMindmap() {
       const panel = document.querySelector('[aria-label="已有课程成果（窄窗口）"]');
@@ -1040,12 +1189,20 @@ app.whenReady().then(async () => {
     const reopened = await execute(window, 'window.__formalSharedViewer.reopenDocument()');
     window.setSize(700, 900);
     await sleep(100);
-    const narrow = await execute(window, 'window.__formalSharedViewer.zoomAndPrepareNarrowMindmap()');
-    await window.webContents.sendInputEvent({ type: 'mouseMove', x: narrow.clickX, y: narrow.clickY });
-    await window.webContents.sendInputEvent({ type: 'mouseDown', x: narrow.clickX, y: narrow.clickY, button: 'left', clickCount: 1 });
-    await window.webContents.sendInputEvent({ type: 'mouseUp', x: narrow.clickX, y: narrow.clickY, button: 'left', clickCount: 1 });
+    const narrow = await execute(window, 'window.__formalSharedViewer.zoomAndPrepareNarrowPanels()');
+    await window.webContents.sendInputEvent({ type: 'mouseMove', x: narrow.translationClickX, y: narrow.translationClickY });
+    await window.webContents.sendInputEvent({ type: 'mouseDown', x: narrow.translationClickX, y: narrow.translationClickY, button: 'left', clickCount: 1 });
+    await window.webContents.sendInputEvent({ type: 'mouseUp', x: narrow.translationClickX, y: narrow.translationClickY, button: 'left', clickCount: 1 });
+    const translation = await execute(window, 'window.__formalSharedViewer.assertNarrowTranslation()');
+    await window.webContents.sendInputEvent({ type: 'mouseMove', x: translation.refreshClickX, y: translation.refreshClickY });
+    await window.webContents.sendInputEvent({ type: 'mouseDown', x: translation.refreshClickX, y: translation.refreshClickY, button: 'left', clickCount: 1 });
+    await window.webContents.sendInputEvent({ type: 'mouseUp', x: translation.refreshClickX, y: translation.refreshClickY, button: 'left', clickCount: 1 });
+    const refreshedTranslation = await execute(window, 'window.__formalSharedViewer.assertNarrowTranslationRefresh()');
+    await window.webContents.sendInputEvent({ type: 'mouseMove', x: narrow.mindmapClickX, y: narrow.mindmapClickY });
+    await window.webContents.sendInputEvent({ type: 'mouseDown', x: narrow.mindmapClickX, y: narrow.mindmapClickY, button: 'left', clickCount: 1 });
+    await window.webContents.sendInputEvent({ type: 'mouseUp', x: narrow.mindmapClickX, y: narrow.mindmapClickY, button: 'left', clickCount: 1 });
     const mindmap = await execute(window, 'window.__formalSharedViewer.assertNarrowMindmap()');
-    process.stdout.write(marker + ' ' + JSON.stringify({ ok: true, source, reopened, narrow, mindmap }) + '\\n');
+    process.stdout.write(marker + ' ' + JSON.stringify({ ok: true, source, reopened, narrow, translation, refreshedTranslation, mindmap }) + '\\n');
   } catch (error) {
     exitCode = 1;
     process.stdout.write(marker + ' ' + JSON.stringify({ ok: false, error: String(error) }) + '\\n');
@@ -1237,6 +1394,17 @@ type FormalBrowserResult = {
     panelVisible?: boolean;
     scrollTop?: number;
   };
+  translation?: {
+    translationVisible?: boolean;
+    page?: number;
+    refreshClickX?: number;
+    refreshClickY?: number;
+  };
+  refreshedTranslation?: {
+    page?: number;
+    zoom?: number;
+    scrollPreserved?: boolean;
+  };
   mindmap?: { mindmapVisible?: boolean; contentVisible?: boolean };
 };
 
@@ -1358,6 +1526,11 @@ void test(
     assert.equal(result.narrow?.realLazyPageRendered, true);
     assert.equal(result.narrow?.panelVisible, true);
     assert.ok(Number(result.narrow?.scrollTop) > 0);
+    assert.equal(result.translation?.translationVisible, true);
+    assert.equal(result.translation?.page, 6);
+    assert.equal(result.refreshedTranslation?.page, 6);
+    assert.equal(result.refreshedTranslation?.zoom, 105);
+    assert.equal(result.refreshedTranslation?.scrollPreserved, true);
     assert.equal(result.mindmap?.mindmapVisible, true);
     assert.equal(result.mindmap?.contentVisible, true);
   },

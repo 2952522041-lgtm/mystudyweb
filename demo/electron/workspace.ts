@@ -191,6 +191,39 @@ export async function readCourseFile(
   return new Uint8Array(await fs.readFile(target));
 }
 
+/**
+ * Enumerate regular files in one fixed course directory without following
+ * links. Missing translation directories are normal before the first publish.
+ */
+export async function listCourseFiles(
+  coursesRoot: string,
+  directoryName: string,
+  relativePath: string[],
+): Promise<string[]> {
+  const target = await resolveCourseEntryPath(
+    coursesRoot,
+    directoryName,
+    relativePath,
+  );
+  const directoryStat = await fs.lstat(target).catch(() => null);
+  if (!directoryStat) return [];
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+    throw new WorkspacePathError(
+      'PATH_ESCAPE',
+      '文件目录包含符号链接，已拒绝访问。',
+    );
+  }
+  const entries = await fs.readdir(target, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const entryPath = path.join(target, entry.name);
+    const stat = await fs.lstat(entryPath);
+    if (stat.isSymbolicLink() || !stat.isFile()) continue;
+    files.push(entry.name);
+  }
+  return files.sort((a, b) => a.localeCompare(b));
+}
+
 /** 写入采用"临时文件 → rename"，断电不会留下半个 course.json。 */
 export async function writeCourseFile(
   coursesRoot: string,

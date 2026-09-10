@@ -3,6 +3,7 @@ import type {
   CourseManifest,
   DocumentDigest,
 } from './course-storage/types.ts';
+import type { SharedTranslationRecord } from './shared-translation.ts';
 
 export interface SharedCourseListItem {
   id: string;
@@ -114,6 +115,15 @@ export async function loadSharedPdf(
   return new File([await response.blob()], fileName, {
     type: 'application/pdf',
   });
+}
+
+export async function loadSharedTranslations(
+  courseId: string,
+  documentId: string,
+): Promise<{ translations: SharedTranslationRecord[] }> {
+  return requestJson(
+    `/api/share/courses/${encodeURIComponent(courseId)}/documents/${encodeURIComponent(documentId)}/translations`,
+  );
 }
 
 export function isSharedView(): boolean {

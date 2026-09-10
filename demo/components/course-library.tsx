@@ -55,6 +55,8 @@ import type {
   DocumentRecord,
   ImportOptions,
 } from '@/lib/course-storage/types';
+import { createReaderService } from '@/lib/reader-cache';
+import { publishCachedTranslation } from '@/lib/shared-translation';
 import { loadChatSettings, type ChatSettings } from '@/lib/chat-cache';
 import { loadKnowledgeSettings } from '@/lib/knowledge-settings';
 import type { PageImageInput } from '@/lib/chat';
@@ -77,6 +79,7 @@ export interface CourseReaderContext {
   digest?: DocumentDigest;
   initialPage?: number;
   onBack: () => void;
+  storage?: CourseStorage;
 }
 
 interface CourseEntry {
@@ -501,6 +504,66 @@ export function CourseLibrary({
     }
   };
 
+  const publishExistingTranslations = async () => {
+    if (!active?.bundle || !active.storage.publishTranslation) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const documents = new Map(
+        active.bundle.manifest.documents.map((document) => [
+          document.fingerprint,
+          document,
+        ]),
+      );
+      const cached = await createReaderService().cache.list();
+      const published = new Set<string>();
+      const failures: string[] = [];
+      for (const entry of cached) {
+        const document = documents.get(entry.fingerprint);
+        if (
+          !document ||
+          entry.provider === 'mock' ||
+          entry.paragraphs.length === 0
+        ) {
+          continue;
+        }
+        if (entry.pageNumber < 1 || entry.pageNumber > document.pageCount) {
+          failures.push(
+            `${document.fileName} 第 ${entry.pageNumber} 页页码无效`,
+          );
+          continue;
+        }
+        try {
+          if (
+            await publishCachedTranslation(active.storage, entry, document.id)
+          ) {
+            published.add(`${entry.targetLanguage}:${entry.pageNumber}`);
+          }
+        } catch (publishError) {
+          failures.push(
+            `${document.fileName} 第 ${entry.pageNumber} 页：${publishError instanceof Error ? publishError.message : '格式不正确'}`,
+          );
+        }
+      }
+      const suffix =
+        failures.length > 0
+          ? `失败 ${failures.length} 项：${failures.slice(0, 2).join('；')}${failures.length > 2 ? '；…' : ''}`
+          : '没有失败记录。';
+      setMessage(
+        `已发布 ${published.size} 个语言/页码译文记录（可重复执行且幂等）。${suffix}`,
+      );
+    } catch (publishError) {
+      setError(
+        publishError instanceof Error
+          ? publishError.message
+          : '读取本机译文缓存失败。',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const makeOcrRecognizer = (chatSettings: ChatSettings) => {
     const ocrProvider = createOcrProviderForSettings(chatSettings);
     const ocrCache = createOcrService();
@@ -723,6 +786,7 @@ export function CourseLibrary({
         digest: active.bundle.digests[document.id],
         initialPage,
         onBack: () => undefined,
+        storage: active.storage,
       });
     } catch (openError) {
       setError(
@@ -1056,6 +1120,30 @@ export function CourseLibrary({
                   </Button>
                 </div>
               </div>
+
+              {isDesktop && active.storage.publishTranslation ? (
+                <div className="mt-5 flex flex-col gap-3 rounded-xl border border-violet-200 bg-violet-50/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-violet-900">
+                      共享已生成的 PDF 页面译文
+                    </p>
+                    <p className="mt-1 text-[11px] leading-5 text-violet-800/80">
+                      首次发布会在课程目录新增 Translations 文件，不修改
+                      PDF、course.json、总结、脑图或笔记。
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 border-violet-300 bg-white text-violet-800"
+                    onClick={() => void publishExistingTranslations()}
+                    disabled={busy}
+                  >
+                    {busy ? <LoaderCircle className="animate-spin" /> : null}
+                    发布已有译文
+                  </Button>
+                </div>
+              ) : null}
 
               {error || message ? (
                 <div

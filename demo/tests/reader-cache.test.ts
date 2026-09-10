@@ -17,7 +17,11 @@ import {
   type CachedTranslation,
   type DocumentProgress,
 } from '../lib/reader-cache.ts';
-import { createMockTranslationProvider, TranslationError, type TranslationRequest } from '../lib/translation.ts';
+import {
+  createMockTranslationProvider,
+  TranslationError,
+  type TranslationRequest,
+} from '../lib/translation.ts';
 
 void test('translation cache stores and retrieves by document, page, language, and provider', async () => {
   const cache = createTranslationCache(createMemoryStore<CachedTranslation>());
@@ -43,9 +47,16 @@ void test('translation cache stores and retrieves by document, page, language, a
   });
   const hit = await cache.lookup(parts);
   assert.equal(hit?.paragraphs.length, 2);
-  assert.equal(await cache.lookup({ ...parts, targetLanguage: '日本語' }), undefined);
   assert.equal(
-    await cache.lookup({ ...parts, provider: 'openai-compatible', model: 'gpt-4o-mini' }),
+    await cache.lookup({ ...parts, targetLanguage: '日本語' }),
+    undefined,
+  );
+  assert.equal(
+    await cache.lookup({
+      ...parts,
+      provider: 'openai-compatible',
+      model: 'gpt-4o-mini',
+    }),
     undefined,
   );
 });
@@ -53,10 +64,20 @@ void test('translation cache stores and retrieves by document, page, language, a
 void test('resolvePageTranslation returns cached results without calling the provider', async () => {
   const cache = createTranslationCache(createMemoryStore<CachedTranslation>());
   const provider = createMockTranslationProvider();
-  const request = { text: 'One.\n\nTwo.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 2 };
+  const request = {
+    text: 'One.\n\nTwo.',
+    sourceLanguage: 'auto',
+    targetLanguage: '简体中文',
+    pageNumber: 2,
+  };
   const fingerprint = 'fp';
 
-  const first = await resolvePageTranslation({ provider, cache, fingerprint, request });
+  const first = await resolvePageTranslation({
+    provider,
+    cache,
+    fingerprint,
+    request,
+  });
   assert.equal(first.status, 'complete');
 
   let providerCalls = 0;
@@ -68,10 +89,18 @@ void test('resolvePageTranslation returns cached results without calling the pro
       return provider.translate(request);
     },
   };
-  const second = await resolvePageTranslation({ provider: countingProvider, cache, fingerprint, request });
+  const second = await resolvePageTranslation({
+    provider: countingProvider,
+    cache,
+    fingerprint,
+    request,
+  });
   assert.equal(second.status, 'cached');
   assert.equal(providerCalls, 0);
   assert.deepEqual(second.result.paragraphs, first.result.paragraphs);
+  assert.equal(second.cacheEntry.fingerprint, fingerprint);
+  assert.equal(second.cacheEntry.pageNumber, request.pageNumber);
+  assert.equal((await cache.list()).length, 1);
 });
 
 void test('resolvePageTranslation never reuses cache across languages', async () => {
@@ -82,13 +111,23 @@ void test('resolvePageTranslation never reuses cache across languages', async ()
     provider,
     cache,
     fingerprint,
-    request: { text: 'One.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 },
+    request: {
+      text: 'One.',
+      sourceLanguage: 'auto',
+      targetLanguage: '简体中文',
+      pageNumber: 1,
+    },
   });
   const otherLanguage = await resolvePageTranslation({
     provider,
     cache,
     fingerprint,
-    request: { text: 'One.', sourceLanguage: 'auto', targetLanguage: '日本語', pageNumber: 1 },
+    request: {
+      text: 'One.',
+      sourceLanguage: 'auto',
+      targetLanguage: '日本語',
+      pageNumber: 1,
+    },
   });
   assert.equal(otherLanguage.status, 'complete');
 });
@@ -105,15 +144,31 @@ void test('bypassCache forces a fresh provider call and overwrites the cache', a
     },
   };
   const fingerprint = 'fp';
-  const request = { text: 'One.', sourceLanguage: 'auto', targetLanguage: '简体中文', pageNumber: 1 };
+  const request = {
+    text: 'One.',
+    sourceLanguage: 'auto',
+    targetLanguage: '简体中文',
+    pageNumber: 1,
+  };
 
   await resolvePageTranslation({ provider, cache, fingerprint, request });
-  const bypassed = await resolvePageTranslation({ provider, cache, fingerprint, request, bypassCache: true });
+  const bypassed = await resolvePageTranslation({
+    provider,
+    cache,
+    fingerprint,
+    request,
+    bypassCache: true,
+  });
   assert.equal(bypassed.status, 'complete');
   assert.equal(call, 2);
 
   // the fresh result replaced the old cache entry
-  const after = await resolvePageTranslation({ provider, cache, fingerprint, request });
+  const after = await resolvePageTranslation({
+    provider,
+    cache,
+    fingerprint,
+    request,
+  });
   assert.equal(after.status, 'cached');
   assert.equal(call, 2);
 });
@@ -127,7 +182,11 @@ void test('page translation retries transient provider failures before caching',
     async translate() {
       calls += 1;
       if (calls < 3) throw new TranslationError('server', 'temporary');
-      return { paragraphs: ['完成'], provider: 'retry-provider', model: 'retry-model' };
+      return {
+        paragraphs: ['完成'],
+        provider: 'retry-provider',
+        model: 'retry-model',
+      };
     },
   };
   const result = await resolvePageTranslation({
@@ -171,7 +230,10 @@ void test('reader settings fall back to defaults on missing or corrupt data', ()
 
   assert.deepEqual(loadReaderSettings(storage), DEFAULT_SETTINGS);
   saveReaderSettings(
-    updateReaderApiKey({ ...DEFAULT_SETTINGS, providerMode: 'openai-compatible' }, 'sk-test'),
+    updateReaderApiKey(
+      { ...DEFAULT_SETTINGS, providerMode: 'openai-compatible' },
+      'sk-test',
+    ),
     storage,
   );
   assert.equal(loadReaderSettings(storage).apiKey, 'sk-test');
@@ -183,11 +245,18 @@ void test('reader settings fall back to defaults on missing or corrupt data', ()
 void test('remote provider is only active with a configured key', () => {
   assert.equal(usingRemoteProvider(DEFAULT_SETTINGS), false);
   assert.equal(
-    usingRemoteProvider({ ...DEFAULT_SETTINGS, providerMode: 'openai-compatible' }),
+    usingRemoteProvider({
+      ...DEFAULT_SETTINGS,
+      providerMode: 'openai-compatible',
+    }),
     false,
   );
   assert.equal(
-    usingRemoteProvider({ ...DEFAULT_SETTINGS, providerMode: 'openai-compatible', apiKey: 'sk-test' }),
+    usingRemoteProvider({
+      ...DEFAULT_SETTINGS,
+      providerMode: 'openai-compatible',
+      apiKey: 'sk-test',
+    }),
     true,
   );
 });
@@ -236,10 +305,16 @@ void test('legacy settings migrate their API key to the active preset only', () 
 });
 
 void test('reader settings validate URLs, keys, and model names safely', () => {
-  assert.equal(readerServiceHost('https://api.deepseek.com'), 'api.deepseek.com');
+  assert.equal(
+    readerServiceHost('https://api.deepseek.com'),
+    'api.deepseek.com',
+  );
   assert.equal(readerServiceHost('not a url'), null);
   assert.match(
-    validateReaderSettings({ ...DEFAULT_SETTINGS, providerMode: 'openai-compatible' }) ?? '',
+    validateReaderSettings({
+      ...DEFAULT_SETTINGS,
+      providerMode: 'openai-compatible',
+    }) ?? '',
     /API Key/,
   );
   assert.match(

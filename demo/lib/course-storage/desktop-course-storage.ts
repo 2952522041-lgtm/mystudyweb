@@ -26,6 +26,12 @@ import {
   renderDocumentSummary,
   renderKnowledgeSvg,
 } from '../knowledge/artifact-renderer.ts';
+import {
+  encodeSharedTranslation,
+  sharedTranslationFileName,
+  validateSharedTranslation,
+  type SharedTranslationRecord,
+} from '../shared-translation.ts';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -124,9 +130,11 @@ export class DesktopCourseStorage implements CourseStorage {
   }
 
   async load(): Promise<CourseBundle> {
-    const manifest = await readJson<CourseManifest>(this.api, this.directoryName, [
-      'course.json',
-    ]);
+    const manifest = await readJson<CourseManifest>(
+      this.api,
+      this.directoryName,
+      ['course.json'],
+    );
     assertManifest(manifest);
     const versionedPath = [
       'Knowledge',
@@ -235,7 +243,8 @@ export class DesktopCourseStorage implements CourseStorage {
     const current = await this.load();
     this.assertRevision(current.manifest, expectedRevision);
     const activeDigest = digest ?? current.digests[documentId];
-    if (!activeDigest) throw new Error('这份 PDF 的内部摘要缺失，无法生成成果。');
+    if (!activeDigest)
+      throw new Error('这份 PDF 的内部摘要缺失，无法生成成果。');
     const now = new Date().toISOString();
     const documents = current.manifest.documents.map((document) =>
       document.id === documentId
@@ -321,6 +330,32 @@ export class DesktopCourseStorage implements CourseStorage {
     return new File([copy], document.fileName, { type: 'application/pdf' });
   }
 
+  async publishTranslation(
+    documentId: string,
+    translation: SharedTranslationRecord,
+  ): Promise<void> {
+    const bundle = await this.load();
+    const document = bundle.manifest.documents.find(
+      (item) => item.id === documentId,
+    );
+    if (!document) throw new Error('课程中找不到这份 PDF，译文未发布。');
+    if (translation.provider === 'mock') {
+      throw new Error('演示译文不能发布到课程共享目录。');
+    }
+    const valid = validateSharedTranslation(translation, {
+      documentId,
+      fingerprint: document.fingerprint,
+      pageCount: document.pageCount,
+    });
+    if (!valid) throw new Error('译文记录格式不正确，未发布。');
+    const fileName = await sharedTranslationFileName(valid);
+    await this.api.writeFile(
+      this.directoryName,
+      ['Translations', documentId, fileName],
+      encodeSharedTranslation(valid),
+    );
+  }
+
   async removeDocument(
     documentId: string,
     expectedRevision: number,
@@ -337,7 +372,11 @@ export class DesktopCourseStorage implements CourseStorage {
       'PDFs',
       document.storedFileName,
     ]);
-    await this.api.deleteFile(this.directoryName, documentDirectory(documentId));
+    await this.api.deleteFile(
+      this.directoryName,
+      documentDirectory(documentId),
+    );
+    await this.api.deleteFile(this.directoryName, ['Translations', documentId]);
     const knowledge = aiKnowledge
       ? applyAiCourseKnowledge(current.knowledge, aiKnowledge, now)
       : removeDocumentContribution(current.knowledge, documentId, now);
