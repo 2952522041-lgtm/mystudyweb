@@ -668,24 +668,74 @@ void test('read-only sharing leaves the temporary course workspace unchanged', a
       method: 'POST',
       body: JSON.stringify({ password: '只读校验-abcdef' }),
     });
+    assert.equal(login.status, 200);
     const cookie = cookieFrom(login);
     const before = await snapshotFiles(fixture.layout.root);
-    await request(started.port!, '/api/share/courses', { cookie });
-    await request(
+    const courses = await request(started.port!, '/api/share/courses', {
+      cookie,
+    });
+    assert.equal(courses.status, 200);
+    assert.deepEqual(
+      json<{
+        courses: Array<{
+          id: string;
+          name: string;
+          updatedAt: string;
+          documentCount: number;
+        }>;
+      }>(courses),
+      {
+        courses: [
+          {
+            id: fixture.manifest.id,
+            name: fixture.manifest.name,
+            updatedAt: fixture.manifest.updatedAt,
+            documentCount: fixture.manifest.documents.length,
+          },
+        ],
+      },
+    );
+
+    const detail = await request(
       started.port!,
       `/api/share/courses/${encodeURIComponent(fixture.manifest.id)}`,
       { cookie },
     );
-    await request(
+    assert.equal(detail.status, 200);
+    const loaded = json<{
+      manifest: { id: string; name: string };
+      knowledge: { courseId: string };
+      digests: Record<string, { overview: string }>;
+    }>(detail);
+    assert.equal(loaded.manifest.id, fixture.manifest.id);
+    assert.equal(loaded.manifest.name, fixture.manifest.name);
+    assert.equal(loaded.knowledge.courseId, fixture.manifest.id);
+    assert.equal(
+      loaded.digests[fixture.document.id]?.overview,
+      fixture.digest.overview,
+    );
+
+    const pdf = await request(
       started.port!,
       `/api/share/courses/${encodeURIComponent(fixture.manifest.id)}/documents/${encodeURIComponent(fixture.document.id)}/file`,
       { cookie },
     );
-    await request(
+    assert.equal(pdf.status, 200);
+    assert.equal(pdf.headers['content-type'], 'application/pdf');
+    assert.equal(pdf.body.toString(), '%PDF-中文测试');
+
+    const summary = await request(
       started.port!,
       `/api/share/courses/${encodeURIComponent(fixture.manifest.id)}/documents/${encodeURIComponent(fixture.document.id)}/artifacts/summary`,
       { cookie },
     );
+    assert.equal(summary.status, 200);
+    const summaryPayload = json<{
+      digest: { title: string; overview: string };
+    }>(summary);
+    assert.equal(summaryPayload.digest.title, fixture.digest.title);
+    assert.equal(summaryPayload.digest.overview, fixture.digest.overview);
+
     const after = await snapshotFiles(fixture.layout.root);
     assert.deepEqual(after, before);
     assert.ok(Object.keys(before).some((file) => file.endsWith('course.json')));
