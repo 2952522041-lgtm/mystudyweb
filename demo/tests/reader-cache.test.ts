@@ -7,6 +7,7 @@ import {
   createProgressStore,
   createTranslationCache,
   DEFAULT_SETTINGS,
+  findCachedPageTranslation,
   loadReaderSettings,
   readerServiceHost,
   resolvePageTranslation,
@@ -17,6 +18,12 @@ import {
   type CachedTranslation,
   type DocumentProgress,
 } from '../lib/reader-cache.ts';
+import { sha256Hex } from '../lib/pdf-text.ts';
+import {
+  publishCachedTranslationForReader,
+  sharedTranslationFromCache,
+  upsertSharedTranslation,
+} from '../lib/shared-translation.ts';
 import {
   createMockTranslationProvider,
   TranslationError,
@@ -130,6 +137,262 @@ void test('resolvePageTranslation never reuses cache across languages', async ()
     },
   });
   assert.equal(otherLanguage.status, 'complete');
+});
+
+void test('course translations restore across cache resets and model changes without AI', async () => {
+  const text = 'A persisted page.';
+  const fingerprint = 'fp-persisted';
+  const sourceHash = await sha256Hex(text);
+  const cached = {
+    key: '',
+    fingerprint,
+    pageNumber: 4,
+    sourceHash,
+    paragraphs: ['已保存的中文译文。'],
+    targetLanguage: '简体中文',
+    provider: 'old-provider',
+    model: 'old-model',
+    updatedAt: '2026-09-11T01:00:00.000Z',
+  } satisfies CachedTranslation;
+  const japanese = sharedTranslationFromCache(
+    {
+      ...cached,
+      targetLanguage: '日本語',
+      paragraphs: ['保存済みの日本語訳。'],
+    },
+    'course-document',
+  );
+  const chinese = sharedTranslationFromCache(cached, 'course-document');
+  let providerCalls = 0;
+  const changedProvider = {
+    id: 'new-provider',
+    model: 'new-model',
+    async translate() {
+      providerCalls += 1;
+      throw new Error('不应调用翻译服务');
+    },
+  };
+
+  // A fresh cache models an application restart with an empty IndexedDB.
+  const afterRestart = await resolvePageTranslation({
+    provider: changedProvider,
+    cache: createTranslationCache(createMemoryStore<CachedTranslation>()),
+    fingerprint,
+    request: {
+      text,
+      sourceLanguage: 'auto',
+      targetLanguage: '简体中文',
+      pageNumber: 4,
+    },
+    publishedTranslations: [chinese, japanese],
+  });
+  assert.equal(afterRestart.source, 'course');
+  assert.equal(afterRestart.result.model, 'old-model');
+  assert.deepEqual(afterRestart.result.paragraphs, ['已保存的中文译文。']);
+  assert.equal(providerCalls, 0);
+
+  const switchedLanguage = await resolvePageTranslation({
+    provider: changedProvider,
+    cache: createTranslationCache(createMemoryStore<CachedTranslation>()),
+    fingerprint,
+    request: {
+      text,
+      sourceLanguage: 'auto',
+      targetLanguage: '日本語',
+      pageNumber: 4,
+    },
+    publishedTranslations: [chinese, japanese],
+  });
+  assert.equal(switchedLanguage.source, 'course');
+  assert.deepEqual(switchedLanguage.result.paragraphs, [
+    '保存済みの日本語訳。',
+  ]);
+  assert.equal(providerCalls, 0);
+
+  // The exact current-provider IndexedDB entry remains higher priority than
+  // the older course-directory record.
+  const exactCache =
+    createTranslationCache(createMemoryStore<CachedTranslation>());
+  await exactCache.save({
+    ...cached,
+    provider: 'new-provider',
+    model: 'new-model',
+    paragraphs: ['本机精确缓存。'],
+  });
+  const exact = await resolvePageTranslation({
+    provider: changedProvider,
+    cache: exactCache,
+    fingerprint,
+    request: {
+      text,
+      sourceLanguage: 'auto',
+      targetLanguage: '简体中文',
+      pageNumber: 4,
+    },
+    publishedTranslations: [chinese],
+  });
+  assert.equal(exact.source, 'indexeddb');
+  assert.deepEqual(exact.result.paragraphs, ['本机精确缓存。']);
+  assert.equal(providerCalls, 0);
+});
+
+void test('bypassCache actively retranslates instead of using course persistence', async () => {
+  const text = 'Retranslate this page.';
+  const sourceHash = await sha256Hex(text);
+  let calls = 0;
+  const provider = {
+    id: 'current-provider',
+    model: 'current-model',
+    async translate() {
+      calls += 1;
+      return {
+        paragraphs: ['主动重新生成的译文。'],
+        provider: 'current-provider',
+        model: 'current-model',
+      };
+    },
+  };
+  const result = await resolvePageTranslation({
+    provider,
+    cache: createTranslationCache(createMemoryStore<CachedTranslation>()),
+    fingerprint: 'fp-retranslate',
+    request: {
+      text,
+      sourceLanguage: 'auto',
+      targetLanguage: '简体中文',
+      pageNumber: 1,
+    },
+    bypassCache: true,
+    publishedTranslations: [
+      sharedTranslationFromCache(
+        {
+          fingerprint: 'fp-retranslate',
+          pageNumber: 1,
+          sourceHash,
+          paragraphs: ['旧课程译文。'],
+          targetLanguage: '简体中文',
+          provider: 'old-provider',
+          model: 'old-model',
+          updatedAt: '2026-09-11T01:00:00.000Z',
+        },
+        'course-document',
+      ),
+    ],
+  });
+  assert.equal(result.source, 'generated');
+  assert.equal(calls, 1);
+  assert.deepEqual(result.result.paragraphs, ['主动重新生成的译文。']);
+});
+
+void test('translation completion waits for publication and keeps local result on save failure', async () => {
+  const cached = {
+    key: '',
+    fingerprint: 'fp-save-order',
+    pageNumber: 1,
+    sourceHash: 'a'.repeat(64),
+    paragraphs: ['本地译文仍然可用。'],
+    targetLanguage: '简体中文',
+    provider: 'provider',
+    model: 'model',
+    updatedAt: new Date().toISOString(),
+  } satisfies CachedTranslation;
+  let release!: () => void;
+  let diskSaved = false;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const publication = publishCachedTranslationForReader(
+    {
+      publishTranslation: async () => {
+        await gate;
+        diskSaved = true;
+      },
+    },
+    cached,
+    'document',
+  );
+  await Promise.resolve();
+  assert.equal(diskSaved, false);
+  release();
+  assert.deepEqual(await publication, { status: 'saved' });
+  assert.equal(diskSaved, true);
+
+  const failed = await publishCachedTranslationForReader(
+    {
+      publishTranslation: async () => {
+        throw new Error('磁盘暂时不可写');
+      },
+    },
+    cached,
+    'document',
+  );
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error ?? '', /磁盘暂时不可写/);
+  assert.deepEqual(cached.paragraphs, ['本地译文仍然可用。']);
+});
+
+void test('findCachedPageTranslation returns the exact current model cache', async () => {
+  const cache = createTranslationCache(createMemoryStore<CachedTranslation>());
+  await cache.save({
+    key: '',
+    fingerprint: 'fp-exact',
+    pageNumber: 2,
+    sourceHash: 'b'.repeat(64),
+    paragraphs: ['精确缓存'],
+    targetLanguage: '简体中文',
+    provider: 'provider',
+    model: 'model',
+    updatedAt: new Date().toISOString(),
+  });
+  assert.equal(
+    (
+      await findCachedPageTranslation({
+        cache,
+        fingerprint: 'fp-exact',
+        pageNumber: 2,
+        targetLanguage: '简体中文',
+        provider: 'provider',
+        model: 'model',
+      })
+    )?.paragraphs[0],
+    '精确缓存',
+  );
+});
+
+void test('a newly published translation remains available after model changes', () => {
+  const oldRecord = sharedTranslationFromCache(
+    {
+      fingerprint: 'fp-model-change',
+      pageNumber: 1,
+      sourceHash: 'c'.repeat(64),
+      paragraphs: ['旧模型译文'],
+      targetLanguage: '简体中文',
+      provider: 'provider',
+      model: 'old-model',
+      updatedAt: '2026-09-11T01:00:00.000Z',
+    },
+    'document',
+  );
+  const newEntry = {
+    key: '',
+    fingerprint: oldRecord.fingerprint,
+    pageNumber: oldRecord.pageNumber,
+    sourceHash: oldRecord.sourceHash,
+    paragraphs: ['重新翻译后的译文'],
+    targetLanguage: oldRecord.targetLanguage,
+    provider: oldRecord.provider,
+    model: 'new-model',
+    updatedAt: '2026-09-11T02:00:00.000Z',
+  } satisfies CachedTranslation;
+  const records = upsertSharedTranslation([oldRecord], newEntry, 'document');
+  assert.equal(records.length, 2);
+  assert.equal(records[0]?.model, 'new-model');
+  assert.equal(records[1]?.model, 'old-model');
+  assert.deepEqual(records[0]?.paragraphs, ['重新翻译后的译文']);
+
+  const repeated = upsertSharedTranslation(records, newEntry, 'document');
+  assert.equal(repeated.length, 2);
+  assert.equal(repeated[0]?.model, 'new-model');
 });
 
 void test('bypassCache forces a fresh provider call and overwrites the cache', async () => {

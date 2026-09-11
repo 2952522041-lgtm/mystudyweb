@@ -155,6 +155,40 @@ export function sharedTranslationFromCache(
   };
 }
 
+/** 将课程目录记录转换成阅读器可消费的缓存形状，但不写回 IndexedDB。 */
+export function cachedTranslationFromShared(
+  record: SharedTranslationRecord,
+): CachedTranslation {
+  return {
+    key: '',
+    fingerprint: record.fingerprint,
+    pageNumber: record.pageNumber,
+    sourceHash: record.sourceHash,
+    paragraphs: [...record.paragraphs],
+    targetLanguage: record.targetLanguage,
+    provider: record.provider,
+    model: record.model,
+    updatedAt: record.updatedAt,
+    promptVersion: record.promptVersion,
+  };
+}
+
+/** 将刚落盘的译文加入当前阅读会话，按完整配置身份幂等去重。 */
+export function upsertSharedTranslation(
+  records: SharedTranslationRecord[],
+  cached: CachedTranslation,
+  documentId: string,
+): SharedTranslationRecord[] {
+  const record = sharedTranslationFromCache(cached, documentId);
+  const identity = sharedTranslationIdentity(record);
+  return [
+    record,
+    ...records.filter(
+      (existing) => sharedTranslationIdentity(existing) !== identity,
+    ),
+  ];
+}
+
 export function sharedTranslationIdentity(
   record: SharedTranslationRecord,
 ): string {
@@ -199,4 +233,36 @@ export async function publishCachedTranslation(
     sharedTranslationFromCache(cached, documentId),
   );
   return true;
+}
+
+export interface TranslationPublicationResult {
+  status: 'saved' | 'skipped' | 'failed';
+  error?: string;
+}
+
+/**
+ * Persists before the reader marks a translation ready. The caller keeps the
+ * local cache result when this reports a failure, so closing the app after a
+ * successful local translation never turns into data loss.
+ */
+export async function publishCachedTranslationForReader(
+  storage: Pick<CourseStorage, 'publishTranslation'> | undefined,
+  cached: CachedTranslation,
+  documentId: string,
+): Promise<TranslationPublicationResult> {
+  if (!storage?.publishTranslation || cached.provider === 'mock') {
+    return { status: 'skipped' };
+  }
+  try {
+    await publishCachedTranslation(storage, cached, documentId);
+    return { status: 'saved' };
+  } catch (error) {
+    return {
+      status: 'failed',
+      error:
+        error instanceof Error
+          ? error.message
+          : '保存到课程目录失败，请检查课程文件夹后重试。',
+    };
+  }
 }

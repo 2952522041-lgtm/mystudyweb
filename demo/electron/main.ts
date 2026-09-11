@@ -10,6 +10,7 @@ import {
   deleteCourseEntry,
   ensureCourseDirectory,
   ensureWorkspace,
+  listCourseFiles,
   readCourseFile,
   removeCourseDirectory,
   resolveCourseDirectoryPath,
@@ -226,6 +227,20 @@ function registerDesktopIpc(
     async (_event, courseDirectory, relativePath) => {
       try {
         return await readCourseFile(
+          layout.coursesRoot,
+          assertString(courseDirectory, '课程目录名不合法。'),
+          Array.isArray(relativePath) ? relativePath : [],
+        );
+      } catch (error) {
+        throw toIpcError(error);
+      }
+    },
+  );
+  ipcMain.handle(
+    DESKTOP_CHANNELS.listFiles,
+    async (_event, courseDirectory, relativePath) => {
+      try {
+        return await listCourseFiles(
           layout.coursesRoot,
           assertString(courseDirectory, '课程目录名不合法。'),
           Array.isArray(relativePath) ? relativePath : [],

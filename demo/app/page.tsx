@@ -20,6 +20,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  RefreshCw,
   RotateCcw,
   Settings,
   ShieldCheck,
@@ -99,15 +100,23 @@ import {
   createReaderService,
   createProviderForSettings,
   DEFAULT_SETTINGS,
+  findCachedPageTranslation,
   loadReaderSettings,
   readerServiceHost,
   resolvePageTranslation,
   saveReaderSettings,
   usingRemoteProvider,
   type CachedTranslation,
+  type PageTranslationOutcome,
   type ReaderSettings,
 } from '@/lib/reader-cache';
-import { publishCachedTranslation } from '@/lib/shared-translation';
+import {
+  cachedTranslationFromShared,
+  publishCachedTranslationForReader,
+  upsertSharedTranslation,
+  type SharedTranslationRecord,
+  type TranslationPublicationResult,
+} from '@/lib/shared-translation';
 import {
   clampPage,
   fillColumnPageWidth,
@@ -158,6 +167,13 @@ interface DocumentMeta {
 interface PageTranslationState {
   status: 'recognizing' | 'translating' | 'complete' | 'cached' | 'error';
   paragraphs?: string[];
+  source?: 'indexeddb' | 'course' | 'generated';
+  provider?: string;
+  model?: string;
+  updatedAt?: string;
+  cacheEntry?: CachedTranslation;
+  persistence?: 'saving' | 'saved' | 'failed';
+  persistenceError?: string;
   errorCode?: TranslationErrorCode;
   errorMessage?: string;
 }
@@ -428,12 +444,14 @@ function TranslationBody({
   state,
   remoteProvider,
   onRetry,
+  onRetrySave,
 }: {
   page: number;
   targetLanguage: string;
   state: PageTranslationState | undefined;
   remoteProvider: boolean;
   onRetry: () => void;
+  onRetrySave: () => void;
 }) {
   if (
     !state ||
@@ -510,7 +528,39 @@ function TranslationBody({
           {paragraph}
         </p>
       ))}
-      {remoteProvider ? null : (
+      {state.model ? (
+        <p className="mt-6 text-[11px] text-slate-400">
+          模型：{state.model}
+          {state.source === 'course'
+            ? ' · 已从课程目录恢复'
+            : state.source === 'indexeddb'
+              ? ' · 本机缓存'
+              : ''}
+        </p>
+      ) : null}
+      {state.persistence === 'failed' ? (
+        <div
+          role="alert"
+          className="mt-6 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-700"
+        >
+          <p>译文已生成，保存到课程目录失败</p>
+          <p className="mt-1 text-[11px] text-rose-600/80">
+            {state.persistenceError ?? '请检查课程目录后重试。'}
+          </p>
+          <Button
+            className="mt-3"
+            size="sm"
+            variant="outline"
+            onClick={onRetrySave}
+          >
+            <RefreshCw />
+            重试保存
+          </Button>
+        </div>
+      ) : null}
+      {remoteProvider ||
+      state.source === 'course' ||
+      state.source === 'indexeddb' ? null : (
         <p className="mt-10 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-xs text-slate-500">
           当前显示的是内置演示译文。在右上角“翻译设置”中配置 OpenAI
           兼容服务后，这里将显示真实译文。
@@ -557,6 +607,9 @@ function PdfReader({
   const [translationStates, setTranslationStates] = useState<
     Record<string, PageTranslationState>
   >({});
+  const [publishedTranslations, setPublishedTranslations] = useState<
+    SharedTranslationRecord[]
+  >([]);
   const [renderedPages, setRenderedPages] = useState<Set<number>>(
     () => new Set(),
   );
@@ -590,6 +643,7 @@ function PdfReader({
   const pageRef = useRef(page);
   const suspendedRef = useRef(suspended);
   const settingsOpenRef = useRef(settingsOpen);
+  const courseDocumentIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -621,21 +675,42 @@ function PdfReader({
   );
 
   const publishCourseTranslation = useCallback(
-    (cached: CachedTranslation) => {
+    async (
+      cached: CachedTranslation,
+    ): Promise<TranslationPublicationResult> => {
       const storage = courseContext?.storage;
-      const documentId = courseContext?.document.id;
-      if (!storage?.publishTranslation || !documentId) return;
+      const document = courseContext?.document;
+      if (
+        !storage?.publishTranslation ||
+        !document ||
+        courseDocumentIdRef.current !== document.id ||
+        document.fingerprint !== cached.fingerprint
+      )
+        return { status: 'skipped' };
       // The built-in provider is a UI demo and must never become a shared
       // course artifact. Standalone PDFs have no course storage and also stop
       // here, so temporary reader data remains local.
-      if (cached.provider === 'mock') return;
-      void publishCachedTranslation(storage, cached, documentId).catch(() => {
-        // A transient publish failure must not turn a completed local
-        // translation into a failed translation. The explicit migration
-        // action reports failures to the user.
-      });
+      if (cached.provider === 'mock') return { status: 'skipped' };
+      return publishCachedTranslationForReader(storage, cached, document.id);
     },
-    [courseContext?.document.id, courseContext?.storage],
+    [courseContext?.document, courseContext?.storage],
+  );
+
+  const rememberPublishedTranslation = useCallback(
+    (cached: CachedTranslation) => {
+      const document = courseContext?.document;
+      if (
+        !document ||
+        courseDocumentIdRef.current !== document.id ||
+        document.fingerprint !== cached.fingerprint
+      ) {
+        return;
+      }
+      setPublishedTranslations((current) =>
+        upsertSharedTranslation(current, cached, document.id),
+      );
+    },
+    [courseContext?.document],
   );
 
   const translationStatesRef = useRef<Record<string, PageTranslationState>>({});
@@ -863,6 +938,10 @@ function PdfReader({
       requestedPage?: number,
       origin: 'home' | 'dialog' = 'home',
     ) => {
+      // A standalone import can happen while the previous course context is
+      // still clearing in the parent. Disable course restore/publication
+      // immediately so an identical temporary PDF cannot write the course.
+      courseDocumentIdRef.current = null;
       setImporting(true);
       setImportError(null);
       try {
@@ -911,10 +990,32 @@ function PdfReader({
         }
 
         const restored = await serviceRef.current?.progress.load(fingerprint);
+        let restoredTranslations: SharedTranslationRecord[] = [];
+        const courseStorage = courseContext?.storage;
+        const contextDocument = courseContext?.document;
+        const courseDocument =
+          contextDocument?.fingerprint === fingerprint ? contextDocument : null;
+        if (
+          origin !== 'dialog' &&
+          courseDocument &&
+          courseStorage?.listTranslations
+        ) {
+          try {
+            restoredTranslations = await courseStorage.listTranslations(
+              courseDocument.id,
+            );
+          } catch {
+            // A transient translation-directory read failure must not block
+            // opening the PDF; a later retry/reopen can recover the records.
+          }
+        }
         positionedRef.current = false;
         setRenderedPages(new Set());
         setTranslationStates({});
         translationStatesRef.current = {};
+        setPublishedTranslations(restoredTranslations);
+        courseDocumentIdRef.current =
+          origin !== 'dialog' ? (courseDocument?.id ?? null) : null;
         prefetchedTranslationsRef.current.clear();
         setPrefetchedTranslationPage(null);
         pageElementsRef.current.clear();
@@ -944,7 +1045,7 @@ function PdfReader({
         setImporting(false);
       }
     },
-    [],
+    [courseContext],
   );
 
   useEffect(() => {
@@ -998,6 +1099,77 @@ function PdfReader({
 
     const runTranslation = async () => {
       try {
+        const provider = createProviderForSettings(settingsRef.current);
+        const finishOutcome = async (outcome: PageTranslationOutcome) => {
+          if (cancelled) return;
+          const publication =
+            outcome.source === 'course'
+              ? ({ status: 'skipped' } satisfies TranslationPublicationResult)
+              : await publishCourseTranslation(outcome.cacheEntry);
+          if (cancelled) return;
+          if (publication.status === 'saved') {
+            rememberPublishedTranslation(outcome.cacheEntry);
+          }
+          updateTranslationState(key, {
+            status: outcome.status,
+            paragraphs: outcome.result.paragraphs,
+            source: outcome.source,
+            provider: outcome.result.provider,
+            model: outcome.result.model,
+            updatedAt: outcome.cacheEntry.updatedAt,
+            cacheEntry: outcome.cacheEntry,
+            persistence: publication.status === 'failed' ? 'failed' : 'saved',
+            persistenceError: publication.error,
+          });
+        };
+
+        if (!bypassRequested) {
+          const exactCached = await findCachedPageTranslation({
+            cache: serviceRef.current!.cache,
+            fingerprint: docMeta.fingerprint,
+            pageNumber: translationPage,
+            targetLanguage,
+            provider: provider.id,
+            model: provider.model,
+          });
+          if (exactCached) {
+            await finishOutcome({
+              status: 'cached',
+              source: 'indexeddb',
+              result: {
+                paragraphs: exactCached.paragraphs,
+                provider: exactCached.provider,
+                model: exactCached.model,
+              },
+              cacheEntry: exactCached,
+            });
+            return;
+          }
+
+          const restored = publishedTranslations
+            .filter(
+              (record) =>
+                record.fingerprint === docMeta.fingerprint &&
+                record.pageNumber === translationPage &&
+                record.targetLanguage === targetLanguage,
+            )
+            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+          if (restored) {
+            const cacheEntry = cachedTranslationFromShared(restored);
+            await finishOutcome({
+              status: 'cached',
+              source: 'course',
+              result: {
+                paragraphs: cacheEntry.paragraphs,
+                provider: cacheEntry.provider,
+                model: cacheEntry.model,
+              },
+              cacheEntry,
+            });
+            return;
+          }
+        }
+
         const pdfPage = await pdfDoc.getPage(translationPage);
         const viewport = pdfPage.getViewport({ scale: 1 });
         const content = await pdfPage.getTextContent();
@@ -1046,7 +1218,6 @@ function PdfReader({
           if (cancelled) return;
           updateTranslationState(key, { status: 'translating' });
         }
-        const provider = createProviderForSettings(settingsRef.current);
         const outcome = await resolvePageTranslation({
           provider,
           cache: serviceRef.current!.cache,
@@ -1059,6 +1230,7 @@ function PdfReader({
           },
           signal: controller.signal,
           bypassCache: bypassRequested,
+          publishedTranslations,
           onPartial: (paragraphs) => {
             if (!cancelled && paragraphs.length > 0) {
               updateTranslationState(key, {
@@ -1069,11 +1241,7 @@ function PdfReader({
           },
         });
         if (cancelled) return;
-        publishCourseTranslation(outcome.cacheEntry);
-        updateTranslationState(key, {
-          status: outcome.status,
-          paragraphs: outcome.result.paragraphs,
-        });
+        await finishOutcome(outcome);
       } catch (error) {
         if (cancelled || controller.signal.aborted) return;
         const failure = describeFailure(error);
@@ -1099,6 +1267,8 @@ function PdfReader({
     translationKey,
     updateTranslationState,
     publishCourseTranslation,
+    rememberPublishedTranslation,
+    publishedTranslations,
   ]);
 
   const retranslate = () => {
@@ -1107,6 +1277,30 @@ function PdfReader({
     retryTokenRef.current += 1;
     setRetryToken(retryTokenRef.current);
     setCopied(false);
+  };
+
+  const retrySave = () => {
+    const key = translationKey(translationPage, targetLanguage);
+    const state = translationStatesRef.current[key];
+    if (!state?.cacheEntry || state.persistence !== 'failed') return;
+    const cacheEntry = state.cacheEntry;
+    updateTranslationState(key, {
+      ...state,
+      persistence: 'saving',
+      persistenceError: undefined,
+    });
+    void publishCourseTranslation(cacheEntry).then((publication) => {
+      const latest = translationStatesRef.current[key];
+      if (latest?.cacheEntry !== cacheEntry) return;
+      if (publication.status === 'saved') {
+        rememberPublishedTranslation(cacheEntry);
+      }
+      updateTranslationState(key, {
+        ...latest,
+        persistence: publication.status === 'failed' ? 'failed' : 'saved',
+        persistenceError: publication.error,
+      });
+    });
   };
 
   const copyTranslation = async () => {
@@ -1192,11 +1386,27 @@ function PdfReader({
         ? `正在翻译第 ${translationPage} 页`
         : currentState?.status === 'error'
           ? '翻译失败，可重试'
-          : isReady
-            ? currentState?.status === 'cached'
-              ? '译文来自缓存'
-              : '译文已完成'
-            : '译文待加载';
+          : currentState?.persistence === 'saving'
+            ? '正在保存译文…'
+            : currentState?.persistence === 'failed'
+              ? '译文已生成，保存到课程目录失败'
+              : isReady
+                ? currentState?.status === 'cached'
+                  ? currentState.source === 'course'
+                    ? '译文已从课程目录恢复'
+                    : '译文来自缓存'
+                  : '译文已完成'
+                : '译文待加载';
+  const translationDetailLabel =
+    currentState?.source === 'course'
+      ? `已从课程目录恢复${currentState.model ? ` · 原模型：${currentState.model}` : ''}`
+      : currentState?.source === 'indexeddb'
+        ? `已命中本机缓存${currentState.model ? ` · 原模型：${currentState.model}` : ''}`
+        : docMeta?.scanDetected
+          ? '扫描页图像仅在 OCR 时发送给已配置视觉模型'
+          : remoteProvider
+            ? `当前页文字将发送至 ${remoteProviderHost ?? '所配置服务'}`
+            : '演示模式 · 不发送任何数据';
 
   // Once the current translation is ready, quietly prepare the next page so
   // sequential reading usually becomes an immediate cache hit.
@@ -1248,9 +1458,17 @@ function PdfReader({
               pageNumber: nextPage,
             },
             signal: controller.signal,
+            publishedTranslations,
           });
           if (!controller.signal.aborted) {
-            publishCourseTranslation(outcome.cacheEntry);
+            if (outcome.source !== 'course') {
+              const publication = await publishCourseTranslation(
+                outcome.cacheEntry,
+              );
+              if (publication.status === 'saved') {
+                rememberPublishedTranslation(outcome.cacheEntry);
+              }
+            }
             completed = true;
             setPrefetchedTranslationPage(nextPage);
           }
@@ -1274,6 +1492,8 @@ function PdfReader({
     targetLanguage,
     retryToken,
     publishCourseTranslation,
+    rememberPublishedTranslation,
+    publishedTranslations,
   ]);
 
   const openSettings = (tab: SettingsTab = 'translation') => {
@@ -1609,11 +1829,7 @@ function PdfReader({
                                       {copied ? '译文已复制' : statusLabel}
                                     </p>
                                     <p className="mt-0.5 text-[11px] text-slate-400">
-                                      {docMeta?.scanDetected
-                                        ? '扫描页图像仅在 OCR 时发送给已配置视觉模型'
-                                        : remoteProvider
-                                          ? `当前页文字将发送至 ${remoteProviderHost ?? '所配置服务'}`
-                                          : '演示模式 · 不发送任何数据'}
+                                      {translationDetailLabel}
                                     </p>
                                   </div>
                                 </div>
@@ -1624,6 +1840,7 @@ function PdfReader({
                                 state={currentState}
                                 remoteProvider={remoteProvider}
                                 onRetry={retranslate}
+                                onRetrySave={retrySave}
                               />
                             </>
                           ) : (

@@ -1,5 +1,9 @@
 import { sha256Hex } from './pdf-text.ts';
 import {
+  cachedTranslationFromShared,
+  type SharedTranslationRecord,
+} from './shared-translation.ts';
+import {
   createMockTranslationProvider,
   createOpenAICompatibleProvider,
   PROMPT_VERSION,
@@ -126,6 +130,33 @@ export interface TranslationCache {
   list(): Promise<CachedTranslation[]>;
 }
 
+/**
+ * Finds an exact reader cache entry without requiring page text extraction.
+ * The PDF fingerprint fixes the source document, so this also works for
+ * scanned pages where extracting text would otherwise require OCR.
+ */
+export async function findCachedPageTranslation(input: {
+  cache: TranslationCache;
+  fingerprint: string;
+  pageNumber: number;
+  targetLanguage: string;
+  provider: string;
+  model: string;
+}): Promise<CachedTranslation | undefined> {
+  const entries = await input.cache.list();
+  return entries
+    .filter(
+      (entry) =>
+        entry.fingerprint === input.fingerprint &&
+        entry.pageNumber === input.pageNumber &&
+        entry.targetLanguage === input.targetLanguage &&
+        entry.provider === input.provider &&
+        entry.model === input.model &&
+        (entry.promptVersion ?? PROMPT_VERSION) === PROMPT_VERSION,
+    )
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+}
+
 function isCachedTranslation(value: unknown): value is CachedTranslation {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Partial<CachedTranslation>;
@@ -143,10 +174,10 @@ function isCachedTranslation(value: unknown): value is CachedTranslation {
 }
 
 /**
- * The storage key includes provider, model, and prompt version (per the
- * technical solution's cache-key rule), so switching any of them can never
- * surface translations produced under the previous settings. Failed pages are
- * never persisted, so a temporary fault cannot stick.
+ * The IndexedDB storage key includes provider, model, and prompt version, so
+ * exact local hits remain settings-specific. Published course records are a
+ * separate fallback and are intentionally allowed to survive model changes.
+ * Failed pages are never persisted, so a temporary fault cannot stick.
  */
 export function createTranslationCache(
   store: KVStore<CachedTranslation>,
@@ -218,15 +249,17 @@ export function createReaderService(options?: {
 
 export interface PageTranslationOutcome {
   status: 'cached' | 'complete';
+  source: 'indexeddb' | 'course' | 'generated';
   result: TranslationResult;
   cacheEntry: CachedTranslation;
 }
 
 /**
  * Resolves one page: cache first, then a single provider call whose result is
- * written to cache. Callers handle provider errors and cancellation. A
- * caller-requested retranslation passes bypassCache to ignore an existing
- * cache entry and overwrite it with a fresh result.
+ * written to cache. If the exact IndexedDB key misses, a validated course
+ * directory record for the same document/page/language is used before any
+ * provider call. Callers handle provider errors and cancellation. A
+ * caller-requested retranslation passes bypassCache to ignore both caches.
  */
 export async function resolvePageTranslation(input: {
   provider: TranslationProvider;
@@ -235,6 +268,7 @@ export async function resolvePageTranslation(input: {
   request: TranslationRequest;
   signal?: AbortSignal;
   bypassCache?: boolean;
+  publishedTranslations?: SharedTranslationRecord[];
   onPartial?: (paragraphs: string[]) => void;
 }): Promise<PageTranslationOutcome> {
   const {
@@ -244,6 +278,7 @@ export async function resolvePageTranslation(input: {
     request,
     signal,
     bypassCache,
+    publishedTranslations,
     onPartial,
   } = input;
   const sourceHash = await sha256Hex(request.text);
@@ -259,12 +294,38 @@ export async function resolvePageTranslation(input: {
     if (hit) {
       return {
         status: 'cached',
+        source: 'indexeddb',
         result: {
           paragraphs: hit.paragraphs,
           provider: hit.provider,
           model: hit.model,
         },
         cacheEntry: hit,
+      };
+    }
+  }
+
+  if (!bypassCache) {
+    const published = publishedTranslations
+      ?.filter(
+        (record) =>
+          record.fingerprint === fingerprint &&
+          record.pageNumber === request.pageNumber &&
+          record.targetLanguage === request.targetLanguage &&
+          record.sourceHash === sourceHash,
+      )
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    if (published) {
+      const cacheEntry = cachedTranslationFromShared(published);
+      return {
+        status: 'cached',
+        source: 'course',
+        result: {
+          paragraphs: cacheEntry.paragraphs,
+          provider: cacheEntry.provider,
+          model: cacheEntry.model,
+        },
+        cacheEntry,
       };
     }
   }
@@ -292,7 +353,7 @@ export async function resolvePageTranslation(input: {
     promptVersion: PROMPT_VERSION,
   };
   await cache.save(cacheEntry);
-  return { status: 'complete', result, cacheEntry };
+  return { status: 'complete', source: 'generated', result, cacheEntry };
 }
 
 export interface ReaderSettings {

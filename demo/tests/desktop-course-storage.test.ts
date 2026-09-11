@@ -12,6 +12,7 @@ import {
   deleteCourseEntry,
   ensureCourseDirectory,
   ensureWorkspace,
+  listCourseFiles,
   readCourseFile,
   removeCourseDirectory,
   scanCourses,
@@ -65,6 +66,14 @@ class FakeWorkspaceApi implements YeyuDesktopApi {
 
   ensureDirectory(courseDirectory: string, relativePath: string[]) {
     return ensureCourseDirectory(
+      this.layout.coursesRoot,
+      courseDirectory,
+      relativePath,
+    );
+  }
+
+  listFiles(courseDirectory: string, relativePath: string[]) {
+    return listCourseFiles(
       this.layout.coursesRoot,
       courseDirectory,
       relativePath,
@@ -361,6 +370,13 @@ void test('desktop storage publishes versioned translations without changing cou
       digest.documentId,
       sharedTranslationFromCache(cached[0]!, digest.documentId),
     );
+    // A new storage instance models reopening the app after IndexedDB has
+    // been cleared: published records are recovered from the course folder.
+    const restartedStorage = new DesktopCourseStorage(api, directoryName);
+    const restored = await restartedStorage.listTranslations(digest.documentId);
+    assert.equal(restored.length, 2);
+    assert.equal(restored[0]?.fingerprint, digest.fingerprint);
+    assert.ok(restored.some((record) => record.targetLanguage === '日本語'));
     const after = await snapshotFiles(courseRoot);
     const existingAfter = Object.fromEntries(
       Object.entries(after).filter(

@@ -206,6 +206,10 @@ export interface CourseStorage {
    * 课程列表记录的清理由调用方负责。
    */
   deleteCourse(): Promise<void>;
+  /** 读取课程目录中已发布的页面译文；仅桌面固定工作区实现此能力。 */
+  listTranslations?(
+    documentId: string,
+  ): Promise<import('../shared-translation.ts').SharedTranslationRecord[]>;
   /** 发布已完成的页面译文；仅桌面固定工作区实现此能力。 */
   publishTranslation?(
     documentId: string,

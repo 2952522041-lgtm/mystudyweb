@@ -23,6 +23,7 @@ export const DESKTOP_CHANNELS = {
   createCourse: 'yeyu:create-course',
   exists: 'yeyu:exists',
   ensureDirectory: 'yeyu:ensure-directory',
+  listFiles: 'yeyu:list-files',
   readFile: 'yeyu:read-file',
   writeFile: 'yeyu:write-file',
   deleteFile: 'yeyu:delete-file',
@@ -42,6 +43,7 @@ export const DESKTOP_METHOD_NAMES = [
   'exists',
   'getWorkspaceInfo',
   'getLanShareStatus',
+  'listFiles',
   'listCourses',
   'readFile',
   'revealWorkspace',
@@ -76,6 +78,11 @@ export interface YeyuDesktopApi {
     courseDirectory: string,
     relativePath: string[],
   ): Promise<void>;
+  /** 列出课程内固定目录的普通文件名，不跟随符号链接。 */
+  listFiles?(
+    courseDirectory: string,
+    relativePath: string[],
+  ): Promise<string[]>;
   readFile(
     courseDirectory: string,
     relativePath: string[],

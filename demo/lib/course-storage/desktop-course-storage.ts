@@ -28,6 +28,7 @@ import {
 } from '../knowledge/artifact-renderer.ts';
 import {
   encodeSharedTranslation,
+  SHARED_TRANSLATION_MAX_BYTES,
   sharedTranslationFileName,
   validateSharedTranslation,
   type SharedTranslationRecord,
@@ -328,6 +329,62 @@ export class DesktopCourseStorage implements CourseStorage {
     const copy = new Uint8Array(data.byteLength);
     copy.set(data);
     return new File([copy], document.fileName, { type: 'application/pdf' });
+  }
+
+  async listTranslations(
+    documentId: string,
+  ): Promise<SharedTranslationRecord[]> {
+    const listFiles = this.api.listFiles?.bind(this.api);
+    if (!listFiles) return [];
+    let bundle: CourseBundle;
+    try {
+      bundle = await this.load();
+    } catch {
+      return [];
+    }
+    const document = bundle.manifest.documents.find(
+      (item) => item.id === documentId,
+    );
+    if (!document) return [];
+
+    let fileNames: string[];
+    try {
+      fileNames = await listFiles(this.directoryName, [
+        'Translations',
+        documentId,
+      ]);
+    } catch {
+      // A missing directory is normal before the first publish. Other
+      // transient filesystem failures should not prevent opening the PDF.
+      return [];
+    }
+
+    const records: SharedTranslationRecord[] = [];
+    for (const fileName of fileNames) {
+      if (!/^[a-f0-9]{64}\.json$/i.test(fileName)) continue;
+      try {
+        const data = await this.api.readFile(this.directoryName, [
+          'Translations',
+          documentId,
+          fileName,
+        ]);
+        if (data.byteLength > SHARED_TRANSLATION_MAX_BYTES) continue;
+        const parsed = JSON.parse(decoder.decode(data)) as unknown;
+        const valid = validateSharedTranslation(parsed, {
+          documentId,
+          fingerprint: document.fingerprint,
+          pageCount: document.pageCount,
+        });
+        if (!valid || valid.provider === 'mock') continue;
+        if ((await sharedTranslationFileName(valid)) !== fileName) continue;
+        records.push(valid);
+      } catch {
+        // Corrupt, partial, missing, or replaced records are ignored; the
+        // reader can still show other pages and retry on a later open.
+      }
+    }
+    records.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return records;
   }
 
   async publishTranslation(

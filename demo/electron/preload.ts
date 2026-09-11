@@ -15,6 +15,12 @@ const api: YeyuDesktopApi = {
       courseDirectory,
       relativePath,
     ),
+  listFiles: (courseDirectory, relativePath) =>
+    ipcRenderer.invoke(
+      DESKTOP_CHANNELS.listFiles,
+      courseDirectory,
+      relativePath,
+    ),
   readFile: (courseDirectory, relativePath) =>
     ipcRenderer.invoke(
       DESKTOP_CHANNELS.readFile,
