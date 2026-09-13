@@ -33,11 +33,16 @@ import {
 } from '../electron/workspace.ts';
 import { resolveWorkspaceLayout } from '../electron/workspace-paths.ts';
 import {
+  KNOWLEDGE_MAX_OUTPUT_TOKENS,
+  KNOWLEDGE_MAX_OUTPUT_TOKENS_GLM_4_6V,
   KnowledgeError,
   createKnowledgeDigestCache,
   createKnowledgeProviderForSettings,
   knowledgeDigestCacheKey,
+  knowledgeMaxOutputTokens,
+  normalizeKnowledgeModel,
 } from '../lib/knowledge/ai-knowledge-provider.ts';
+import { ChatError } from '../lib/ai-errors.ts';
 import { buildPdfChunks } from '../lib/knowledge/pdf-chunks.ts';
 import {
   applyAiCourseKnowledge,
@@ -265,15 +270,32 @@ const importOptions: ImportOptions = {
 function makeProvider(
   replies: Array<MockReply | string>,
   cacheStore?: KVStore<DocumentDigest>,
+  settingsOverride: KnowledgeSettings = settings,
 ) {
   const { requests, fetchImpl } = createMockFetch(replies);
   const store = cacheStore ?? createMemoryStore<DocumentDigest>();
   const provider = createKnowledgeProviderForSettings(
-    settings,
+    settingsOverride,
     fetchImpl,
     createKnowledgeDigestCache(store),
   );
   return { requests, provider, store };
+}
+
+/** glm-4.6v 的官方 max_tokens 上限是 32768，与其他型号不同。 */
+const GLM_4_6V_SETTINGS: KnowledgeSettings = {
+  ...settings,
+  model: 'glm-4.6v',
+};
+
+function makeSecondDigest(): DocumentDigest {
+  return makeAiDigest({
+    documentId: 'doc-bbbbbbbbbbbbbbbb',
+    fingerprint: 'bb11'.repeat(16),
+    title: '讲义2',
+    overview: '第二份讲义的 AI 概述，介绍特征值分解。',
+    sourcePages: [1, 2, 3],
+  });
 }
 
 void test('chunker covers every page in order and tags pages, splitting overlong pages at boundaries', () => {
@@ -350,6 +372,98 @@ void test('chunk analysis allows long output and bounds the section count in the
   assert.match(chunkPrompt, /每页一节/);
 });
 
+void test('glm-4.6v uses its own 32768 output ceiling while every other model keeps 8192', () => {
+  assert.equal(KNOWLEDGE_MAX_OUTPUT_TOKENS, 8192);
+  assert.equal(KNOWLEDGE_MAX_OUTPUT_TOKENS_GLM_4_6V, 32768);
+  assert.equal(knowledgeMaxOutputTokens('glm-4.6v'), 32768);
+  // 首尾空格与大小写不应影响识别。
+  assert.equal(normalizeKnowledgeModel('  GLM-4.6V\t'), 'glm-4.6v');
+  assert.equal(knowledgeMaxOutputTokens(' GLM-4.6V '), 32768);
+  // 其他型号（含名字相近的）必须保持原上限，避免误匹配。
+  for (const model of [
+    'glm-4.6',
+    'glm-4.6v-flash',
+    'glm-4.6vx',
+    'my-glm-4.6v',
+    'glm-4.7-flashx',
+    'knowledge-model-x',
+    '',
+  ]) {
+    assert.equal(knowledgeMaxOutputTokens(model), 8192, `${model} 不应命中 glm-4.6v 上限`);
+  }
+});
+
+void test('all three glm-4.6v stages send max_tokens=32768 through the request chain', async () => {
+  const { requests, provider } = makeProvider(
+    [chunkAnalysisReply(), digestReply(), courseReply()],
+    undefined,
+    GLM_4_6V_SETTINGS,
+  );
+  await provider.analyzeDocument({
+    fingerprint: FINGERPRINT,
+    fileName: FILE_NAME,
+    documentId: DOCUMENT_ID,
+    pages: PAGES,
+  });
+  await provider.synthesizeCourseKnowledge({
+    courseId: 'course-1',
+    courseName: '线性代数',
+    digests: [makeAiDigest(), makeSecondDigest()],
+  });
+
+  assert.equal(provider.model, 'glm-4.6v');
+  // 分块分析、单文档综合、课程综合三个阶段都必须带上提高后的上限。
+  assert.deepEqual(
+    requests.map((request) => request.body.max_tokens),
+    [32768, 32768, 32768],
+  );
+  for (const request of requests) {
+    assert.equal(request.body.model, 'glm-4.6v');
+  }
+
+  // 大小写/空格写法同样提高上限，但请求里保留用户填写的模型名。
+  const { requests: paddedRequests, provider: paddedProvider } = makeProvider(
+    [chunkAnalysisReply(), digestReply()],
+    undefined,
+    { ...settings, model: ' GLM-4.6V ' },
+  );
+  assert.equal(paddedProvider.model, 'GLM-4.6V');
+  await paddedProvider.analyzeDocument({
+    fingerprint: FINGERPRINT,
+    fileName: FILE_NAME,
+    documentId: DOCUMENT_ID,
+    pages: PAGES,
+  });
+  assert.deepEqual(
+    paddedRequests.map((request) => request.body.max_tokens),
+    [32768, 32768],
+  );
+  for (const request of paddedRequests) {
+    assert.equal(request.body.model, 'GLM-4.6V');
+  }
+});
+
+void test('other models still request the original 8192 ceiling end to end', async () => {
+  const { requests, provider } = makeProvider(
+    [chunkAnalysisReply(), digestReply(), courseReply()],
+  );
+  await provider.analyzeDocument({
+    fingerprint: FINGERPRINT,
+    fileName: FILE_NAME,
+    documentId: DOCUMENT_ID,
+    pages: PAGES,
+  });
+  await provider.synthesizeCourseKnowledge({
+    courseId: 'course-1',
+    courseName: '线性代数',
+    digests: [makeAiDigest(), makeSecondDigest()],
+  });
+  assert.deepEqual(
+    requests.map((request) => request.body.max_tokens),
+    [8192, 8192, 8192],
+  );
+});
+
 void test('provider rejects unconfigured knowledge settings instead of falling back', async () => {
   const unconfigured: KnowledgeSettings = { ...settings, apiKey: '' };
   const { fetchImpl } = createMockFetch([digestReply()]);
@@ -410,6 +524,121 @@ void test('finish_reason=length results are rejected and never cached', async ()
       error instanceof KnowledgeError && error.code === 'truncated',
   );
   assert.equal((await store.keys()).length, 0);
+});
+
+void test('a truncated synthesis stage is rejected and leaves the previous cached digest intact', async () => {
+  const store = createMemoryStore<DocumentDigest>();
+  const input = {
+    fingerprint: FINGERPRINT,
+    fileName: FILE_NAME,
+    documentId: DOCUMENT_ID,
+    pages: PAGES,
+  };
+  const { requests, provider } = makeProvider(
+    [chunkAnalysisReply(), digestReply()],
+    store,
+  );
+  const first = await provider.analyzeDocument(input);
+  assert.equal((await store.keys()).length, 1);
+
+  // 用户点“重新生成”：分块分析成功，但单文档综合被输出上限截断。
+  const { provider: truncating } = makeProvider(
+    [
+      { text: chunkAnalysisReply() },
+      { text: digestReply(), finishReason: 'length' },
+    ],
+    store,
+  );
+  await assert.rejects(
+    truncating.analyzeDocument({ ...input, bypassCache: true }),
+    (error: unknown) =>
+      error instanceof KnowledgeError && error.code === 'truncated',
+  );
+
+  // 旧成果必须原样保留，而且仍然命中缓存（不再发起新请求）。
+  const cached = await provider.analyzeDocument(input);
+  assert.deepEqual(cached, first);
+  assert.equal(requests.length, 2);
+  assert.equal((await store.keys()).length, 1);
+});
+
+void test('truncation blames the output ceiling instead of the input context and names the limit used', async () => {
+  const { provider, store } = makeProvider(
+    [{ text: chunkAnalysisReply(), finishReason: 'length' }],
+    undefined,
+    GLM_4_6V_SETTINGS,
+  );
+  await assert.rejects(
+    provider.analyzeDocument({
+      fingerprint: FINGERPRINT,
+      fileName: FILE_NAME,
+      documentId: DOCUMENT_ID,
+      pages: PAGES,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof KnowledgeError);
+      assert.equal(error.code, 'truncated');
+      assert.match(error.message, /输出长度上限/);
+      assert.match(error.message, /max_tokens=32768/);
+      assert.match(error.message, /glm-4\.6v/);
+      // 必须明确这是输出截断，而不是笼统归因于上下文不足。
+      assert.match(error.message, /不是输入上下文不足/);
+      assert.doesNotMatch(error.message, /kb-secret-key-123/);
+      assert.equal((error as KnowledgeError).message.includes('Bearer'), false);
+      return true;
+    },
+  );
+  assert.equal((await store.keys()).length, 0);
+});
+
+void test('input context overflow is reported as its own failure, not as output truncation', async () => {
+  const { provider, store } = makeProvider([
+    {
+      text: "This model's maximum context length is 128000 tokens. Please reduce the length of the messages.",
+      status: 400,
+    },
+  ]);
+  await assert.rejects(
+    provider.analyzeDocument({
+      fingerprint: FINGERPRINT,
+      fileName: FILE_NAME,
+      documentId: DOCUMENT_ID,
+      pages: PAGES,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof KnowledgeError);
+      assert.equal(error.code, 'context_overflow');
+      assert.match(error.message, /输入内容超出/);
+      assert.match(error.message, /不是输出长度不足/);
+      assert.match(error.message, /分块分析/);
+      assert.doesNotMatch(error.message, /输出长度上限/);
+      assert.doesNotMatch(error.message, /kb-secret-key-123/);
+      return true;
+    },
+  );
+  assert.equal((await store.keys()).length, 0);
+});
+
+void test('unrelated 400 errors are not mislabelled as context overflow', async () => {
+  const { provider } = makeProvider([
+    { text: 'invalid request: model glm-4.6v does not exist', status: 400 },
+  ]);
+  await assert.rejects(
+    provider.analyzeDocument({
+      fingerprint: FINGERPRINT,
+      fileName: FILE_NAME,
+      documentId: DOCUMENT_ID,
+      pages: PAGES,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ChatError);
+      assert.equal(error.code, 'invalid_input');
+      assert.match(error.message, /does not exist/);
+      assert.doesNotMatch(error.message, /上下文长度/);
+      assert.doesNotMatch(error.message, /kb-secret-key-123/);
+      return true;
+    },
+  );
 });
 
 void test('source pages outside the PDF range are rejected and never saved', async () => {

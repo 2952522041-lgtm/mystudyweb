@@ -30,8 +30,26 @@ export const KNOWLEDGE_PROVIDER_ID = 'openai-compatible-knowledge';
 /** 知识库提示词版本：修改提示词必须递增，缓存与课程成果都会记录它。 */
 export const KNOWLEDGE_DIGEST_PROMPT_VERSION = 'ai-digest-v2';
 export const KNOWLEDGE_COURSE_PROMPT_VERSION = 'ai-course-v1';
-/** 分块分析与综合共用的输出 token 上限；过小会触发 finish_reason=length 截断。 */
+/** 分块分析与综合共用的默认输出 token 上限；过小会触发 finish_reason=length 截断。 */
 export const KNOWLEDGE_MAX_OUTPUT_TOKENS = 8192;
+/**
+ * glm-4.6v 的 max_tokens 上限是 32768（默认 16384），远高于其他兼容模型的通用值。
+ * GLM-4.6V 与 GLM-4.6 是不同的型号，限制也不同，不能互相套用。
+ * 依据：https://docs.bigmodel.cn/cn/guide/start/concept-param
+ */
+export const KNOWLEDGE_MAX_OUTPUT_TOKENS_GLM_4_6V = 32768;
+
+/** 模型名归一化：只忽略首尾空格与大小写，其余字符保留，避免误匹配其他型号。 */
+export function normalizeKnowledgeModel(model: string): string {
+  return model.trim().toLowerCase();
+}
+
+/** 按模型选择本次知识库请求的输出上限；未收录的模型沿用通用上限。 */
+export function knowledgeMaxOutputTokens(model: string): number {
+  return normalizeKnowledgeModel(model) === 'glm-4.6v'
+    ? KNOWLEDGE_MAX_OUTPUT_TOKENS_GLM_4_6V
+    : KNOWLEDGE_MAX_OUTPUT_TOKENS;
+}
 
 export type KnowledgeStage =
   | 'cached'
@@ -48,6 +66,7 @@ export type KnowledgeErrorCode =
   | 'server'
   | 'invalid_input'
   | 'truncated'
+  | 'context_overflow'
   | 'invalid_output'
   | 'invalid_source_pages'
   | 'aborted';
@@ -189,6 +208,26 @@ function extractJsonObject(text: string): unknown {
   return JSON.parse(cleaned.slice(start, end + 1)) as unknown;
 }
 
+/**
+ * 供应商把“输入上下文超限”按参数错误返回（通常 400），只能靠错误文案识别。
+ * 只匹配明确指向输入侧的词，避免和输出长度上限（max_tokens 参数错误）混为一谈。
+ */
+const CONTEXT_OVERFLOW_PATTERN =
+  /context[_ ](?:length|window)|maximum context|max(?:imum)? (?:input|prompt) (?:length|tokens)|context_length_exceeded|reduce the length of|prompt is too long|input is too long|too many (?:input )?tokens|输入.{0,8}(?:过长|超长|超限|超出|超过)|上下文.{0,8}(?:过长|超长|超限|超出|超过)|(?:超过|超出).{0,10}(?:输入|上下文)/i;
+
+function asContextOverflowError(
+  error: unknown,
+  config: ChatCompletionConfig,
+  contextLabel: string,
+): unknown {
+  if (!(error instanceof ChatError)) return error;
+  if (!CONTEXT_OVERFLOW_PATTERN.test(error.message)) return error;
+  return new KnowledgeError(
+    'context_overflow',
+    `${contextLabel}的输入内容超出模型（${config.model}）可接受的上下文长度，属于输入超限而不是输出长度不足；已放弃本次结果，请减少一次分析的页数或文档数，或改用上下文更长的模型。`,
+  );
+}
+
 async function completeJson(
   config: ChatCompletionConfig,
   input: {
@@ -204,16 +243,21 @@ async function completeJson(
   ];
   let lastFailure = '';
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const result = await requestChatCompletion(config, {
-      messages,
-      temperature: 0.1,
-      maxTokens: input.maxTokens,
-      signal: input.signal,
-    });
+    let result: Awaited<ReturnType<typeof requestChatCompletion>>;
+    try {
+      result = await requestChatCompletion(config, {
+        messages,
+        temperature: 0.1,
+        maxTokens: input.maxTokens,
+        signal: input.signal,
+      });
+    } catch (error) {
+      throw asContextOverflowError(error, config, input.contextLabel);
+    }
     if (result.finishReason === 'length') {
       throw new KnowledgeError(
         'truncated',
-        `${input.contextLabel}的 AI 输出因模型长度上限被截断，为避免保存残缺内容已放弃本次结果。请稍后重试或更换模型。`,
+        `${input.contextLabel}的 AI 输出达到本次请求的输出长度上限（max_tokens=${input.maxTokens}，模型 ${config.model}），属于输出被截断而不是输入上下文不足；为避免保存残缺内容已放弃本次结果。若该阶段反复截断，说明整份文档无法在一次输出内综合完，需要改为分批综合后再合并。`,
       );
     }
     try {
@@ -786,6 +830,7 @@ export function createKnowledgeProviderForSettings(
     );
   }
   const model = settings.model.trim();
+  const maxOutputTokens = knowledgeMaxOutputTokens(model);
   const requestConfig: ChatCompletionConfig = {
     baseUrl: settings.baseUrl,
     apiKey: settings.apiKey.trim(),
@@ -838,7 +883,7 @@ export function createKnowledgeProviderForSettings(
             pageCount,
             chunk,
           }),
-          maxTokens: KNOWLEDGE_MAX_OUTPUT_TOKENS,
+          maxTokens: maxOutputTokens,
           signal: input.signal,
           contextLabel: `分块分析（第 ${chunk.pageStart}–${chunk.pageEnd} 页）`,
         });
@@ -853,7 +898,7 @@ export function createKnowledgeProviderForSettings(
           pageCount,
           chunkResults,
         }),
-        maxTokens: KNOWLEDGE_MAX_OUTPUT_TOKENS,
+        maxTokens: maxOutputTokens,
         signal: input.signal,
         contextLabel: '单文档综合',
       });
@@ -887,7 +932,7 @@ export function createKnowledgeProviderForSettings(
           digests: input.digests,
           userNodeLabels: input.userNodeLabels ?? [],
         }),
-        maxTokens: KNOWLEDGE_MAX_OUTPUT_TOKENS,
+        maxTokens: maxOutputTokens,
         signal: input.signal,
         contextLabel: '课程综合',
       });
