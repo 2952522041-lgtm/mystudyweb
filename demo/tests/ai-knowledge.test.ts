@@ -620,8 +620,73 @@ void test('input context overflow is reported as its own failure, not as output 
 });
 
 void test('unrelated 400 errors are not mislabelled as context overflow', async () => {
-  const { provider } = makeProvider([
-    { text: 'invalid request: model glm-4.6v does not exist', status: 400 },
+  const cases = [
+    'invalid request: model glm-4.6v does not exist',
+    // 限流的措辞出现在 400 时也不能被当成上下文超限。
+    'Too many tokens per minute',
+    // 只是不支持该参数，与上下文容量无关。
+    'max_output_tokens is not supported',
+    'invalid temperature: must be between 0 and 1',
+  ];
+  for (const text of cases) {
+    const { provider, store } = makeProvider([{ text, status: 400 }]);
+    await assert.rejects(
+      provider.analyzeDocument({
+        fingerprint: FINGERPRINT,
+        fileName: FILE_NAME,
+        documentId: DOCUMENT_ID,
+        pages: PAGES,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ChatError, `${text} 应保留 ChatError`);
+        assert.equal(error.code, 'invalid_input');
+        assert.match(error.message, /400/);
+        assert.doesNotMatch(error.message, /上下文长度|上下文容量/);
+        assert.doesNotMatch(error.message, /kb-secret-key-123/);
+        return true;
+      },
+    );
+    assert.equal((await store.keys()).length, 0);
+  }
+});
+
+void test('rate limit and auth errors keep their original classification instead of being read as context overflow', async () => {
+  const cases: Array<{ status: number; text: string; code: ChatError['code'] }> = [
+    // 429 的 “too many tokens per minute” 说的是速率，不是上下文长度。
+    { status: 429, text: 'Too many tokens per minute', code: 'rate_limit' },
+    { status: 429, text: '当前并发请求过多，请稍后重试', code: 'rate_limit' },
+    { status: 401, text: 'invalid api key: input token expired', code: 'auth' },
+    { status: 403, text: 'permission denied', code: 'auth' },
+  ];
+  for (const item of cases) {
+    const { provider, store } = makeProvider([
+      { text: item.text, status: item.status },
+    ]);
+    await assert.rejects(
+      provider.analyzeDocument({
+        fingerprint: FINGERPRINT,
+        fileName: FILE_NAME,
+        documentId: DOCUMENT_ID,
+        pages: PAGES,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ChatError, `${item.status} 应保留 ChatError`);
+        assert.equal(error.code, item.code);
+        assert.notEqual(error.code, 'context_overflow');
+        assert.match(error.message, new RegExp(String(item.status)));
+        assert.doesNotMatch(error.message, /上下文长度|上下文容量/);
+        assert.doesNotMatch(error.message, /kb-secret-key-123/);
+        return true;
+      },
+    );
+    assert.equal((await store.keys()).length, 0);
+  }
+});
+
+void test('reserved-output parameter errors get a neutral message instead of blaming the input', async () => {
+  const { provider, store } = makeProvider([
+    // 这是预留输出额度与上下文容量冲突，不能判定成“输入过长”。
+    { text: 'max_tokens must be less than the context window', status: 400 },
   ]);
   await assert.rejects(
     provider.analyzeDocument({
@@ -631,14 +696,44 @@ void test('unrelated 400 errors are not mislabelled as context overflow', async 
       pages: PAGES,
     }),
     (error: unknown) => {
-      assert.ok(error instanceof ChatError);
-      assert.equal(error.code, 'invalid_input');
-      assert.match(error.message, /does not exist/);
-      assert.doesNotMatch(error.message, /上下文长度/);
+      assert.ok(error instanceof KnowledgeError);
+      assert.equal(error.code, 'context_overflow');
+      assert.match(error.message, /输入与输出合计超出/);
+      assert.match(error.message, /无法确定是输入过长还是预留的输出额度过大/);
+      // 不能把责任单方面推给输入，也不能暴露凭据。
+      assert.doesNotMatch(error.message, /输入内容超出/);
+      assert.doesNotMatch(error.message, /不是输出长度不足/);
       assert.doesNotMatch(error.message, /kb-secret-key-123/);
       return true;
     },
   );
+  assert.equal((await store.keys()).length, 0);
+});
+
+void test('input-side length errors are still reported as input overflow', async () => {
+  const cases = [
+    '输入长度超过模型最大输入长度限制',
+    'The input is too long for this model',
+  ];
+  for (const text of cases) {
+    const { provider } = makeProvider([{ text, status: 400 }]);
+    await assert.rejects(
+      provider.analyzeDocument({
+        fingerprint: FINGERPRINT,
+        fileName: FILE_NAME,
+        documentId: DOCUMENT_ID,
+        pages: PAGES,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof KnowledgeError);
+        assert.equal(error.code, 'context_overflow');
+        assert.match(error.message, /输入内容超出/);
+        assert.match(error.message, /不是输出长度不足/);
+        assert.doesNotMatch(error.message, /输入与输出合计超出/);
+        return true;
+      },
+    );
+  }
 });
 
 void test('source pages outside the PDF range are rejected and never saved', async () => {

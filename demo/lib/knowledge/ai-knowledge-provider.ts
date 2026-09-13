@@ -209,11 +209,22 @@ function extractJsonObject(text: string): unknown {
 }
 
 /**
- * 供应商把“输入上下文超限”按参数错误返回（通常 400），只能靠错误文案识别。
- * 只匹配明确指向输入侧的词，避免和输出长度上限（max_tokens 参数错误）混为一谈。
+ * 只匹配明确说“输入侧太长”的文案。供应商把这类问题按参数错误（400/413/422）返回，
+ * 因此限流（429）、鉴权（401/403）等原始分类不会被改写。
  */
-const CONTEXT_OVERFLOW_PATTERN =
-  /context[_ ](?:length|window)|maximum context|max(?:imum)? (?:input|prompt) (?:length|tokens)|context_length_exceeded|reduce the length of|prompt is too long|input is too long|too many (?:input )?tokens|输入.{0,8}(?:过长|超长|超限|超出|超过)|上下文.{0,8}(?:过长|超长|超限|超出|超过)|(?:超过|超出).{0,10}(?:输入|上下文)/i;
+const INPUT_TOO_LONG_PATTERN =
+  /context[_ ]length[ _]exceeded|maximum context length|max(?:imum)? (?:input|prompt) (?:length|tokens)|(?:input|prompt|messages?) (?:is |are )?too (?:long|large)|exceed(?:s|ed|ing)? .{0,20}(?:context|input|prompt)|reduce the length of|too long for (?:this|the) model|输入.{0,8}(?:过长|超长|超限|超出|超过)|上下文.{0,8}(?:过长|超长|超限|超出|超过)|(?:超过|超出).{0,10}(?:输入|上下文)/i;
+
+/**
+ * 文案同时提到“预留的输出额度”和“上下文容量”：此时输入与输出合计超限，
+ * 可能只是预留的 max_tokens 过大（例如 max_tokens must be less than the
+ * context window），不能单方面归因于输入过长。只提 max_tokens 而不提容量的
+ * （例如 max_output_tokens is not supported）属于参数不支持，保持原错误。
+ */
+const OUTPUT_RESERVATION_PATTERN =
+  /max[_ ]?(?:output[_ ])?tokens|max\s*output|输出(?:上限|长度|token)|预留/i;
+const CONTEXT_CAPACITY_PATTERN =
+  /context (?:window|length|size)|context[_ ]length|tokens? (?:limit|capacity)|(?:最大)?(?:上下文|容量)|长度限制/i;
 
 function asContextOverflowError(
   error: unknown,
@@ -221,11 +232,26 @@ function asContextOverflowError(
   contextLabel: string,
 ): unknown {
   if (!(error instanceof ChatError)) return error;
-  if (!CONTEXT_OVERFLOW_PATTERN.test(error.message)) return error;
-  return new KnowledgeError(
-    'context_overflow',
-    `${contextLabel}的输入内容超出模型（${config.model}）可接受的上下文长度，属于输入超限而不是输出长度不足；已放弃本次结果，请减少一次分析的页数或文档数，或改用上下文更长的模型。`,
-  );
+  // 限流、鉴权、服务端故障等分类必须原样保留，只有参数错误才可能是长度问题。
+  if (error.code !== 'invalid_input') return error;
+  const inputTooLong = INPUT_TOO_LONG_PATTERN.test(error.message);
+  const outputReserved = OUTPUT_RESERVATION_PATTERN.test(error.message);
+  const capacity = CONTEXT_CAPACITY_PATTERN.test(error.message);
+  const hint =
+    '已放弃本次结果，请减少一次分析的页数或文档数，或改用上下文更长的模型。';
+  if (inputTooLong && !outputReserved) {
+    return new KnowledgeError(
+      'context_overflow',
+      `${contextLabel}的输入内容超出模型（${config.model}）可接受的上下文长度，属于输入超限而不是输出长度不足；${hint}`,
+    );
+  }
+  if (outputReserved && capacity) {
+    return new KnowledgeError(
+      'context_overflow',
+      `${contextLabel}的输入与输出合计超出模型（${config.model}）的上下文容量（${error.message}），无法确定是输入过长还是预留的输出额度过大；${hint}`,
+    );
+  }
+  return error;
 }
 
 async function completeJson(
