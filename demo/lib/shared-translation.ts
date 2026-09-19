@@ -155,6 +155,32 @@ export function sharedTranslationFromCache(
   };
 }
 
+/**
+ * Picks the newest published record a reader may restore without re-extracting
+ * the page. The prompt version is part of the match: after a prompt change,
+ * records produced under the old prompt must not keep serving stale text.
+ */
+export function findRestorableSharedTranslation(
+  records: SharedTranslationRecord[],
+  criteria: {
+    fingerprint: string;
+    pageNumber: number;
+    targetLanguage: string;
+    promptVersion?: number;
+  },
+): SharedTranslationRecord | undefined {
+  const promptVersion = criteria.promptVersion ?? PROMPT_VERSION;
+  return records
+    .filter(
+      (record) =>
+        record.fingerprint === criteria.fingerprint &&
+        record.pageNumber === criteria.pageNumber &&
+        record.targetLanguage === criteria.targetLanguage &&
+        record.promptVersion === promptVersion,
+    )
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+}
+
 /** 将课程目录记录转换成阅读器可消费的缓存形状，但不写回 IndexedDB。 */
 export function cachedTranslationFromShared(
   record: SharedTranslationRecord,

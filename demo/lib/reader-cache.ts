@@ -312,7 +312,8 @@ export async function resolvePageTranslation(input: {
           record.fingerprint === fingerprint &&
           record.pageNumber === request.pageNumber &&
           record.targetLanguage === request.targetLanguage &&
-          record.sourceHash === sourceHash,
+          record.sourceHash === sourceHash &&
+          record.promptVersion === PROMPT_VERSION,
       )
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
     if (published) {

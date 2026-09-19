@@ -181,3 +181,25 @@ void test('itemsFromPdfJs flips PDF coordinates to top-origin and drops blanks',
   );
   assert.equal(items[0].str, 'first');
 });
+
+void test('normalizePage folds Office equation characters into plain text', () => {
+  // PowerPoint/Office equation exports extract as Mathematical Italic
+  // codepoints; translation models drop or corrupt those, so the page
+  // pipeline must hand out plain equivalents.
+  const page = normalizePage([
+    item('Rotate by \u{1D711} about z.', 0, 0, 200),
+    item('R = Rotz(\u{1D711})Roty(\u{1D703})Rotz(\u{1D713})', 0, 14, 200),
+    item(
+      'c\u{1D711}c\u{1D703}c\u{1D713} \u2212 s\u{1D711}s\u{1D713}',
+      0,
+      42,
+      200,
+    ),
+    item('中文说明，全角标号不受影响！', 0, 56, 200),
+  ]);
+  assert.deepEqual(page.paragraphs, [
+    'Rotate by φ about z. R = Rotz(φ)Roty(θ)Rotz(ψ)',
+    'cφcθcψ − sφsψ 中文说明，全角标号不受影响！',
+  ]);
+  assert.equal(page.text, page.paragraphs.join('\n\n'));
+});

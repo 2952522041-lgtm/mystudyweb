@@ -21,7 +21,7 @@ void test('cache keys change with language, provider, model, and prompt version'
     provider: 'p',
     model: 'm',
   };
-  assert.equal(translationCacheKey(base), 'abc:简体中文:p:m:v4');
+  assert.equal(translationCacheKey(base), 'abc:简体中文:p:m:v5');
   assert.notEqual(
     translationCacheKey(base),
     translationCacheKey({ ...base, targetLanguage: '日本語' }),
@@ -32,7 +32,7 @@ void test('cache keys change with language, provider, model, and prompt version'
   );
   assert.notEqual(
     translationCacheKey(base),
-    translationCacheKey({ ...base, promptVersion: 5 }),
+    translationCacheKey({ ...base, promptVersion: 4 }),
   );
 });
 
@@ -242,6 +242,12 @@ void test('provider translates a dense page in multiple sequential requests', as
     const userText = body.messages[1].content.split('\n---\n')[1];
     assert.ok(userText.length <= 3000);
     assert.match(body.messages[0].content, /Translate every sentence/);
+    assert.match(body.messages[0].content, /character for character/);
+    assert.match(body.messages[0].content, /Greek letters/);
+    assert.match(
+      body.messages[0].content,
+      /Never drop, transliterate, or replace them/,
+    );
   }
 });
 

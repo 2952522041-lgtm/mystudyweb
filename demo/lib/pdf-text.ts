@@ -1,3 +1,5 @@
+import { normalizeMathText } from './math-text.ts';
+
 export interface PdfTextItem {
   str: string;
   x: number;
@@ -273,6 +275,8 @@ function buildParagraphs(lines: LineBox[]): string[] {
  * Normalizes raw PDF text items into paragraphs: lines are grouped by
  * baseline, ordered per detected columns, hyphenated words are rejoined, and
  * paragraph boundaries are inferred from gaps, indents, and sentence ends.
+ * Mathematical compatibility characters (e.g. `𝜑` from Office equation
+ * exports) are folded to plain equivalents so downstream models keep them.
  */
 export function normalizePage(items: PdfTextItem[]): NormalizedPageText {
   const usable = items.filter((item) => item.str.trim().length > 0);
@@ -283,7 +287,8 @@ export function normalizePage(items: PdfTextItem[]): NormalizedPageText {
   for (const column of columns) {
     paragraphs.push(...buildParagraphs(groupLines(column)));
   }
-  return { paragraphs, text: paragraphs.join('\n\n') };
+  const normalized = paragraphs.map((paragraph) => normalizeMathText(paragraph));
+  return { paragraphs: normalized, text: normalized.join('\n\n') };
 }
 
 export async function sha256Hex(input: string | ArrayBuffer): Promise<string> {

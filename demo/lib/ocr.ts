@@ -3,6 +3,7 @@ import {
   type ChatSettings,
 } from './chat-cache.ts';
 import type { PageImageInput } from './chat.ts';
+import { normalizeMathText } from './math-text.ts';
 import { createIndexedDBStore, type KVStore } from './reader-cache.ts';
 
 export const OCR_PROMPT_VERSION = 1;
@@ -146,16 +147,23 @@ export async function resolvePageOcr(input: {
       provider: provider.id,
       model: provider.model,
     });
-    if (hit) return { status: 'cached', result: hit };
+    // Cached entries may predate math normalization; fold on read so every
+    // consumer gets the same character set as a fresh recognition.
+    if (hit)
+      return {
+        status: 'cached',
+        result: { ...hit, text: normalizeMathText(hit.text) },
+      };
   }
 
   const result = await provider.recognize(request, signal);
+  const normalized = { ...result, text: normalizeMathText(result.text) };
   await cache.save({
-    ...result,
+    ...normalized,
     fingerprint: request.fingerprint,
     pageNumber: request.pageNumber,
     promptVersion: OCR_PROMPT_VERSION,
     updatedAt: new Date().toISOString(),
   });
-  return { status: 'complete', result };
+  return { status: 'complete', result: normalized };
 }

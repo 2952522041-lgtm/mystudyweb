@@ -90,3 +90,42 @@ void test('OCR results are cached by document, page, provider, model and prompt'
   assert.equal(second.result.text, 'recognized text');
   assert.equal(calls, 1);
 });
+
+void test('OCR results fold mathematical compatibility characters on fresh and cached reads', async () => {
+  const cache = createOcrCache(createMemoryStore<CachedOcr>());
+  let calls = 0;
+  const provider = {
+    id: 'vision:https://example.com/v1',
+    model: 'vision-model',
+    async recognize() {
+      calls += 1;
+      return {
+        text: 'R = Rotz(\u{1D711})Roty(\u{1D703})Rotz(\u{1D713})',
+        provider: this.id,
+        model: this.model,
+      };
+    },
+  };
+
+  const fresh = await resolvePageOcr({ provider, cache, request });
+  assert.equal(
+    fresh.result.text,
+    'R = Rotz(φ)Roty(θ)Rotz(ψ)',
+    'fresh recognition is normalized before it reaches translation',
+  );
+
+  // An entry cached before normalization existed still reads back clean.
+  await cache.save({
+    text: 'c\u{1D711}c\u{1D703}c\u{1D713}',
+    provider: provider.id,
+    model: provider.model,
+    fingerprint: request.fingerprint,
+    pageNumber: request.pageNumber,
+    promptVersion: 1,
+    updatedAt: new Date().toISOString(),
+  });
+  const legacy = await resolvePageOcr({ provider, cache, request });
+  assert.equal(legacy.status, 'cached');
+  assert.equal(legacy.result.text, 'cφcθcψ');
+  assert.equal(calls, 1);
+});

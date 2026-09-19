@@ -26,6 +26,7 @@ import {
 } from '../lib/shared-translation.ts';
 import {
   createMockTranslationProvider,
+  PROMPT_VERSION,
   TranslationError,
   type TranslationRequest,
 } from '../lib/translation.ts';
@@ -282,6 +283,54 @@ void test('bypassCache actively retranslates instead of using course persistence
   assert.equal(result.source, 'generated');
   assert.equal(calls, 1);
   assert.deepEqual(result.result.paragraphs, ['主动重新生成的译文。']);
+});
+
+void test('course records from an older prompt version are not restored', async () => {
+  const text = 'R = Rotz(φ)Roty(θ)Rotz(ψ)';
+  const sourceHash = await sha256Hex(text);
+  let calls = 0;
+  const provider = {
+    id: 'current-provider',
+    model: 'current-model',
+    async translate() {
+      calls += 1;
+      return {
+        paragraphs: ['R = Rotz(φ)Roty(θ)Rotz(ψ)（修复后的译文）'],
+        provider: 'current-provider',
+        model: 'current-model',
+      };
+    },
+  };
+  const stale = sharedTranslationFromCache(
+    {
+      fingerprint: 'fp-stale-prompt',
+      pageNumber: 1,
+      sourceHash,
+      // Pre-fix translation lost the Greek letters; its prompt is outdated.
+      paragraphs: ['R = Rotz()Roty()Rotz()'],
+      targetLanguage: '简体中文',
+      provider: 'old-provider',
+      model: 'old-model',
+      updatedAt: '2026-09-20T01:00:00.000Z',
+      promptVersion: PROMPT_VERSION - 1,
+    },
+    'course-document',
+  );
+  const result = await resolvePageTranslation({
+    provider,
+    cache: createTranslationCache(createMemoryStore<CachedTranslation>()),
+    fingerprint: 'fp-stale-prompt',
+    request: {
+      text,
+      sourceLanguage: 'auto',
+      targetLanguage: '简体中文',
+      pageNumber: 1,
+    },
+    publishedTranslations: [stale],
+  });
+  assert.equal(result.source, 'generated');
+  assert.equal(calls, 1);
+  assert.match(result.result.paragraphs[0] ?? '', /φ/);
 });
 
 void test('translation completion waits for publication and keeps local result on save failure', async () => {

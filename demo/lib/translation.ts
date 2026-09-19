@@ -35,7 +35,7 @@ export class TranslationError extends Error {
   }
 }
 
-export const PROMPT_VERSION = 4;
+export const PROMPT_VERSION = 5;
 export const MAX_AUTO_RETRIES = 2;
 export const MAX_TRANSLATION_CHUNK_CHARACTERS = 3000;
 const MAX_TRUNCATION_SPLITS = 3;
@@ -133,6 +133,7 @@ const SYSTEM_PROMPT = [
   '- Keep the paragraph order and paragraph count.',
   '- Separate paragraphs with one blank line.',
   '- Preserve formulas, code, citation numbers, and proper nouns.',
+  '- Copy math and scientific notation character for character: Greek letters (α, β, γ, θ, λ, μ, φ, ψ, ω), operators (±, ×, ÷, ≤, ≥, ≠, ≈, ∑, ∫, √), subscripts, superscripts, and units. Never drop, transliterate, or replace them.',
   '- Never invent information that is not in the source text.',
 ].join('\n');
 

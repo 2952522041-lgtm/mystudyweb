@@ -112,6 +112,7 @@ import {
 } from '@/lib/reader-cache';
 import {
   cachedTranslationFromShared,
+  findRestorableSharedTranslation,
   publishCachedTranslationForReader,
   upsertSharedTranslation,
   type SharedTranslationRecord,
@@ -1146,14 +1147,14 @@ function PdfReader({
             return;
           }
 
-          const restored = publishedTranslations
-            .filter(
-              (record) =>
-                record.fingerprint === docMeta.fingerprint &&
-                record.pageNumber === translationPage &&
-                record.targetLanguage === targetLanguage,
-            )
-            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+          const restored = findRestorableSharedTranslation(
+            publishedTranslations,
+            {
+              fingerprint: docMeta.fingerprint,
+              pageNumber: translationPage,
+              targetLanguage,
+            },
+          );
           if (restored) {
             const cacheEntry = cachedTranslationFromShared(restored);
             await finishOutcome({
