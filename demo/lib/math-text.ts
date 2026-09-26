@@ -25,6 +25,7 @@ const COMPATIBILITY_CHARACTERS =
 export function normalizeMathText(text: string): string {
   if (!COMPATIBILITY_CHARACTER.test(text)) return text;
   return text.replace(COMPATIBILITY_CHARACTERS, (character) =>
-    character.normalize('NFKC'),
+    // Temperature and electrical units are meaningful symbols, not ligatures.
+    /[℃℉Ω]/u.test(character) ? character : character.normalize('NFKC'),
   );
 }

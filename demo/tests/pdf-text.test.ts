@@ -58,9 +58,9 @@ void test('normalizePage rebuilds paragraphs from gaps and sentence ends', () =>
   ]);
 });
 
-void test('normalizePage rejoins hyphenated words across line breaks', () => {
+void test('normalizePage rejoins explicitly soft-hyphenated words across line breaks', () => {
   const page = normalizePage([
-    item('The reader continues the transla-', 0, 0, 200),
+    item('The reader continues the transla\u00ad', 0, 0, 200),
     item('tion without interruption.', 0, 14, 200),
   ]);
   assert.equal(
@@ -202,4 +202,18 @@ void test('normalizePage folds Office equation characters into plain text', () =
     'cφcθcψ − sφsψ 中文说明，全角标号不受影响！',
   ]);
   assert.equal(page.text, page.paragraphs.join('\n\n'));
+});
+
+void test('extraction preserves scientific characters, units and visible line-end dashes', () => {
+  const text = 'x^2 H_2O α β γ θ μ Ω ≈ ≤ ≥ ± × ÷ → ∑ ∫ ∂ m/s² N·m ℃ - – —';
+  assert.equal(normalizePage([item(text, 0, 0, 500)]).text, text);
+  for (const dash of ['-', '–', '—']) {
+    assert.ok(normalizePage([item(`x${dash}`, 0, 0, 100), item('y', 0, 14, 100)]).text.includes(dash));
+  }
+});
+
+void test('edge digits attached to a formula and numeral-only pages are not page furniture', () => {
+  const page = normalizePage([item('x', 0, 5, 5), item('2', 5, 0, 3, 6), item('Body text below.', 0, 50, 200)]);
+  assert.match(page.text, /x2/);
+  assert.equal(normalizePage([item('123', 0, 0)]).text, '123');
 });

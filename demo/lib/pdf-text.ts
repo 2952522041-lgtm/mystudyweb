@@ -24,7 +24,7 @@ export interface NormalizedPageText {
 const MIN_EXTRACTABLE_LENGTH = 24;
 const MIN_COLUMN_SIDE_RATIO = 0.16;
 const MAX_GUTTER_CROSSING_RATIO = 0.25;
-const HYPHEN_PATTERN = /[A-Za-z]-$/;
+const HYPHEN_PATTERN = /[A-Za-z]\u00ad$/;
 const SENTENCE_END_PATTERN = /[.!?。！？”"']$/;
 const RUNNING_HEADER_PATTERN = /\(\d{4}\).*\d+\s*[:：]\s*\d+\s*[–—-]\s*\d+/u;
 
@@ -53,7 +53,14 @@ function withoutPageFurniture(items: PdfTextItem[]): PdfTextItem[] {
     const text = item.str.trim();
     const atTop = item.y <= top + edgeSize;
     const atBottom = item.y >= bottom - edgeSize;
-    if ((atTop || atBottom) && /^\d{1,4}$/.test(text)) return false;
+    // A small digit beside a base glyph may be a superscript/subscript.
+    // Only discard isolated edge numbers when there is body text elsewhere.
+    const attached = items.some((other) => other !== item
+      && Math.abs(other.y - item.y) <= lineHeight
+      && Math.max(other.x - item.x - item.width, item.x - other.x - other.width) <= lineHeight);
+    const hasBody = items.some((other) => /[^\d\s]/u.test(other.str)
+      && Math.abs(other.y - item.y) > edgeSize);
+    if ((atTop || atBottom) && /^\d{1,4}$/.test(text) && !attached && hasBody) return false;
     if (atTop && RUNNING_HEADER_PATTERN.test(text)) return false;
     return true;
   });
@@ -222,6 +229,8 @@ function joinLines(previous: string, next: string): string {
   if (HYPHEN_PATTERN.test(previous) && /^[a-z]/.test(next)) {
     return `${previous.slice(0, -1)}${next}`;
   }
+  // A visible hyphen/minus is ambiguous; keep it rather than guessing a word.
+  if (/[A-Za-z]-$/.test(previous) && /^[a-z]/.test(next)) return `${previous}${next}`;
   const cjkBoundary = isCjk(previous[previous.length - 1]) && isCjk(next[0]);
   return `${previous}${cjkBoundary ? '' : ' '}${next}`;
 }

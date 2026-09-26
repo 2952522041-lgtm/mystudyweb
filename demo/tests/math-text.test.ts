@@ -53,3 +53,7 @@ void test('empty and ASCII-only text skip normalization work', () => {
   assert.equal(normalizeMathText(''), '');
   assert.equal(normalizeMathText('plain ascii only'), 'plain ascii only');
 });
+
+void test('temperature and electrical units keep their original codepoints', () => {
+  assert.equal(normalizeMathText('m/s² N·m ℃ ℉ Ω Ω'), 'm/s² N·m ℃ ℉ Ω Ω');
+});
