@@ -15,9 +15,13 @@ const mockPdfjs = `
 let release;
 const delayed = new Promise((resolve) => { release = resolve; });
 window.releaseSizes = () => { window.sizesReleased = true; release(); };
+let releaseThird;
+const thirdDelayed = new Promise((resolve) => { releaseThird = resolve; });
+window.releaseThirdSize = () => releaseThird();
 const task = {destroy: async () => {}};
 const doc = {numPages:20, loadingTask:task, getPage:async (number) => {
-  if (number === 2 && !window.sizesReleased) await delayed;
+  if (![1, 3, 15].includes(number) && !window.sizesReleased) await delayed;
+  if (number === 3) { window.thirdSizeRequested = true; await thirdDelayed; }
   return {userUnit:1, getViewport:({scale}) => ({width:600*scale,height:(number === 1 ? 800 : number % 2 ? 1000 : 400)*scale}),
     getTextContent:async () => ({items:[{str:'This is enough extractable text for the reader fixture.',transform:[12,0,0,12,20,350],width:300,height:12}]}),
     render:() => ({promise:Promise.resolve(),cancel(){}})};
@@ -35,18 +39,37 @@ async function waitFor(label,predicate) {
   throw new Error('Timeout: '+label+' '+document.body.textContent.slice(-600));
 }
 const check = (value,message) => {if(!value) throw new Error(message)};
+// Hold the dimension state update after publication, until the navigation frame
+// has scrolled the estimated layout. This reproduces the real React commit race.
+let heldSizeCommit;
+window.schedulePageSizeCommit = (commit) => {
+  if (window.holdSizeCommits) heldSizeCommit = commit;
+  else commit();
+};
 window.runReaderRegression = async () => {
   await waitFor('first page before blocked second-page dimensions', () => document.querySelector('.pdf-page canvas'));
   check(!window.sizesReleased, 'reader waited for all dimensions');
   check(document.querySelectorAll('.pdf-page').length === 20, 'missing estimated page slots');
+  await waitFor('third-page dimensions requested but still estimated', () => window.thirdSizeRequested);
+  window.holdSizeCommits = true;
+  window.releaseThirdSize();
   document.querySelector('[aria-label="查看第 15 页"]').click();
-  await waitFor('jump to unmeasured page', () => document.querySelector('[data-page="15"] canvas'));
   const stage = document.querySelector('.document-stage');
   const target = document.querySelector('[data-page="15"]');
-  await sleep(100);
+  const aligned = () => Math.abs(target.getBoundingClientRect().top-stage.getBoundingClientRect().top)<3;
+  await waitFor('navigation frame before dimension commit', () => heldSizeCommit && aligned());
+  window.holdSizeCommits = false;
+  heldSizeCommit();
+  await waitFor('jump to unmeasured page', () => document.querySelector('[data-page="15"] canvas'));
+  await waitFor('estimated jump aligned after dimension commit', aligned);
   check(Math.abs(target.getBoundingClientRect().top-stage.getBoundingClientRect().top)<3, 'estimated jump mispositioned');
   window.releaseSizes();
-  await sleep(700);
+  await waitFor('all background dimensions committed', () =>
+    [...document.querySelectorAll('.pdf-page')].every((element,index) => {
+      const expectedRatio = (index === 0 ? 800 : (index+1) % 2 ? 1000 : 400) / 600;
+      return Math.abs(parseFloat(element.firstElementChild.style.height) - parseFloat(element.style.width)*expectedRatio)<1;
+    }),
+  );
   check(Math.abs(target.getBoundingClientRect().top-stage.getBoundingClientRect().top)<3, 'background dimensions moved the target: ' + JSON.stringify({top:target.getBoundingClientRect().top,stage:stage.getBoundingClientRect().top,scroll:stage.scrollTop, width:target.clientWidth, heights:[...document.querySelectorAll('.pdf-page')].slice(0,15).map((p)=>p.clientHeight)}));
   check(document.querySelector('[data-page="15"].pdf-page-current'), 'current-page tracking drifted');
   check(document.querySelectorAll('.pdf-page canvas').length < 12, 'virtualization rendered every page');
@@ -54,7 +77,10 @@ window.runReaderRegression = async () => {
   check(visible(document.querySelector('[aria-label="阅读器状态栏"]')), 'short window clipped the status bar');
   check(visible(document.querySelector('[aria-label="下一页"]')), 'short window clipped page controls');
   [...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent.includes('AI 答疑')).click();
-  await sleep(80);
+  await waitFor('AI composer visible after tab commit', () => {
+    const composer = document.querySelector('[aria-label="AI 答疑输入"]');
+    return composer && visible(composer);
+  });
   check(visible(document.querySelector('[aria-label="AI 答疑输入"]')), 'short window clipped the AI composer');
   check(visible(document.querySelector('[aria-label="发送问题"]')), 'short window clipped send controls');
   return {jump:15, shortWindow:true};
@@ -73,11 +99,19 @@ void test('reader preserves progressive jumps and keeps controls visible in a 42
   const bundle = await build({ stdin: { contents: entry, loader: 'tsx', resolveDir: root },
     plugins: [{name:'reader-fixture',setup(build) {
       build.onLoad({filter:/lib\/pdfjs\.ts$/}, () => ({contents:mockPdfjs,loader:'ts'}));
-      build.onLoad({filter:/app\/page\.tsx$/}, async (args) => ({contents:(await readFile(args.path,'utf8')).replace('function PdfReader(', 'export function PdfReader('),loader:'tsx',resolveDir:path.dirname(args.path)}));
+      build.onLoad({filter:/app\/page\.tsx$/}, async (args) => {
+        const source = await readFile(args.path,'utf8');
+        assert.equal(source.split('setPageSizes(sizes);').length, 2, 'dimension commit gate must intercept exactly one publication site');
+        return {contents:source.replace('function PdfReader(', 'export function PdfReader(')
+          .replace('setPageSizes(sizes);', '(window as any).schedulePageSizeCommit(() => setPageSizes(sizes));'),
+          loader:'tsx',resolveDir:path.dirname(args.path)};
+      });
     }}], alias: { '@': root }, bundle: true, format: 'iife', platform: 'browser', target: 'es2022', write: false, logLevel: 'silent' });
   const server = http.createServer((_request, response) => {
     response.setHeader('content-type', 'text/html');
-    response.end(`<html><head><style>${css}</style></head><body><div id="root"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
+    // Exercise the reader's own anchor restoration; native scroll anchoring can
+    // otherwise compensate for a lost application anchor and mask the race.
+    response.end(`<html><head><style>${css} .document-stage { overflow-anchor: none; }</style></head><body><div id="root"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();

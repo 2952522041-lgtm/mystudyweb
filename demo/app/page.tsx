@@ -750,6 +750,7 @@ function PdfReader({
   const scrollTargetRef = useRef<number | null>(null);
   const positionedRef = useRef(false);
   const sizeAnchorRef = useRef<ReadingAnchor | null>(null);
+  const pendingPageSizesRef = useRef<ProgressivePageSize[] | null>(null);
   const geometryRef = useRef<{ tops: number[]; heights: number[] }>({ tops: [], heights: [] });
   const serviceRef = useRef<ReturnType<typeof createReaderService> | null>(
     null,
@@ -898,10 +899,13 @@ function PdfReader({
     const stage = documentStageRef.current;
     if (stage && sizeAnchorRef.current) {
       stage.scrollTop = restoreReadingAnchor(sizeAnchorRef.current, pageTops, pageHeightsPx);
-      sizeAnchorRef.current = null;
     }
+    if (pendingPageSizesRef.current === pageSizes) pendingPageSizesRef.current = null;
+    // Keep the anchor until the latest published dimensions have committed.
+    // A navigation frame (or an older render) can run while that update is pending.
+    if (!pendingPageSizesRef.current) sizeAnchorRef.current = null;
     geometryRef.current = { tops: pageTops, heights: pageHeightsPx };
-  }, [pageTops, pageHeightsPx]);
+  }, [pageTops, pageHeightsPx, pageSizes]);
 
   useEffect(() => {
     for (const visiblePage of renderedPages) void sizeLoaderRef.current?.load(visiblePage);
@@ -954,7 +958,7 @@ function PdfReader({
           .get(targetPage)
           ?.scrollIntoView({ behavior: 'auto', block: 'start' });
         scrollTargetRef.current = null;
-        sizeAnchorRef.current = null;
+        if (!pendingPageSizesRef.current) sizeAnchorRef.current = null;
       });
     },
     [docMeta?.pageCount],
@@ -1184,12 +1188,14 @@ function PdfReader({
         pageElementsRef.current.clear();
         sizeLoaderRef.current?.cancel();
         sizeAnchorRef.current = null;
+        pendingPageSizesRef.current = null;
         const sizeLoader = createProgressivePageSizes(doc, firstViewport, (sizes) => {
           const stage = documentStageRef.current;
           if (stage && !sizeAnchorRef.current) {
             const geometry = geometryRef.current;
             sizeAnchorRef.current = captureReadingAnchor(stage.scrollTop, geometry.tops, geometry.heights, scrollTargetRef.current);
           }
+          pendingPageSizesRef.current = sizes;
           setPageSizes(sizes);
         });
         sizeLoaderRef.current = sizeLoader;
