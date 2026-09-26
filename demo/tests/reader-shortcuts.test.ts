@@ -75,10 +75,10 @@ void test('Alt+1..4 toggle the right-panel modes in order', () => {
   assert.deepEqual(READER_RIGHT_MODES[4], 'mindmap');
 });
 
-void test('F collapses the right panel and Escape dismisses overlays', () => {
-  assert.deepEqual(mapKey('f'), { action: 'collapseRightPanel' });
+void test('F toggles the right panel and Escape dismisses overlays', () => {
+  assert.deepEqual(mapKey('f'), { action: 'toggleRightPanel' });
   assert.deepEqual(mapKey('F', { shiftKey: true }), {
-    action: 'collapseRightPanel',
+    action: 'toggleRightPanel',
   });
   assert.deepEqual(mapKey('Escape'), { action: 'dismiss' });
 });
@@ -143,11 +143,7 @@ void test('PdfReader wires window keydown to the pure shortcut mapping', () => {
 });
 
 void test('PdfReader exempts typing targets but still dismisses and respects suspending', () => {
-  assert.match(pageSource, /isEditableTarget\(event\.target\)/);
-  assert.match(
-    pageSource,
-    /shortcut\.action !== 'dismiss' && isEditableTarget\(event\.target\)/,
-  );
+  assert.match(pageSource, /readerRootRef\.current\?\.contains/);
   assert.match(pageSource, /settingsOpenRef\.current/);
   assert.match(pageSource, /suspendedRef\.current/);
 });
@@ -171,7 +167,28 @@ void test('PdfReader executes every shortcut action', () => {
   );
   assert.match(
     pageSource,
-    /case 'collapseRightPanel':\s*setTranslationVisible\(false\)/,
+    /case 'toggleRightPanel':\s*setTranslationVisible\(\(visible\) => !visible\)/,
   );
   assert.match(pageSource, /case 'dismiss':\s*setSettingsOpen\(false\)/);
+});
+
+void test('Ctrl+Shift+F toggles while unrelated modifiers and composition stay native', () => {
+  assert.deepEqual(mapKey('F', { ctrlKey: true, shiftKey: true }), { action: 'toggleRightPanel' });
+  assert.equal(mapKey('F', { ctrlKey: true, shiftKey: true, altKey: true }), null);
+  assert.equal(mapKey('1', { altKey: true, shiftKey: true }), null);
+  assert.equal(mapKey('ArrowRight', { shiftKey: true }), null);
+  assert.equal(mapKey('f', { isComposing: true }), null);
+  assert.equal(mapKey('f', { defaultPrevented: true }), null);
+});
+
+void test('mapping itself exempts inputs, selects, editors and composite controls', () => {
+  for (const target of [
+    { tagName: 'INPUT' }, { tagName: 'TEXTAREA' }, { tagName: 'SELECT' },
+    { isContentEditable: true }, { closest: () => ({ role: 'slider' }) },
+  ]) {
+    for (const key of ['ArrowRight', 'Home', ' ', 'f', '+']) {
+      assert.equal(mapKey(key, { target }), null);
+    }
+    assert.deepEqual(mapKey('Escape', { target }), { action: 'dismiss' });
+  }
 });

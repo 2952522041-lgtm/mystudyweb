@@ -125,7 +125,6 @@ import {
   stepZoom,
 } from '@/lib/reader-model';
 import {
-  isEditableTarget,
   mapShortcut,
   READER_RIGHT_MODES,
   type ReaderRightModeName,
@@ -624,6 +623,7 @@ function PdfReader({
     number | null
   >(null);
 
+  const readerRootRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentStageRef = useRef<HTMLDivElement>(null);
   const pageElementsRef = useRef(new Map<number, HTMLElement>());
@@ -824,11 +824,11 @@ function PdfReader({
     const handleKeyDown = (event: KeyboardEvent) => {
       const shortcut = mapShortcut(event);
       if (!shortcut) return;
-      // Typing targets keep their keys; Escape still closes overlays anywhere.
-      if (shortcut.action !== 'dismiss' && isEditableTarget(event.target))
-        return;
+      // Portalled dialogs and other screens keep their own keyboard handling.
+      if (event.target !== document.body &&
+          !readerRootRef.current?.contains(event.target as Node)) return;
       // While the settings dialog owns the screen, only dismiss applies.
-      if (shortcut.action !== 'dismiss' && settingsOpenRef.current) return;
+      if (shortcut.action !== 'dismiss' && (settingsOpenRef.current || importOpen || !pdfDoc)) return;
       // The reader stays mounted behind the course library; ignore keys there.
       if (suspendedRef.current) return;
 
@@ -856,12 +856,15 @@ function PdfReader({
           break;
         case 'toggleRightMode':
           setRightMode(READER_RIGHT_MODES[shortcut.mode]);
+          setTranslationVisible(true);
           break;
-        case 'collapseRightPanel':
-          setTranslationVisible(false);
+        case 'toggleRightPanel':
+          setTranslationVisible((visible) => !visible);
           break;
         case 'dismiss':
           setSettingsOpen(false);
+          setImportOpen(false);
+          window.getSelection()?.removeAllRanges();
           break;
       }
       event.preventDefault();
@@ -869,7 +872,7 @@ function PdfReader({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [goToPage]);
+  }, [goToPage, importOpen, pdfDoc]);
 
   useEffect(() => {
     if (!stageWidth || positionedRef.current) return;
@@ -1504,7 +1507,7 @@ function PdfReader({
 
   return (
     <TooltipProvider>
-      <main className="flex h-screen min-h-[680px] flex-col overflow-hidden bg-background text-foreground">
+      <main ref={readerRootRef} className="flex h-screen min-h-[680px] flex-col overflow-hidden bg-background text-foreground">
         <header className="app-toolbar">
           <div className="flex min-w-0 items-center gap-3">
             <Button

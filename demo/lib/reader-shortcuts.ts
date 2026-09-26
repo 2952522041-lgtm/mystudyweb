@@ -12,7 +12,7 @@ export type ReaderShortcutAction =
   | 'zoomOut'
   | 'zoomReset'
   | 'toggleRightMode'
-  | 'collapseRightPanel'
+  | 'toggleRightPanel'
   | 'dismiss';
 
 /** Right-panel tabs addressed by Alt+1..Alt+4. */
@@ -41,6 +41,9 @@ export interface KeyboardEventLike {
   ctrlKey: boolean;
   shiftKey: boolean;
   metaKey: boolean;
+  isComposing?: boolean;
+  defaultPrevented?: boolean;
+  target?: unknown;
 }
 
 /** Every action is data-free except toggleRightMode, which carries the mode. */
@@ -72,19 +75,27 @@ const ALT_MODE_KEYS: Record<string, ReaderRightModeIndex> = {
 };
 
 export function mapShortcut(event: KeyboardEventLike): ReaderShortcut | null {
+  if (event.defaultPrevented || event.isComposing) return null;
+  if (event.key !== 'Escape' && isEditableTarget(event.target)) return null;
+  if (
+    event.key.toLowerCase() === 'f' && event.ctrlKey && event.shiftKey &&
+    !event.altKey && !event.metaKey
+  ) return { action: 'toggleRightPanel' };
   // Never compete with browser or application chords (Ctrl+R, Cmd+Plus, ...).
   if (event.ctrlKey || event.metaKey) return null;
 
   if (event.altKey) {
+    if (event.shiftKey) return null;
     const mode = ALT_MODE_KEYS[event.key];
     return mode ? { action: 'toggleRightMode', mode } : null;
   }
 
   // Shift only changes the produced character ('f' vs 'F'); both collapse.
   if (event.key === 'f' || event.key === 'F') {
-    return { action: 'collapseRightPanel' };
+    return { action: 'toggleRightPanel' };
   }
 
+  if (event.shiftKey && event.key !== '+') return null;
   return PLAIN_KEY_ACTIONS[event.key] ?? null;
 }
 
@@ -94,12 +105,15 @@ export function isEditableTarget(target: unknown): boolean {
   const node = target as {
     tagName?: unknown;
     isContentEditable?: unknown;
+    closest?: (selector: string) => unknown;
   };
   const tagName =
     typeof node.tagName === 'string' ? node.tagName.toUpperCase() : '';
   return (
     tagName === 'INPUT' ||
     tagName === 'TEXTAREA' ||
+    tagName === 'SELECT' ||
+    Boolean(node.closest?.('[role="textbox"], [role="slider"], [role="tablist"], [role="menu"], [role="listbox"]')) ||
     node.isContentEditable === true
   );
 }
