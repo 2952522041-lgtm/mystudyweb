@@ -88,6 +88,21 @@ export function modeLabel(mode: ReaderRightModeName): string {
   return MODE_LABELS[mode];
 }
 
+export interface CacheState {
+  status: TranslationStatus;
+  source?: 'indexeddb' | 'course' | 'generated';
+  persistence?: 'saving' | 'saved' | 'failed';
+}
+
+export function cacheStatusLabel(state?: CacheState): string {
+  if (state?.persistence === 'saving') return '缓存：保存中';
+  if (state?.persistence === 'failed') return '缓存：课程保存失败';
+  if (state?.status !== 'cached' && state?.status !== 'complete') return '缓存：待生成';
+  if (state.source === 'course') return '缓存：课程目录';
+  if (state.source === 'indexeddb') return '缓存：本机命中';
+  return '缓存：本机已保存';
+}
+
 /** Read-only facts the bottom status bar summarizes. */
 export interface StatusBarFacts {
   /** Current page, 1-based. */
@@ -95,6 +110,7 @@ export interface StatusBarFacts {
   /** Total pages; 0 means no document is open. */
   pageCount: number;
   zoom: number;
+  cacheState?: CacheState;
   mode: ReaderRightModeName;
   translated: { done: number; total: number };
 }
@@ -113,6 +129,7 @@ export function statusBarParts(facts: StatusBarFacts): string[] {
   parts.push(MODE_LABELS[facts.mode]);
   if (facts.pageCount > 0) {
     parts.push(`已翻译 ${facts.translated.done}/${facts.translated.total}`);
+    parts.push(cacheStatusLabel(facts.cacheState));
   }
   return parts;
 }

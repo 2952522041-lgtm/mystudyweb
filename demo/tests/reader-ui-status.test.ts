@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ReaderStatusFacts } from '../components/reader-status-facts.ts';
 
 import {
+  cacheStatusLabel,
   countTranslated,
   modeLabel,
   statusBarParts,
@@ -129,7 +133,7 @@ void test('statusBarParts composes page position, zoom, mode and progress', () =
       mode: 'translation',
       translated: { done: 5, total: 12 },
     }),
-    ['第 3/12 页', '95%', '页面翻译', '已翻译 5/12'],
+    ['第 3/12 页', '95%', '页面翻译', '已翻译 5/12', '缓存：待生成'],
   );
   assert.deepEqual(
     statusBarParts({
@@ -139,7 +143,7 @@ void test('statusBarParts composes page position, zoom, mode and progress', () =
       mode: 'chat',
       translated: { done: 0, total: 12 },
     }),
-    ['第 7/12 页', '110%', 'AI 答疑', '已翻译 0/12'],
+    ['第 7/12 页', '110%', 'AI 答疑', '已翻译 0/12', '缓存：待生成'],
   );
 });
 
@@ -164,14 +168,11 @@ void test('bottom status bar renders the read-only facts group', () => {
   // The facts derive from the same state the toolbar used to display.
   assert.match(
     pageSource,
-    /const statusBarItems = statusBarParts\(\{\s*page,\s*pageCount: docMeta\?\.pageCount \?\? 0,\s*zoom,\s*mode: activeMode,\s*translated: translationProgress,\s*\}\)/,
+    /const statusBarItems = statusBarParts\(\{\s*page,\s*pageCount: docMeta\?\.pageCount \?\? 0,\s*zoom,\s*mode: activeMode,\s*translated: translationProgress,\s*cacheState: translationStates\[translationKey\(page, targetLanguage\)\],\s*\}\)/,
   );
-  assert.match(
-    pageSource,
-    /aria-label="阅读状态"\s*>\s*\{statusBarItems\.map\(\(part\) => \(\s*<span key=\{part\}>\{part\}<\/span>\s*\)\)\}/,
-  );
+  assert.match(pageSource, /<ReaderStatusFacts parts=\{statusBarItems\} \/>/);
   // The status bar lives in the footer, after the reader panels.
-  const footerIndex = pageSource.indexOf('<footer className="status-bar">');
+  const footerIndex = pageSource.indexOf('<footer className="status-bar" aria-label="阅读器状态栏">');
   assert.notEqual(footerIndex, -1);
   const panelsEndIndex = pageSource.indexOf('</ResizablePanelGroup>');
   assert.notEqual(panelsEndIndex, -1);
@@ -209,4 +210,27 @@ void test('progress follows the selected language and rejects partial page numbe
   assert.deepEqual(countTranslated(states, 6, '日本語'), { done: 1, total: 6 });
   assert.deepEqual(countTranslated(states, 6, '한국어'), { done: 0, total: 6 });
   assert.deepEqual(countTranslated(states, 0, '简体中文'), { done: 0, total: 0 });
+});
+
+void test('cache status distinguishes pending, local, restored and failed persistence', () => {
+  assert.equal(cacheStatusLabel(), '缓存：待生成');
+  assert.equal(cacheStatusLabel({ status: 'error' }), '缓存：待生成');
+  assert.equal(cacheStatusLabel({ status: 'complete', source: 'generated' }), '缓存：本机已保存');
+  assert.equal(cacheStatusLabel({ status: 'cached', source: 'indexeddb' }), '缓存：本机命中');
+  assert.equal(cacheStatusLabel({ status: 'cached', source: 'course' }), '缓存：课程目录');
+  assert.equal(cacheStatusLabel({ status: 'complete', persistence: 'saving' }), '缓存：保存中');
+  assert.equal(cacheStatusLabel({ status: 'complete', persistence: 'failed' }), '缓存：课程保存失败');
+  assert.match(styles, /\.status-bar \{[^}]*flex-wrap/);
+});
+
+void test('status facts render page, zoom, active mode, progress and cache without controls', () => {
+  const parts = statusBarParts({ page: 2, pageCount: 8, zoom: 110,
+    mode: 'chat', translated: { done: 3, total: 8 },
+    cacheState: { status: 'cached', source: 'course' } });
+  const html = renderToStaticMarkup(createElement(ReaderStatusFacts, { parts }));
+  for (const text of ['第 2/8 页', '110%', 'AI 答疑', '已翻译 3/8', '缓存：课程目录']) {
+    assert.ok(html.includes(`<span>${text}</span>`));
+  }
+  assert.match(html, /aria-label="阅读状态"/);
+  assert.doesNotMatch(html, /<(button|input|select)/);
 });

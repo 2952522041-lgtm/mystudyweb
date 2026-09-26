@@ -35,6 +35,7 @@ import {
 } from '@/components/course-library';
 import { DocumentSummaryPanel } from '@/components/document-summary-panel';
 import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
+import { ReaderStatusFacts } from '@/components/reader-status-facts';
 import { SelectionToolbar } from '@/components/selection-toolbar';
 import { SharedCourseViewer } from '@/components/shared-course-viewer';
 import {
@@ -1382,6 +1383,7 @@ function PdfReader({
     zoom,
     mode: activeMode,
     translated: translationProgress,
+    cacheState: translationStates[translationKey(page, targetLanguage)],
   });
   const statusLabel = !docMeta
     ? '尚未导入 PDF'
@@ -1934,7 +1936,7 @@ function PdfReader({
           {pdfDoc && docMeta ? <SelectionToolbar /> : null}
         </section>
 
-        <footer className="status-bar">
+        <footer className="status-bar" aria-label="阅读器状态栏">
           <div className="flex items-center gap-2">
             <span
               className={`size-1.5 rounded-full ${
@@ -1949,25 +1951,10 @@ function PdfReader({
               }`}
             />
             <span>
-              {activeMode === 'chat'
-                ? docMeta
-                  ? `AI 答疑已绑定第 ${translationPage} 页`
-                  : '导入 PDF 后可使用 AI 答疑'
-                : activeMode === 'summary'
-                  ? 'PDF 总结已保存到课程文件夹'
-                  : activeMode === 'mindmap'
-                    ? 'PDF 脑图已保存到课程文件夹'
-                    : statusLabel}
+              {statusLabel}
             </span>
           </div>
-          <div
-            className="flex items-center gap-3 tabular-nums"
-            aria-label="阅读状态"
-          >
-            {statusBarItems.map((part) => (
-              <span key={part}>{part}</span>
-            ))}
-          </div>
+          <ReaderStatusFacts parts={statusBarItems} />
           <div className="flex items-center gap-4">
             {docMeta?.restoredPage ? (
               <span>已恢复上次阅读进度（第 {docMeta.restoredPage} 页）</span>
