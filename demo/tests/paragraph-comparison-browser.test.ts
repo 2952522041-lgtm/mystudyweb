@@ -76,6 +76,11 @@ window.runReaderRegression = async () => {
   check(target(0).getBoundingClientRect().top >= right.getBoundingClientRect().top-1, 'source did not reveal target');
   target(1).querySelector('button').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
   await waitFor('keyboard activation', () => target(1).dataset.active === 'true');
+  target(0).querySelector('button').focus();
+  check(document.activeElement.getAttribute('aria-label') === '定位第 1 段原文', 'locator button has no accessible name/focus');
+  target(0).querySelector('button').dispatchEvent(new KeyboardEvent('keydown',{key:' ',bubbles:true}));
+  await waitFor('Space activation', () => target(0).dataset.active === 'true');
+  target(1).click(); await waitFor('restore second-paragraph activation', () => target(1).dataset.active === 'true');
   const beforeZoom = source(1,1);
   document.querySelector('[aria-label="放大"]').click();
   await waitFor('zoom rebuild preserves geometry and highlight', () => source(1,1) !== beforeZoom && source(1,1)?.classList.contains('paragraph-source-active'));

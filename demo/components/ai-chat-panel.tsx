@@ -283,14 +283,13 @@ export function AIChatPanel({
         }));
         return;
       }
-      const errorCode = error instanceof ChatError ? error.code : 'unknown';
       updateState(key, (previous) => ({
         ...previous,
         status: 'error',
         partial: undefined,
-        errorCode,
+        errorCode: error instanceof ChatError ? error.code : 'unknown',
         errorMessage:
-          error instanceof ChatError ? error.message : describeChatError(errorCode),
+          error instanceof ChatError ? error.message : describeChatError('unknown'),
       }));
     } finally {
       if (controllersRef.current.get(key) === controller) controllersRef.current.delete(key);

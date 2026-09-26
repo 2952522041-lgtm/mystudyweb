@@ -28,6 +28,9 @@ export function TranslationParagraphs({ paragraphs, alignment, active = [], onAc
       const activate = () => {
         if (enabled && !window.getSelection()?.toString().trim()) onActivate?.(index);
       };
+      // The adjacent native button provides the same keyboard action. Keep rich
+      // content semantics (tables, links, MathML) instead of a parent button role.
+      // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
       return <div key={index} data-paragraph-index={index} data-active={active.includes(index)}
         className={enabled ? 'translation-paragraph mb-6' : 'mb-6'}
         onClick={(event) => {

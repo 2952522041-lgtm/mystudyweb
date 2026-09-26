@@ -27,6 +27,7 @@ for (const method of ['get', 'put', 'delete']) {
 let calls = 0;
 window.fetch = async () => {
   calls++;
+  if (failure === 'auth') return new Response(JSON.stringify({error:{message:'模拟密钥错误'}}),{status:401});
   return new Response('data: ' + JSON.stringify({choices:[{delta:{content:'回答完成'},finish_reason:'stop'}]}) + '\\n\\ndata: [DONE]\\n\\n', {headers:{'content-type':'text/event-stream'}});
 };
 const doc = {numPages:2, getPage:async (number) => ({getViewport:() => ({width:400,height:500}),
@@ -70,6 +71,11 @@ window.runStorageRegression = async () => {
   scope('page'); await sleep(80); check(!text().includes('回答完成'), 'document messages leaked into page scope');
   scope('document'); await sleep(80); check(text().includes('回答完成'), 'document history did not return');
   check(calls === 2, 'storage/navigation triggered additional generation');
+  scope('page'); await sleep(80); failure = 'auth'; button('总结这一页').click();
+  await waitFor('provider auth error', () => text().includes('模拟密钥错误'));
+  check(calls === 3 && button('重试'), 'provider failure lost its retry action');
+  failure = ''; button('重试').click(); await waitFor('provider retry recovered', () => text().includes('回答完成'));
+  check(calls === 4, 'provider retry requested unexpected extra generations');
   return {calls};
 };
 `;
@@ -117,7 +123,7 @@ void test('chat storage failures recover without regenerating answers and scopes
       child.on('error', (error) => { clearTimeout(timer); reject(error); });
       child.on('close', (code) => { clearTimeout(timer); if (code === 0) resolve(logs); else reject(new Error(logs)); });
     });
-    assert.match(output, /STORAGE_OK .*"calls":2/);
+    assert.match(output, /STORAGE_OK .*"calls":4/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });
