@@ -259,11 +259,12 @@ class OptimizationPlanDocumentTest(unittest.TestCase):
     def test_execution_status_reports_actual_scope_and_compatibility(self) -> None:
         content = (PROJECT_ROOT / "docs" / "AC-OPTIMIZATION-PLAN.md").read_text(encoding="utf-8")
         status = content.split("## 执行状态（2026-09-26）", 1)[1].split("\n---", 1)[0]
-        for item in ("C1", "C2", "C3", "A1", "A3", "P1 PDF 导入生命周期",
+        for item in ("C1", "C2", "C3", "A1", "A2", "A3", "P1 PDF 导入生命周期",
                      "P1 答疑存储异常处理", "P2 首屏等待全部页面尺寸", "P2 阅读器最小高度"):
             with self.subTest(item=item):
                 self.assertRegex(status, rf"\| {item}[^|]*\| 已完成 \|")
-        self.assertIn("| A2 原文 ↔ 译文逐段对照 | 未做 |", status)
+        for requirement in ("非空段落数", "估算", "原数组下标", "实际 2 次", "不是课程存储新增两条记录", "287 通过 / 0 失败 / 0 跳过"):
+            self.assertIn(requirement, status)
         for boundary in ("chat:{fingerprint}:{pageNumber}", "chat:{fingerprint}:document:v1",
                          "allowWebSearch: false", "doc.loadingTask.destroy()", "不调用 AI", "人工验收"):
             self.assertIn(boundary, status)

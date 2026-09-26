@@ -3,7 +3,7 @@
 ## 执行状态（2026-09-26）
 
 本节反映当前代码；后面的方案与旧基线保留为历史计划，不表示其中全部项目已落地。
-本轮从 `156f8cf` 开始，基线测试 **254 通过 / 0 失败 / 0 跳过**。按本轮明确指定的范围完成 A3 与四项审计优化。
+上一轮从 `156f8cf` 开始，基线测试 **254 通过 / 0 失败 / 0 跳过**，完成 A3 与四项审计优化。本轮从 `96ca8e9` 开始，先自证基线 **267 通过 / 0 失败 / 0 跳过**，只完成本地 A2 与课程上下文导致的初始 PDF 重复载入修复。
 
 | 项目 | 状态 | 实际实现与边界 |
 | --- | --- | --- |
@@ -11,7 +11,7 @@
 | C2 翻译状态可视化 | 已完成 | 缩略图状态徽章、右栏进度；按当前目标语言统计。 |
 | C3 底部状态栏整合 | 已完成 | 页码、缩放、模式、翻译状态和缓存状态；窄窗口信息布局。 |
 | A1 划词 / 选段翻译 | 已完成 | PDF TextLayer、翻译 / 解释 / 复制浮条、选段归属与取消；解释复用当前页视觉答疑，保留 `allowWebSearch: false`。 |
-| A2 原文 ↔ 译文逐段对照 | 未做 | 基线没有段落对齐或点击译文高亮原文；本轮明确要求实现 A3，未扩展实施 A2。 |
+| A2 原文 ↔ 译文逐段对照 | 已完成 | 原文 / 译文双向点击高亮并按需滚动；等数量按非空段落顺序对齐，不等数量按顺序、相对长度与共有词估算连续合并 / 拆分；扫描页或不可映射文字禁用定位并提示。 |
 | A3 AI 全文问答 | 已完成 | 同一答疑面板切换“当前页 / 全文”；本地逐页提取、按页分块、关键词与近期问题检索，最多 5 块、每块 2400 字符；带可跳页来源。 |
 | P1 PDF 导入生命周期 | 已完成 | 请求代次隔离；过期加载、解析失败、替换和卸载释放资源；失败保留原可用文档。当前 PDF.js 6.x 的销毁入口是 `doc.loadingTask.destroy()`，代理自身没有 `destroy()`。 |
 | P1 答疑存储异常处理 | 已完成 | 读取、保存、删除分别提示和恢复；保存失败保留回答，重新保存不调用 AI；读取未恢复时不发送或覆盖历史。 |
@@ -25,7 +25,18 @@
 - 轻量关键词检索对跨语言、同义改写和无明确主题的追问存在局限；无命中时提示补充关键词或页码，不调用 AI。真实检索相关性、回答依据与复杂 PDF 仍需人工验收。
 - 只做本地提交，未 push；未修改密钥、部署配置、Electron 打包流程或 PDF/OCR/翻译/摘要/脑图算法。
 
-回归测试新增/更新：`document-chat.test.ts`、`chat.test.ts`、`pdf-import-lifecycle.test.ts`、`chat-storage-browser.test.ts`、`progressive-page-sizes.test.ts`、`reader-progressive-browser.test.ts`、`reader-layout.test.ts`；根目录 `tests/test_docs.py` 校验本状态表。最终前端验证为 **267 通过 / 0 失败 / 0 跳过**，lint 与 TypeScript 检查通过。Linux `pnpm desktop:build` 通过；`xvfb-run -a pnpm desktop:test` 为 **17 通过 / 0 失败 / 0 跳过**（含编译产物与打包产物真实启动）；根目录 Python 文档测试 **16/16 通过**。Windows 打包安装与实机仍需人工验收。
+上一轮回归测试新增/更新：`document-chat.test.ts`、`chat.test.ts`、`pdf-import-lifecycle.test.ts`、`chat-storage-browser.test.ts`、`progressive-page-sizes.test.ts`、`reader-progressive-browser.test.ts`、`reader-layout.test.ts`；根目录 `tests/test_docs.py` 校验本状态表。最终前端验证为 **267 通过 / 0 失败 / 0 跳过**，lint 与 TypeScript 检查通过。Linux `pnpm desktop:build` 通过；`xvfb-run -a pnpm desktop:test` 为 **17 通过 / 0 失败 / 0 跳过**（含编译产物与打包产物真实启动）；根目录 Python 文档测试 **16/16 通过**。Windows 打包安装与实机仍需人工验收。
+
+
+### 本轮 A2 与重复导入修复（2026-09-26）
+
+- `paragraph-alignment.ts` 是无 DOM / 网络依赖的纯函数。保留原数组下标，空段不连线；模型编号仅在对齐评分中忽略，不改显示内容或缓存。非空段落数相等时逐项对应；不等时用动态规划将较长数组分成连续非空组，相对长度误差加共有词标记评分，支持 1:N / N:1。超过 200 段时按数量比例分组，限制计算量；所有数量不等情况都提示“估算”。模型乱序、漏译或等数量下的语义错位无法可靠识别，不宣称语义对齐。
+- 用现有 `normalizePage` / 分栏规则将原文段落映射到 PDF.js TextLayer 的真实 span；兼容断词、空白、兼容字符、重复文字与双栏顺序。点击译文或 Enter / Space 高亮对应原文，点击原文反向定位译文；保持原有拖选翻译 / 解释 / 复制。只滚动对应阅读窗格，按所有高亮行的实际矩形定位；每次点击只发起一次滚动，避免重渲染拉回翻页。
+- 翻译完成 / 缓存恢复后才启用对照，流式过程中不猜最终映射。无文字层扫描页、文字稀少而触发 OCR 的页面、映射失败或文字层错误不伪造坐标；翻页、语言切换、重新翻译和替换文档隔离旧选中状态。共用 `demo/app/page.tsx`，不改 PDF 解析、翻译流程、缓存键、远程访问、部署或打包配置。
+- **重复导入复现**：真实 Chromium / React StrictMode 渲染 `PdfReader`，保持同一 `initialFile`，仅将 `courseContext` 替换为等价的新对象；新增测试修复前失败，期望 PDF.js `getDocument` 调用 1 次，实际 2 次。原因是 `handleFile` 依赖整个上下文，初始导入 effect 随之重跑。这里证实的是阅读器重复载入，不是课程存储新增两条记录。
+- **最小修复**：在延迟导入真正开始时记住已消费的 File 交接；上下文重载 / 清空不会再次载入旧文件，新 File 仍可打开。测试还覆盖“课程 A → 阅读器导入独立 B → 清空上下文”仍保留 B，以及 StrictMode 的 effect 取消。课程存储层未改动。
+- 本轮测试新增：`reader-initial-import-browser.test.ts`、`paragraph-alignment.test.ts`、`paragraph-dom.test.ts`、`paragraph-comparison-browser.test.ts`；更新 `pdf-text-layer.test.ts` 与根目录 `tests/test_docs.py`。真实 PDF.js 交互覆盖双向高亮、全部行可见、键盘激活、拖选互不干扰、缩放、第二页、目标语言、缓存恢复及无文字页。
+- 本轮最终前端验证：**287 通过 / 0 失败 / 0 跳过**；lint（另检查新增组件）与 TypeScript 检查通过；Linux 桌面构建通过，桌面测试 **17 通过 / 0 失败 / 0 跳过**，根目录文档测试 **16/16 通过**。复杂 PDF、真实模型合并 / 乱序输出、Windows 安装版仍需人工验收。
 
 ---
 

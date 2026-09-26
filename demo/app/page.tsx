@@ -1,6 +1,9 @@
 'use client';
 
 import { createProgressivePageSizes, captureReadingAnchor, restoreReadingAnchor, type ProgressivePageSize, type ReadingAnchor } from '@/lib/progressive-page-sizes';
+import { alignParagraphs, mapTextItemsToParagraphs, type ParagraphAlignment } from '@/lib/paragraph-alignment';
+import { revealParagraph, sourceParagraphIndices } from '@/lib/paragraph-dom';
+import { TranslationParagraphs } from '@/components/translation-paragraphs';
 import { createPdfImportLifecycle } from '@/lib/pdf-import-lifecycle';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -221,19 +224,30 @@ function IconButton({
   );
 }
 
+interface SourceParagraphs { paragraphs: string[]; mapped: number[] }
+
 function PdfPageCanvas({
   pdfDoc,
   pageNumber,
   width,
   height,
+  activeParagraphs,
+  revealRequest,
+  onParagraphsReady,
+  onParagraphActivate,
 }: {
   pdfDoc: PDFDocumentProxy;
   pageNumber: number;
   width: number;
   height: number;
+  activeParagraphs: number[];
+  revealRequest: object | null;
+  onParagraphsReady: (page: number, source: SourceParagraphs) => void;
+  onParagraphActivate: (page: number, index: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
+  const revealedRequestRef = useRef<object | null>(null);
   const [rendering, setRendering] = useState(true);
   const [textAvailability, setTextAvailability] = useState<'loading' | 'ready' | 'none' | 'error'>('loading');
 
@@ -291,6 +305,7 @@ function PdfPageCanvas({
       );
       // Scanned pages have no extractable text — keep them canvas-only.
       if (!shouldBuildTextLayer(items)) {
+        onParagraphsReady(pageNumber, { paragraphs: [], mapped: [] });
         setTextAvailability('none');
         return;
       }
@@ -301,10 +316,32 @@ function PdfPageCanvas({
         viewport: pdfPage.getViewport({ scale }),
       });
       await activeTextLayer.render();
-      if (!cancelled) setTextAvailability('ready');
+      if (cancelled) return;
+      const normalized = normalizePage(items);
+      // Sparse selectable text can still trigger OCR (e.g. a scanned page
+      // with a short header). OCR paragraphs have no TextLayer geometry.
+      const paragraphs = pageNeedsOcr(normalized.text) ? [] : normalized.paragraphs;
+      // TextLayer.textDivs preserves raw string-item order (including blanks),
+      // whereas the normalizer sorts by geometry. Keep those indices separate.
+      const rawItems = content.items.filter((item) => 'str' in item).map((item) =>
+        itemsFromPdfJs([item], base.height)[0] ?? { str: '', x: 0, y: 0, width: 0, height: 0 });
+      const mapping = mapTextItemsToParagraphs(paragraphs, rawItems);
+      const mapped = new Set<number>();
+      (activeTextLayer.textDivs ?? []).forEach((span, index) => {
+        const indices = mapping[index] ?? [];
+        if (indices.length) {
+          span.dataset.sourceParagraphs = indices.join(' ');
+          indices.forEach((value) => mapped.add(value));
+        }
+      });
+      onParagraphsReady(pageNumber, { paragraphs, mapped: [...mapped] });
+      setTextAvailability('ready');
     })().catch(() => {
       // Cancelled rebuilds reject; a missing text layer never blocks reading.
-      if (!cancelled) setTextAvailability('error');
+      if (!cancelled) {
+        onParagraphsReady(pageNumber, { paragraphs: [], mapped: [] });
+        setTextAvailability('error');
+      }
     });
 
     return () => {
@@ -312,7 +349,20 @@ function PdfPageCanvas({
       task?.cancel();
       activeTextLayer?.cancel();
     };
-  }, [pdfDoc, pageNumber, width, height]);
+  }, [pdfDoc, pageNumber, width, height, onParagraphsReady]);
+
+  useEffect(() => {
+    const spans = textLayerRef.current?.querySelectorAll<HTMLElement>('[data-source-paragraphs]');
+    spans?.forEach((span) => span.classList.toggle('paragraph-source-active',
+      sourceParagraphIndices(span).some((index) => activeParagraphs.includes(index))));
+    if (revealRequest && revealedRequestRef.current !== revealRequest && textAvailability === 'ready') {
+      const first = textLayerRef.current?.querySelector<HTMLElement>('.paragraph-source-active');
+      if (first) {
+        revealParagraph(first, '.document-stage', Array.from(textLayerRef.current?.querySelectorAll<HTMLElement>('.paragraph-source-active') ?? []));
+        revealedRequestRef.current = revealRequest;
+      }
+    }
+  }, [activeParagraphs, revealRequest, textAvailability]);
 
   return (
     <>
@@ -321,7 +371,14 @@ function PdfPageCanvas({
         className="block bg-white"
         aria-label={`第 ${pageNumber} 页内容`}
       />
-      <div ref={textLayerRef} className="pdf-text-layer" aria-hidden="true" data-page-number={pageNumber} />
+      <div ref={textLayerRef} className="pdf-text-layer" aria-hidden="true" data-page-number={pageNumber}
+        onClick={(event) => {
+          // Preserve A1 drag selection and double-click word selection.
+          if (event.detail > 1 || window.getSelection()?.toString().trim()) return;
+          const span = (event.target as Element).closest('[data-source-paragraphs]');
+          const index = span ? sourceParagraphIndices(span)[0] : undefined;
+          if (index !== undefined) onParagraphActivate(pageNumber, index);
+        }} />
       {textAvailability === 'none' || textAvailability === 'error' ? (
         <span className="absolute right-2 bottom-2 rounded bg-slate-100 px-2 py-1 text-xs text-slate-500">
           {textAvailability === 'none' ? '该页无可选文字' : '该页文字层加载失败，请重试'}
@@ -458,6 +515,10 @@ function TranslationBody({
   remoteProvider,
   onRetry,
   onRetrySave,
+  alignment,
+  activeParagraphs,
+  onParagraphActivate,
+  revealRequest,
 }: {
   page: number;
   targetLanguage: string;
@@ -465,6 +526,10 @@ function TranslationBody({
   remoteProvider: boolean;
   onRetry: () => void;
   onRetrySave: () => void;
+  alignment: ParagraphAlignment;
+  activeParagraphs: number[];
+  onParagraphActivate: (index: number) => void;
+  revealRequest: object | null;
 }) {
   if (
     !state ||
@@ -475,11 +540,7 @@ function TranslationBody({
       // Streaming: show paragraphs as they arrive instead of a blank wait.
       return (
         <article className="translation-copy">
-          {state.paragraphs.map((paragraph) => (
-            <p key={paragraph.slice(0, 48) + String(paragraph.length)}>
-              {paragraph}
-            </p>
-          ))}
+          <TranslationParagraphs paragraphs={state.paragraphs} />
           <p
             className="flex items-center gap-2 text-xs text-amber-700"
             aria-label="翻译中"
@@ -536,11 +597,17 @@ function TranslationBody({
 
   return (
     <article className="translation-copy">
-      {state.paragraphs?.map((paragraph) => (
-        <p key={paragraph.slice(0, 48) + String(paragraph.length)}>
-          {paragraph}
-        </p>
-      ))}
+      <p className="paragraph-alignment-note">
+        {alignment.mode === 'unavailable'
+          ? '该页原文段落暂不可定位（文字层未就绪或无可选文字）。'
+          : alignment.mode === 'estimated'
+            ? '段落数量不同，按顺序、长度和共有词估算对应；可能高亮多个段落，请核对原文。'
+            : '按段落顺序对照；点击原文或译文可双向定位。'}
+        {alignment.mode !== 'unavailable' && alignment.targetToSource.some((group, index) => !group.length && state.paragraphs?.[index]?.trim())
+          ? ' 部分原文无法定位，对应译文未启用跳转。' : ''}
+      </p>
+      <TranslationParagraphs paragraphs={state.paragraphs ?? []} alignment={alignment}
+        active={activeParagraphs} onActivate={onParagraphActivate} revealRequest={revealRequest} />
       {state.model ? (
         <p className="mt-6 text-[11px] text-slate-400">
           模型：{state.model}
@@ -604,6 +671,13 @@ function PdfReader({
   useEffect(() => {
     const lifecycle = importLifecycleRef.current;
     return () => { lifecycle.dispose(); sizeLoaderRef.current?.cancel(); };
+  }, []);
+  const [sourceParagraphs, setSourceParagraphs] = useState<Record<number, SourceParagraphs>>({});
+  const [paragraphSelection, setParagraphSelection] = useState<{
+    page: number; language: string; side: 'source' | 'target'; index: number;
+  } | null>(null);
+  const rememberSourceParagraphs = useCallback((pageNumber: number, source: SourceParagraphs) => {
+    setSourceParagraphs((current) => ({ ...current, [pageNumber]: source }));
   }, []);
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [docMeta, setDocMeta] = useState<DocumentMeta | null>(null);
@@ -843,6 +917,7 @@ function PdfReader({
     (nextPage: number) => {
       const targetPage = clampPage(nextPage, docMeta?.pageCount ?? 1);
       setSelectionQuestion(null);
+      setParagraphSelection(null);
       setCopied(false);
       setPage(targetPage);
       scrollTargetRef.current = targetPage;
@@ -1063,6 +1138,8 @@ function PdfReader({
         setRenderedPages(new Set());
         setTranslationStates({});
         setSelectionQuestion(null);
+        setSourceParagraphs({});
+        setParagraphSelection(null);
         translationStatesRef.current = {};
         setPublishedTranslations(restoredTranslations);
         courseDocumentIdRef.current =
@@ -1343,6 +1420,7 @@ function PdfReader({
   ]);
 
   const retranslate = () => {
+    setParagraphSelection(null);
     const key = translationKey(translationPage, targetLanguage);
     bypassCacheRef.current.add(key);
     retryTokenRef.current += 1;
@@ -1433,6 +1511,34 @@ function PdfReader({
   const currentState = translationStates[translationKeyCurrent];
   const isReady =
     currentState?.status === 'complete' || currentState?.status === 'cached';
+  const paragraphAlignment = useMemo(() => {
+    const source = sourceParagraphs[translationPage];
+    const alignment = alignParagraphs(source?.paragraphs ?? [], isReady ? currentState?.paragraphs ?? [] : []);
+    // A text mismatch must not jump to fabricated coordinates. Disable a
+    // target group unless all its source paragraphs have real TextLayer spans.
+    alignment.targetToSource = alignment.targetToSource.map((group) =>
+      group.every((index) => source?.mapped.includes(index)) ? group : []);
+    alignment.sourceToTarget = alignment.sourceToTarget.map((group) =>
+      group.filter((index) => alignment.targetToSource[index].length > 0));
+    if (!alignment.targetToSource.some((group) => group.length)) alignment.mode = 'unavailable';
+    return alignment;
+  }, [sourceParagraphs, translationPage, isReady, currentState?.paragraphs]);
+  const { activeSourceParagraphs, activeTargetParagraphs } = useMemo(() => {
+    if (!paragraphSelection || paragraphSelection.page !== translationPage || paragraphSelection.language !== targetLanguage) {
+      return { activeSourceParagraphs: [], activeTargetParagraphs: [] };
+    }
+    const { side, index } = paragraphSelection;
+    const source = side === 'target' ? paragraphAlignment.targetToSource[index] ?? [] : [index];
+    const target = side === 'source' ? paragraphAlignment.sourceToTarget[index] ?? [] : [index];
+    return { activeSourceParagraphs: target.length ? source : [], activeTargetParagraphs: source.length ? target : [] };
+  }, [paragraphSelection, translationPage, targetLanguage, paragraphAlignment]);
+  const activateSourceParagraph = useCallback((pageNumber: number, index: number) => {
+    setParagraphSelection({ page: pageNumber, language: targetLanguage, side: 'source', index });
+    setPage(pageNumber);
+    setTranslationPage(pageNumber);
+    setRightMode('translation');
+    setTranslationVisible(true);
+  }, [targetLanguage]);
   const remoteProvider = usingRemoteProvider(settings);
   const remoteProviderHost = remoteProvider
     ? readerServiceHost(settings.baseUrl)
@@ -1634,7 +1740,7 @@ function PdfReader({
                 size="sm"
                 aria-label="目标语言"
                 value={targetLanguage}
-                onChange={(event) => setTargetLanguage(event.target.value)}
+                onChange={(event) => { setParagraphSelection(null); setTargetLanguage(event.target.value); }}
               >
                 {TARGET_LANGUAGES.map((language) => (
                   <NativeSelectOption key={language} value={language}>
@@ -1767,6 +1873,10 @@ function PdfReader({
                                     pageNumber={pageNumber}
                                     width={width}
                                     height={height}
+                                    activeParagraphs={pageNumber === translationPage ? activeSourceParagraphs : []}
+                                    revealRequest={pageNumber === translationPage && paragraphSelection?.side === 'target' ? paragraphSelection : null}
+                                    onParagraphsReady={rememberSourceParagraphs}
+                                    onParagraphActivate={activateSourceParagraph}
                                   />
                                 ) : (
                                   <div className="flex h-full w-full items-center justify-center bg-white">
@@ -1915,6 +2025,12 @@ function PdfReader({
                                 remoteProvider={remoteProvider}
                                 onRetry={retranslate}
                                 onRetrySave={retrySave}
+                                alignment={paragraphAlignment}
+                                activeParagraphs={activeTargetParagraphs}
+                                revealRequest={paragraphSelection?.side === 'source' ? paragraphSelection : null}
+                                onParagraphActivate={(index) => setParagraphSelection({
+                                  page: translationPage, language: targetLanguage, side: 'target', index,
+                                })}
                               />
                             </>
                           ) : (
