@@ -104,6 +104,7 @@ import {
 import { renderPageImage } from '@/lib/page-vision';
 import {
   computeFileFingerprint,
+  type DocumentProgress,
   createReaderService,
   createProviderForSettings,
   DEFAULT_SETTINGS,
@@ -718,6 +719,10 @@ function PdfReader({
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [progressRecovery, setProgressRecovery] = useState<{
+    fingerprint: string; requestedPage?: number; isCurrent: () => boolean;
+  } | null>(null);
+  const [recoveringProgress, setRecoveringProgress] = useState(false);
   const [translationVisible, setTranslationVisible] = useState(true);
   const [stageWidth, setStageWidth] = useState(0);
   const [prefetchedTranslationPage, setPrefetchedTranslationPage] = useState<
@@ -1120,7 +1125,13 @@ function PdfReader({
           }
         }
 
-        const restored = await serviceRef.current?.progress.load(fingerprint);
+        let restored: DocumentProgress | undefined;
+        let progressReadFailed = false;
+        try {
+          restored = await serviceRef.current?.progress.load(fingerprint);
+        } catch {
+          progressReadFailed = true;
+        }
         let restoredTranslations: SharedTranslationRecord[] = [];
         const courseStorage = courseContext?.storage;
         const contextDocument = courseContext?.document;
@@ -1141,6 +1152,8 @@ function PdfReader({
           }
         }
         if (!job.commit(doc)) return;
+        setRecoveringProgress(false);
+        setProgressRecovery(progressReadFailed ? { fingerprint, requestedPage, isCurrent: job.isCurrent } : null);
         positionedRef.current = false;
         setRenderedPages(new Set());
         setTranslationStates({});
@@ -1213,9 +1226,31 @@ function PdfReader({
     return undefined;
   }, [courseContext?.initialPage, handleFile, initialFile]);
 
+  const retryProgressRecovery = async () => {
+    if (!progressRecovery || recoveringProgress) return;
+    const recovery = progressRecovery;
+    setRecoveringProgress(true);
+    try {
+      const restored = await serviceRef.current?.progress.load(recovery.fingerprint);
+      if (!recovery.isCurrent()) return;
+      if (restored) {
+        setZoom(restored.zoom);
+        setTargetLanguage(restored.targetLanguage);
+        goToPage(recovery.requestedPage ?? restored.lastPage);
+        setDocMeta((current) => current ? { ...current, restoredPage: restored.lastPage > 1 ? restored.lastPage : null } : current);
+      }
+      setProgressRecovery(null);
+    } catch {
+      // Keep the recovery actions available; the opened PDF remains usable.
+    } finally {
+      if (recovery.isCurrent()) setRecoveringProgress(false);
+    }
+  };
+
+  // Do not overwrite unread progress until recovery succeeds or is ignored.
   // Persist reading progress for this fingerprint.
   useEffect(() => {
-    if (!pdfDoc || !docMeta) return;
+    if (!pdfDoc || !docMeta || progressRecovery) return;
     const timer = setTimeout(() => {
       void serviceRef.current?.progress.save({
         fingerprint: docMeta.fingerprint,
@@ -1228,7 +1263,7 @@ function PdfReader({
       });
     }, PROGRESS_SAVE_DELAY);
     return () => clearTimeout(timer);
-  }, [pdfDoc, docMeta, page, zoom, targetLanguage]);
+  }, [pdfDoc, docMeta, page, zoom, targetLanguage, progressRecovery]);
 
   // Per-page pipeline: extract a text layer, fall back to cached visual OCR,
   // then use the existing translation cache/provider.
@@ -1788,6 +1823,15 @@ function PdfReader({
             </Button>
           </div>
         </header>
+        {progressRecovery ? (
+          <div role="alert" className="flex items-center gap-3 border-b bg-amber-50 px-4 py-2 text-sm text-amber-900">
+            <span>阅读进度恢复失败：无法读取本地存储。PDF 已正常打开。</span>
+            <Button size="sm" variant="outline" disabled={recoveringProgress} onClick={() => void retryProgressRecovery()}>
+              {recoveringProgress ? '正在恢复…' : '重试恢复进度'}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={recoveringProgress} onClick={() => setProgressRecovery(null)}>忽略并继续阅读</Button>
+          </div>
+        ) : null}
 
         <section className="relative min-h-0 flex-1">
           <ResizablePanelGroup orientation="horizontal">
