@@ -1,3 +1,4 @@
+import { EMPTY_GLOSSARY, parseGlossary, type Glossary } from '../glossary.ts';
 import {
   assertSafeArtifactContent,
   createCourseId,
@@ -130,6 +131,17 @@ export class BrowserDirectoryStorage implements CourseStorage {
   constructor(root: BrowserDirectoryHandle) {
     this.root = root;
     this.label = root.name;
+  }
+
+  async loadGlossary(): Promise<Glossary> {
+    try { return parseGlossary(await readJson(this.root, ['glossary.json'])); }
+    catch (error) {
+      if (error instanceof DOMException && error.name === 'NotFoundError') return structuredClone(EMPTY_GLOSSARY);
+      throw error;
+    }
+  }
+  async saveGlossary(glossary: Glossary): Promise<void> {
+    await writeFile(this.root, ['glossary.json'], JSON.stringify(parseGlossary(glossary), null, 2));
   }
 
   async initialize(name: string): Promise<CourseBundle> {

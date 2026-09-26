@@ -1,6 +1,8 @@
+import { glossaryPrompt, type Glossary } from './glossary.ts';
 import { protectScientificText, safeScientificCut, splitScientificParagraphs } from './scientific-text.ts';
 
 export interface TranslationRequest {
+  glossary?: Glossary;
   text: string;
   /** BCP-47 language name or the literal 'auto' for auto-detection. */
   sourceLanguage: string;
@@ -64,6 +66,7 @@ export interface TranslationCacheKeyParts {
   provider: string;
   model: string;
   promptVersion?: number;
+  glossaryFingerprint?: string;
 }
 
 /**
@@ -73,7 +76,7 @@ export interface TranslationCacheKeyParts {
 export function translationCacheKey(parts: TranslationCacheKeyParts): string {
   const { sourceHash, targetLanguage, provider, model } = parts;
   const promptVersion = parts.promptVersion ?? PROMPT_VERSION;
-  return `${sourceHash}:${targetLanguage}:${provider}:${model}:v${promptVersion}`;
+  return `${sourceHash}:${targetLanguage}:${provider}:${model}:v${promptVersion}${parts.glossaryFingerprint ? `:g${parts.glossaryFingerprint}` : ''}`;
 }
 
 export function classifyHttpError(status: number): TranslationErrorCode {
@@ -274,6 +277,8 @@ export function createOpenAICompatibleProvider(
         throw new TranslationError('empty_text', '当前页没有可提取的文字。');
       }
 
+      try { glossaryPrompt(request.glossary, request.text); }
+      catch (error) { throw new TranslationError('invalid_input', error instanceof Error ? error.message : '术语表无效。'); }
       const completedParagraphs: string[] = [];
       let batchEnabled = true;
       for (const batch of translationBatches(request)) {
@@ -418,7 +423,7 @@ async function performTranslationChunk(
           max_tokens: recommendedMaxOutputTokens(text),
           ...(config.disableThinking ? { thinking: { type: 'disabled' } } : {}),
           messages: [
-            { role: 'system', content: (batch ? BATCH_SYSTEM_PROMPT : SYSTEM_PROMPT) + (repair ? '\nYour previous output lost or changed protected placeholders. Correct this: copy all YYKEEP…ZZ markers exactly once, in order.' : '') },
+            { role: 'system', content: (batch ? BATCH_SYSTEM_PROMPT : SYSTEM_PROMPT) + glossaryPrompt(request.glossary, request.text) + (repair ? '\nYour previous output lost or changed protected placeholders. Correct this: copy all YYKEEP…ZZ markers exactly once, in order.' : '') },
             {
               role: 'user',
               content: [

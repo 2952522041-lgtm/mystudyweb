@@ -1,3 +1,4 @@
+import type { Glossary } from '../glossary.ts';
 export const COURSE_SCHEMA_VERSION = 1 as const;
 /** AI 生成的 DocumentDigest 使用 schemaVersion 2；本地规则生成的旧摘要仍为 1。 */
 export const DIGEST_SCHEMA_VERSION = 2 as const;
@@ -48,6 +49,7 @@ export interface ConceptRelation {
 export type DigestPromptVersion = 'local-structure-v1' | (string & {});
 
 export interface DocumentDigest {
+  glossaryFingerprint?: string;
   schemaVersion: 1 | 2;
   documentId: string;
   fingerprint: string;
@@ -167,6 +169,8 @@ export interface ImportResult {
 
 export interface CourseStorage {
   readonly label: string;
+  loadGlossary?(): Promise<Glossary>;
+  saveGlossary?(glossary: Glossary): Promise<void>;
   initialize(name: string): Promise<CourseBundle>;
   load(): Promise<CourseBundle>;
   /**

@@ -1,3 +1,4 @@
+import { EMPTY_GLOSSARY, parseGlossary, type Glossary } from '../glossary.ts';
 import type { YeyuDesktopApi } from '../../electron/api';
 import {
   assertSafeArtifactContent,
@@ -95,6 +96,14 @@ export class DesktopCourseStorage implements CourseStorage {
     this.api = api;
     this.directoryName = directoryName;
     this.label = directoryName;
+  }
+
+  async loadGlossary(): Promise<Glossary> {
+    if (!await this.api.exists(this.directoryName, ['glossary.json'])) return structuredClone(EMPTY_GLOSSARY);
+    return parseGlossary(await readJson(this.api, this.directoryName, ['glossary.json']));
+  }
+  async saveGlossary(glossary: Glossary): Promise<void> {
+    await this.api.writeFile(this.directoryName, ['glossary.json'], encodeJson(parseGlossary(glossary)));
   }
 
   async initialize(name: string): Promise<CourseBundle> {

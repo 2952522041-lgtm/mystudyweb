@@ -24,6 +24,8 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 
+import { CourseGlossary } from '@/components/course-glossary';
+import { EMPTY_GLOSSARY, glossaryFingerprint, type Glossary } from '@/lib/glossary';
 import { CourseImportDialog } from '@/components/course-import-dialog';
 import { KnowledgeMarkdown, KnowledgeSection } from '@/components/knowledge-section';
 import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
@@ -75,6 +77,8 @@ import {
 } from '@/lib/ocr';
 
 export interface CourseReaderContext {
+  glossary?: Glossary;
+  glossaryFingerprint?: string;
   courseName: string;
   document: DocumentRecord;
   digest?: DocumentDigest;
@@ -601,6 +605,7 @@ export function CourseLibrary({
     }
     // 知识库成果完全由 AI 生成，使用独立的「知识库 AI」配置；未配置时明确报错，不回退本地规则。
     // 扫描页 OCR 是视觉任务，仍使用「AI 答疑」的视觉模型配置。
+    const glossary = await active.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
     const provider = createKnowledgeProviderForSettings(
       loadKnowledgeSettings(),
     );
@@ -621,6 +626,7 @@ export function CourseLibrary({
     });
 
     const digest = await provider.analyzeDocument({
+      glossary,
       fingerprint: extracted.fingerprint,
       fileName: file.name,
       documentId: stableDocumentId(extracted.fingerprint),
@@ -654,6 +660,7 @@ export function CourseLibrary({
         digest,
       ];
       aiKnowledge = await provider.synthesizeCourseKnowledge({
+        glossary,
         courseId: bundle.manifest.id,
         courseName: bundle.manifest.name,
         digests: includedDigests,
@@ -695,6 +702,7 @@ export function CourseLibrary({
     setBusy(true);
     setError(null);
     try {
+      const glossary = await active.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
       const provider = createKnowledgeProviderForSettings(
         loadKnowledgeSettings(),
       );
@@ -714,6 +722,7 @@ export function CourseLibrary({
       });
       // 重新生成必须重新调用 AI：绕过缓存。
       const digest = await provider.analyzeDocument({
+        glossary,
         fingerprint: extracted.fingerprint,
         fileName: file.name,
         documentId: stableDocumentId(extracted.fingerprint),
@@ -753,6 +762,7 @@ export function CourseLibrary({
     setError(null);
     try {
       const bundle = active.bundle;
+      const glossary = await active.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
       const provider = createKnowledgeProviderForSettings(
         loadKnowledgeSettings(),
       );
@@ -765,6 +775,7 @@ export function CourseLibrary({
         )
         .map((item) => bundle.digests[item.id]);
       const aiKnowledge = await provider.synthesizeCourseKnowledge({
+        glossary,
         courseId: bundle.manifest.id,
         courseName: bundle.manifest.name,
         digests: includedDigests,
@@ -795,7 +806,10 @@ export function CourseLibrary({
     setError(null);
     try {
       const file = await active.storage.openPdf(document.id);
+      const glossary = await active.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
       onOpenDocument(file, {
+        glossary,
+        glossaryFingerprint: await glossaryFingerprint(glossary),
         courseName: active.bundle.manifest.name,
         document,
         digest: active.bundle.digests[document.id],
@@ -832,11 +846,13 @@ export function CourseLibrary({
         .map((item) => bundle.digests[item.id]);
       if (document.includedInCourse && remainingDigests.length > 0) {
         try {
+          const glossary = await active.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
           const provider = createKnowledgeProviderForSettings(
             loadKnowledgeSettings(),
           );
           setMessage('AI 正在基于剩余资料重新综合课程总总结与总脑图…');
           aiKnowledge = await provider.synthesizeCourseKnowledge({
+            glossary,
             courseId: bundle.manifest.id,
             courseName: bundle.manifest.name,
             digests: remainingDigests,
@@ -940,6 +956,11 @@ export function CourseLibrary({
             </button>
           ))}
         </div>
+        {active && bundle ? <div className="my-3"><CourseGlossary key={active.id} storage={active.storage} bundle={bundle} disabled={busy}
+                    onLocate={(documentId, page) => {
+                      const document = bundle.manifest.documents.find((item) => item.id === documentId);
+                      if (document) void openDocument(document, page);
+                    }} /></div> : null}
         <div className="mt-auto rounded-xl border border-slate-200 bg-white p-4">
           {isDesktop ? (
             <>
@@ -1130,6 +1151,11 @@ export function CourseLibrary({
                   >
                     <Trash2 /> 删除课程
                   </Button>
+                  <span className="md:hidden"><CourseGlossary key={active.id} storage={active.storage} bundle={bundle} disabled={busy}
+                    onLocate={(documentId, page) => {
+                      const document = bundle.manifest.documents.find((item) => item.id === documentId);
+                      if (document) void openDocument(document, page);
+                    }} /></span>
                   <Button size="sm" onClick={() => setImportOpen(true)}>
                     <FilePlus2 /> 导入 PDF
                   </Button>

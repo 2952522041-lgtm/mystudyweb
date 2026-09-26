@@ -25,6 +25,7 @@ export interface SharedTranslationRecord {
   provider: string;
   model: string;
   promptVersion: number;
+  glossaryFingerprint?: string;
   paragraphs: string[];
   updatedAt: string;
 }
@@ -63,11 +64,14 @@ export function validateSharedTranslation(
     'provider',
     'model',
     'promptVersion',
+    'glossaryFingerprint',
     'paragraphs',
     'updatedAt',
   ]);
   if (Object.keys(record).some((key) => !allowed.has(key))) return null;
   if (
+    (record.glossaryFingerprint !== undefined && record.glossaryFingerprint !== '' &&
+      (typeof record.glossaryFingerprint !== 'string' || !HASH_PATTERN.test(record.glossaryFingerprint))) ||
     record.schemaVersion !== SHARED_TRANSLATION_SCHEMA_VERSION ||
     !boundedString(record.documentId, MAX_DOCUMENT_ID_LENGTH) ||
     !boundedString(record.fingerprint, MAX_FINGERPRINT_LENGTH) ||
@@ -121,6 +125,7 @@ export function validateSharedTranslation(
     provider: record.provider,
     model: record.model,
     promptVersion: record.promptVersion,
+    ...(record.glossaryFingerprint ? { glossaryFingerprint: record.glossaryFingerprint as string } : {}),
     paragraphs: [...record.paragraphs],
     updatedAt: record.updatedAt,
   };
@@ -137,7 +142,7 @@ export function sharedTranslationFromCache(
     | 'provider'
     | 'model'
     | 'updatedAt'
-  > & { promptVersion?: number },
+  > & { promptVersion?: number; glossaryFingerprint?: string },
   documentId: string,
 ): SharedTranslationRecord {
   return {
@@ -150,6 +155,7 @@ export function sharedTranslationFromCache(
     provider: cached.provider,
     model: cached.model,
     promptVersion: cached.promptVersion ?? PROMPT_VERSION,
+    ...(cached.glossaryFingerprint ? { glossaryFingerprint: cached.glossaryFingerprint } : {}),
     paragraphs: [...cached.paragraphs],
     updatedAt: cached.updatedAt,
   };
@@ -167,6 +173,7 @@ export function findRestorableSharedTranslation(
     pageNumber: number;
     targetLanguage: string;
     promptVersion?: number;
+    glossaryFingerprint?: string;
   },
 ): SharedTranslationRecord | undefined {
   const promptVersion = criteria.promptVersion ?? PROMPT_VERSION;
@@ -176,7 +183,8 @@ export function findRestorableSharedTranslation(
         record.fingerprint === criteria.fingerprint &&
         record.pageNumber === criteria.pageNumber &&
         record.targetLanguage === criteria.targetLanguage &&
-        record.promptVersion === promptVersion,
+        record.promptVersion === promptVersion &&
+        (record.glossaryFingerprint ?? '') === (criteria.glossaryFingerprint ?? ''),
     )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
 }
@@ -196,6 +204,7 @@ export function cachedTranslationFromShared(
     model: record.model,
     updatedAt: record.updatedAt,
     promptVersion: record.promptVersion,
+    ...(record.glossaryFingerprint ? { glossaryFingerprint: record.glossaryFingerprint as string } : {}),
   };
 }
 
@@ -227,6 +236,7 @@ export function sharedTranslationIdentity(
     record.provider,
     record.model,
     record.promptVersion,
+    ...(record.glossaryFingerprint ? [record.glossaryFingerprint] : []),
   ]);
 }
 

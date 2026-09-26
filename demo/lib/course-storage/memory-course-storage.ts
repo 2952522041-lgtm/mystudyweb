@@ -1,3 +1,4 @@
+import { EMPTY_GLOSSARY, parseGlossary, type Glossary } from '../glossary.ts';
 import { createCourseId, sanitizeFileName } from './file-utils.ts';
 import type {
   AiCourseKnowledge,
@@ -20,6 +21,10 @@ export class MemoryCourseStorage implements CourseStorage {
   readonly label = '测试课程文件夹';
   private bundle: CourseBundle | null = null;
   private files = new Map<string, File>();
+
+  private glossary: Glossary = structuredClone(EMPTY_GLOSSARY);
+  async loadGlossary(): Promise<Glossary> { return structuredClone(this.glossary); }
+  async saveGlossary(glossary: Glossary): Promise<void> { this.glossary = parseGlossary(glossary); }
 
   async initialize(name: string): Promise<CourseBundle> {
     if (this.bundle) throw new Error('课程已存在。');
@@ -176,6 +181,7 @@ export class MemoryCourseStorage implements CourseStorage {
   async deleteCourse(): Promise<void> {
     this.bundle = null;
     this.files.clear();
+    this.glossary = structuredClone(EMPTY_GLOSSARY);
   }
 
   private assertRevision(bundle: CourseBundle, expectedRevision: number): void {

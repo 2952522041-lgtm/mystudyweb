@@ -16,6 +16,9 @@ const mockSources: Record<string, string> = {
   '@/lib/course-storage/desktop-course-storage': `
     export class DesktopCourseStorage {
       label = 'fixture';
+      async openPdf() { return new File(['pdf'], 'lesson.pdf', {type:'application/pdf'}); }
+      async loadGlossary() { return structuredClone(window.fixture.glossary); }
+      async saveGlossary(value) { window.fixture.glossary = structuredClone(value); }
       async load() { return structuredClone(window.fixture.bundle); }
       async importDocument(file, digest, options, revision) {
         const f = window.fixture; f.calls.save++;
@@ -70,8 +73,10 @@ import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {CourseLibrary} from '@/components/course-library';
 import {sha256Hex, stableDocumentId} from '@/lib/course-storage/file-utils';
+import {createReaderService} from '@/lib/reader-cache';
 const now = '2026-01-01T00:00:00.000Z';
 const f = window.fixture = {
+  glossary: {schemaVersion:1,version:0,entries:[]},
   configured: false,
   calls: {provider:0, analyze:0, synthesize:0, extract:0, save:0, ocr:0},
   record(fingerprint, fileName) {
@@ -116,7 +121,7 @@ window.runImportRegression = async () => {
   const original = 'original PDF bytes';
   const fingerprint = await sha256Hex(new TextEncoder().encode(original).buffer);
   f.bundle.manifest.documents.push(f.record(fingerprint, 'lesson.pdf'));
-  createRoot(document.getElementById('root')).render(<CourseLibrary onOpenDocument={() => {}}/>);
+  createRoot(document.getElementById('root')).render(<CourseLibrary onOpenDocument={(_file, context) => { f.opened = context; }}/>);
   await waitFor('loaded', () => button('导入 PDF'));
   const before = JSON.stringify(f.bundle);
   // An unconfigured provider must not even be constructed for duplicates.
@@ -137,6 +142,52 @@ window.runImportRegression = async () => {
     'different content did not import exactly once: '+JSON.stringify(f.calls));
   check(f.bundle.manifest.documents.length === 3, 'same-name different content was lost');
   check(f.bundle.manifest.documents[2].fingerprint !== fingerprint, 'fingerprint ignored content');
+  button('课程术语表').click();
+  await waitFor('glossary ready', () => button('新增术语') && !button('新增术语').closest('fieldset').disabled);
+  button('新增术语').click();
+  await waitFor('new term row', () => document.querySelector('input[aria-label="源词 1"]'));
+  const inputValue = (label, value) => {
+    const input = document.querySelector('input[aria-label="'+label+'"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+    input.dispatchEvent(new Event('input', {bubbles:true}));
+  };
+  inputValue('源词 1', 'momentum'); inputValue('目标译法 1', '动量');
+  inputValue('禁用译法 1', '冲量'); inputValue('备注 1', '力学');
+  await waitFor('dirty', () => text().includes('有未保存的修改'));
+  button('保存术语表').click();
+  await waitFor('saved glossary', () => text().includes('已保存版本 1'));
+  check(f.glossary.entries[0].target === '动量', 'glossary edit was not saved');
+  inputValue('目标译法 1', '线动量');
+  await waitFor('edit dirty', () => text().includes('有未保存的修改'));
+  button('保存术语表').click();
+  await waitFor('updated glossary', () => text().includes('已保存版本 2'));
+  await createReaderService().cache.save({key:'',fingerprint,pageNumber:1,sourceHash:await sha256Hex(new TextEncoder().encode('momentum').buffer),
+    paragraphs:['冲量'],sourceParagraphs:['momentum'],targetLanguage:'zh',provider:'mock',model:'test',updatedAt:now});
+  button('检查译名一致性').click();
+  await waitFor('audit coverage', () => text().includes('本机译文覆盖 1/3 页'));
+  check(text().includes('未检查'), 'audit must disclose uncovered pages');
+  check(text().includes('命中禁用译法「冲量」'), 'audit lost forbidden terminology');
+  button('lesson.pdf · 第 1 页 · 译文段落 1').click();
+  await waitFor('source opened', () => f.opened?.initialPage === 1);
+  check(f.opened.glossary.entries[0].target === '线动量', 'reader did not receive current glossary');
+  check(f.opened.glossaryFingerprint.length === 64, 'reader glossary fingerprint missing');
+  button('课程术语表').click();
+  await waitFor('glossary reload', () => document.querySelector('input[aria-label="源词 1"]'));
+
+  button('删除第 1 条').click();
+  await waitFor('deleted row', () => !document.querySelector('input[aria-label="源词 1"]'));
+  button('保存术语表').click();
+  await waitFor('empty saved', () => text().includes('已保存版本 3'));
+  check(f.glossary.entries.length === 0, 'glossary delete not persisted');
+  const importInput = document.querySelector('input[aria-label="导入术语表 JSON"]');
+  const imported = new DataTransfer();
+  imported.items.add(new File([JSON.stringify({schemaVersion:1,version:99,entries:[{source:'mass',target:'质量',forbidden:[],note:''}]})], 'terms.json', {type:'application/json'}));
+  importInput.files = imported.files; importInput.dispatchEvent(new Event('change', {bubbles:true}));
+  await waitFor('JSON imported', () => document.querySelector('input[aria-label="源词 1"]')?.value === 'mass');
+  button('保存术语表').click();
+  await waitFor('import saved', () => text().includes('已保存版本 4'));
+  check(f.glossary.entries[0].target === '质量' && f.glossary.version === 4, 'import did not use local revision');
+
   return f.calls;
 };
 `;

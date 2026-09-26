@@ -1,3 +1,4 @@
+import type { Glossary } from './glossary.ts';
 import {
   translateWithRetry,
   TranslationError,
@@ -22,7 +23,7 @@ export function selectionExplanationQuestion(text: string, pageNumber: number): 
 /** Reuse the normal provider and retry policy, without any whole-page cache writes. */
 export async function translateSelection(
   provider: TranslationProvider,
-  selection: { text: string; pageNumber: number },
+  selection: { text: string; pageNumber: number; glossary?: Glossary },
   targetLanguage: string,
   options?: TranslateOptions,
 ) {
@@ -36,7 +37,7 @@ export async function translateSelection(
   }
   options?.signal?.throwIfAborted();
   const result = await translateWithRetry(provider, {
-    text, pageNumber: selection.pageNumber, sourceLanguage: 'auto', targetLanguage,
+    ...(selection.glossary ? { glossary: selection.glossary } : {}), text, pageNumber: selection.pageNumber, sourceLanguage: 'auto', targetLanguage,
   }, options);
   options?.signal?.throwIfAborted();
   return result;

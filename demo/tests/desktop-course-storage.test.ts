@@ -470,3 +470,23 @@ void test('course library keeps both browser and desktop modes available', async
     assert.match(library, new RegExp(requirement));
   }
 });
+
+void test('desktop glossary lives in course directory and survives adapter recreation', async () => {
+  const { EMPTY_GLOSSARY, reviseGlossary } = await import('../lib/glossary.ts');
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-glossary-'));
+  try {
+    const api = new FakeWorkspaceApi(root);
+    await api.getWorkspaceInfo();
+    const { directoryName } = await api.createCourseDirectory('术语课程');
+    const storage = new DesktopCourseStorage(api, directoryName);
+    await storage.initialize('术语课程');
+    assert.deepEqual(await storage.loadGlossary(), EMPTY_GLOSSARY);
+    const glossary = reviseGlossary(EMPTY_GLOSSARY, [{ source: 'mass', target: '质量', forbidden: ['群众'], note: '' }]);
+    const before = await storage.load();
+    await storage.saveGlossary(glossary);
+    assert.deepEqual(await new DesktopCourseStorage(api, directoryName).loadGlossary(), glossary);
+    assert.deepEqual(await storage.load(), before);
+    await api.writeFile(directoryName, ['glossary.json'], new TextEncoder().encode('{bad'));
+    await assert.rejects(storage.loadGlossary());
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

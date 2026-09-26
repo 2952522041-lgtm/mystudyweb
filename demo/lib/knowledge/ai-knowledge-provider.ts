@@ -1,3 +1,4 @@
+import { glossaryFingerprint, glossaryPrompt, type Glossary } from '../glossary.ts';
 import { conceptKey as normalizeConceptKey } from './concept-identity.ts';
 import { ChatError } from '../ai-errors.ts';
 import {
@@ -119,6 +120,7 @@ export function knowledgeDigestCacheKey(parts: {
   model: string;
   promptVersion: string;
   schemaVersion: number;
+  glossaryFingerprint?: string;
 }): string {
   return [
     'ai-digest',
@@ -127,6 +129,7 @@ export function knowledgeDigestCacheKey(parts: {
     parts.model,
     parts.promptVersion,
     `schema${parts.schemaVersion}`,
+    ...(parts.glossaryFingerprint ? [`g${parts.glossaryFingerprint}`] : []),
   ].join(':');
 }
 
@@ -158,6 +161,7 @@ function isDocumentDigestLike(value: unknown): value is DocumentDigest {
 }
 
 export interface AnalyzeDocumentInput {
+  glossary?: Glossary;
   fingerprint: string;
   fileName: string;
   documentId: string;
@@ -176,6 +180,7 @@ export type {
 } from '../course-storage/types.ts';
 
 export interface SynthesizeCourseInput {
+  glossary?: Glossary;
   courseId: string;
   courseName: string;
   /** 所有已纳入课程的文档摘要（含本次新并入的）。 */
@@ -262,13 +267,14 @@ async function completeJson(
   config: ChatCompletionConfig,
   input: {
     userPrompt: string;
+    glossaryText?: string;
     maxTokens: number;
     signal?: AbortSignal;
     contextLabel: string;
   },
 ): Promise<unknown> {
   const messages: ChatApiMessage[] = [
-    { role: 'system', content: KNOWLEDGE_SYSTEM_PROMPT },
+    { role: 'system', content: KNOWLEDGE_SYSTEM_PROMPT + (input.glossaryText ?? '') },
     { role: 'user', content: input.userPrompt },
   ];
   let lastFailure = '';
@@ -897,7 +903,10 @@ export function createKnowledgeProviderForSettings(
       if (pageCount === 0) {
         throw new KnowledgeError('invalid_input', '这份 PDF 没有可分析的页面。');
       }
+      const glossaryText = glossaryPrompt(input.glossary, input.pages.join('\n'));
+      const termFingerprint = await glossaryFingerprint(input.glossary);
       const cacheKey = knowledgeDigestCacheKey({
+        glossaryFingerprint: termFingerprint,
         fingerprint: input.fingerprint,
         provider: KNOWLEDGE_PROVIDER_ID,
         model,
@@ -925,6 +934,7 @@ export function createKnowledgeProviderForSettings(
           chunkCount: chunks.length,
         });
         const data = await completeJson(requestConfig, {
+          glossaryText,
           userPrompt: chunkAnalysisPrompt({
             fileName: input.fileName,
             documentId,
@@ -940,6 +950,7 @@ export function createKnowledgeProviderForSettings(
 
       input.onStage?.('synthesize', { chunkCount: chunks.length });
       const synthesisRaw = await completeJson(requestConfig, {
+        glossaryText,
         userPrompt: digestSynthesisPrompt({
           fileName: input.fileName,
           documentId,
@@ -965,6 +976,7 @@ export function createKnowledgeProviderForSettings(
         model,
         now: new Date().toISOString(),
       });
+      digest.glossaryFingerprint = termFingerprint;
       if (input.signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
       try { await digestCache.save(cacheKey, digest); }
       catch { input.onStage?.('cache-unavailable', {}); }
@@ -977,6 +989,7 @@ export function createKnowledgeProviderForSettings(
       }
       input.onStage?.('course-merge', {});
       const raw = await completeJson(requestConfig, {
+        glossaryText: glossaryPrompt(input.glossary, JSON.stringify(input.digests)),
         userPrompt: courseSynthesisPrompt({
           courseName: input.courseName,
           digests: input.digests,

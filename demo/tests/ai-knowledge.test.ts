@@ -1157,7 +1157,7 @@ class MemoryDirectoryHandle implements BrowserDirectoryHandle {
   ): Promise<BrowserFileHandle> {
     let child = this.node.children.get(name);
     if (!child) {
-      if (!options?.create) throw new Error(`文件不存在：${name}`);
+      if (!options?.create) throw new DOMException(`文件不存在：${name}`, 'NotFoundError');
       child = { type: 'file', data: new Uint8Array() };
       this.node.children.set(name, child);
     }
@@ -1528,4 +1528,45 @@ void test('oversized course output is rejected instead of retaining dangling rel
   raw.concepts = Array.from({length:61}, (_,index) => ({...raw.concepts[0],id:`k${index+1}`,label:`概念 ${index}`}));
   const { provider } = makeProvider([JSON.stringify(raw)]);
   await assert.rejects(provider.synthesizeCourseKnowledge({courseId:'c',courseName:'科学',digests:[makeAiDigest(),makeAiDigest({documentId:'doc-bbbbbbbbbbbb',sourcePages:[1,2,3]})]}), /超过 60/);
+});
+
+void test('glossary reaches chunk, document and course prompts and invalidates digest cache', async () => {
+  const { EMPTY_GLOSSARY, reviseGlossary, glossaryFingerprint } = await import('../lib/glossary.ts');
+  const glossary = reviseGlossary(EMPTY_GLOSSARY, [{ source: 'vector space', target: '向量空间', forbidden: ['矢量空间'], note: '统一名称，保留 V 与 v' }]);
+  const { requests, provider, store } = makeProvider([chunkAnalysisReply(), digestReply(), chunkAnalysisReply(), digestReply(), courseReply()]);
+  const input = { fingerprint: FINGERPRINT, documentId: DOCUMENT_ID, fileName: FILE_NAME, pages: ['vector space V', ...PAGES.slice(1)], glossary };
+  const digest = await provider.analyzeDocument(input);
+  assert.equal(digest.glossaryFingerprint, await glossaryFingerprint(glossary));
+  await provider.analyzeDocument(input);
+  assert.equal(requests.length, 2);
+  await provider.analyzeDocument({ ...input, glossary: reviseGlossary(glossary, glossary.entries) });
+  assert.equal(requests.length, 4);
+  assert.equal((await store.keys()).length, 2);
+  await provider.synthesizeCourseKnowledge({ courseId: 'course-1', courseName: '线性代数', digests: [makeAiDigest(), makeSecondDigest()], glossary });
+  for (const request of requests) {
+    const system = (request.body.messages as Array<{ content: string }>)[0].content;
+    assert.match(system, /"source":"vector space"/);
+    assert.match(system, /"target":"向量空间"/);
+    assert.match(system, /矢量空间/);
+    assert.match(system, /Preserve formulas, symbols, variable names/);
+    assert.match(system, /MUST remain unchanged/);
+  }
+  assert.notEqual(knowledgeDigestCacheKey({ fingerprint: 'a', provider: 'p', model: 'm', promptVersion: 'v', schemaVersion: 2 }),
+    knowledgeDigestCacheKey({ fingerprint: 'a', provider: 'p', model: 'm', promptVersion: 'v', schemaVersion: 2, glossaryFingerprint: 'f' }));
+});
+
+void test('browser directory glossary persists independently and rejects damaged files', async () => {
+  const { EMPTY_GLOSSARY, reviseGlossary } = await import('../lib/glossary.ts');
+  const root = newMemoryRoot();
+  const storage = new BrowserDirectoryStorage(root);
+  await storage.initialize('课程');
+  assert.deepEqual(await storage.loadGlossary(), EMPTY_GLOSSARY);
+  const glossary = reviseGlossary(EMPTY_GLOSSARY, [{ source: 'v', target: 'v', forbidden: [], note: '速度符号' }]);
+  const before = await storage.load();
+  await storage.saveGlossary(glossary);
+  assert.deepEqual(await new BrowserDirectoryStorage(root).loadGlossary(), glossary);
+  assert.deepEqual(await storage.load(), before);
+  const writer = await (await root.getFileHandle('glossary.json')).createWritable();
+  await writer.write('{invalid'); await writer.close();
+  await assert.rejects(storage.loadGlossary());
 });

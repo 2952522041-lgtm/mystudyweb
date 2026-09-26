@@ -1,3 +1,5 @@
+import { glossaryFingerprint } from './glossary.ts';
+import { splitScientificParagraphs } from './scientific-text.ts';
 import { validateServiceBaseUrl } from './service-settings.ts';
 import { sha256Hex } from './pdf-text.ts';
 import {
@@ -105,6 +107,8 @@ export function createIndexedDBStore<V>(
 }
 
 export interface CachedTranslation {
+  glossaryFingerprint?: string;
+  sourceParagraphs?: string[];
   key: string;
   fingerprint: string;
   pageNumber: number;
@@ -123,6 +127,7 @@ export interface TranslationCache {
     fingerprint: string;
     pageNumber: number;
     sourceHash: string;
+    glossaryFingerprint?: string;
     targetLanguage: string;
     provider: string;
     model: string;
@@ -138,6 +143,7 @@ export interface TranslationCache {
  */
 export async function findCachedPageTranslation(input: {
   cache: TranslationCache;
+  glossaryFingerprint?: string;
   fingerprint: string;
   pageNumber: number;
   targetLanguage: string;
@@ -153,7 +159,8 @@ export async function findCachedPageTranslation(input: {
         entry.targetLanguage === input.targetLanguage &&
         entry.provider === input.provider &&
         entry.model === input.model &&
-        entry.promptVersion === PROMPT_VERSION,
+        entry.promptVersion === PROMPT_VERSION &&
+        (entry.glossaryFingerprint ?? '') === (input.glossaryFingerprint ?? ''),
     )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
 }
@@ -188,16 +195,17 @@ export function createTranslationCache(
     fingerprint: string;
     pageNumber: number;
     sourceHash: string;
+    glossaryFingerprint?: string;
     targetLanguage: string;
     provider: string;
     model: string;
   }) =>
-    `${parts.fingerprint}:${parts.pageNumber}:${parts.sourceHash}:${parts.targetLanguage}:${parts.provider}:${parts.model}:v${PROMPT_VERSION}`;
+    `${parts.fingerprint}:${parts.pageNumber}:${parts.sourceHash}:${parts.targetLanguage}:${parts.provider}:${parts.model}:v${PROMPT_VERSION}${parts.glossaryFingerprint ? `:g${parts.glossaryFingerprint}` : ''}`;
 
   return {
     async lookup(parts) {
       const entry = await store.get(storageKey(parts));
-      return isCachedTranslation(entry) && entry.promptVersion === PROMPT_VERSION ? entry : undefined;
+      return isCachedTranslation(entry) && entry.promptVersion === PROMPT_VERSION && (entry.glossaryFingerprint ?? '') === (parts.glossaryFingerprint ?? '') ? entry : undefined;
     },
     async save(input) {
       const key = storageKey(input);
@@ -285,11 +293,13 @@ export async function resolvePageTranslation(input: {
     onPartial,
   } = input;
   const sourceHash = await sha256Hex(request.text);
+  const termFingerprint = await glossaryFingerprint(request.glossary);
   if (!bypassCache) {
     const hit = await cache.lookup({
       fingerprint,
       pageNumber: request.pageNumber,
       sourceHash,
+      glossaryFingerprint: termFingerprint,
       targetLanguage: request.targetLanguage,
       provider: provider.id,
       model: provider.model,
@@ -316,7 +326,8 @@ export async function resolvePageTranslation(input: {
           record.pageNumber === request.pageNumber &&
           record.targetLanguage === request.targetLanguage &&
           record.sourceHash === sourceHash &&
-          record.promptVersion === PROMPT_VERSION,
+          record.promptVersion === PROMPT_VERSION &&
+          (record.glossaryFingerprint ?? '') === termFingerprint,
       )
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
     if (published) {
@@ -340,8 +351,11 @@ export async function resolvePageTranslation(input: {
   });
   signal?.throwIfAborted();
   const cacheEntry: CachedTranslation = {
+    glossaryFingerprint: termFingerprint,
+    sourceParagraphs: splitScientificParagraphs(request.text),
     key: translationCacheKey({
       sourceHash,
+      glossaryFingerprint: termFingerprint,
       targetLanguage: request.targetLanguage,
       provider: result.provider,
       model: result.model,

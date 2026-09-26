@@ -1,0 +1,168 @@
+最终验证：串行，单文件 20 次、完整套件 3 次，随后 lint、tsc。
+单文件命令：xvfb-run -a node --test --test-concurrency=1 --experimental-strip-types tests/shared-viewer-regression.test.ts
+全套命令：xvfb-run -a pnpm test
+lint 和 tsc 均 exit=0；lint 34 warnings / 0 errors；tsc 0 diagnostics。
+
+after-file-1.log sha256=35c1c2d297860055d51e573ba2683470c70a9466e9db0f4fd11300fe9ddfd1e0
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 10838.964896
+after-file-2.log sha256=71d56ff2973699dc48941b7fc54560809a6fc70bc98a299c2ddfbe0c958126fe
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9383.220413
+after-file-3.log sha256=5c12ce0dc45955037833e35d1e984d0279b27fb7d185f24aac90d0b629a3306b
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9385.767308
+after-file-4.log sha256=924c2fb024b6ddd2b4287ad93502051307408737436655cc505b6f7d6a28845f
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9315.054116
+after-file-5.log sha256=370c65511602c8096841aa9efa37bd65b6d8863b3d88b5999803fd71e4d362a6
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9415.084183
+after-file-6.log sha256=88355020d7bc6d9fc92de1a47cfc55e609d23e724a24de8e1cd19e3fa46cb36d
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9413.560666
+after-file-7.log sha256=42d617ff78b83c2f72e1f2baac69e6c695a25756573871cddf2cfbd74f6c4012
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9431.583776
+after-file-8.log sha256=ac8cbc64f23881eb544d62f3f07be4324c3256dbd9f92534400acac54f2a5044
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9428.018496
+after-file-9.log sha256=906d4ad1d18818c683df339fad4b4bb764d5bd5813cc7b1227ca3deeeb160112
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9332.695464
+after-file-10.log sha256=a45ba277c004c5d982fcbd18ae2057cf7334eed6f48209f207c958876f6f95ac
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9275.795132
+after-file-11.log sha256=94dbbae6eb0d0d2515292924d53fd720879e841fb88d2a7560fca7d9adbcea0f
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9346.890641
+after-file-12.log sha256=93dc6f3c856d3bfa86963d50a2430f91af0a979b948928f1931f1a959c0f0b64
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9355.647989
+after-file-13.log sha256=048996185e38abbc1be4c06a67736144b76a78e896598a42ef982eef72728405
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9481.771741
+after-file-14.log sha256=cfc9f4dba1caec7c796901215f588fca6451ff25bf49194c7d90b6b45d7ab9e8
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9379.456549
+after-file-15.log sha256=bb3a8de6b3820f6d341b61a8b8c6a8727fb1eb8793678681fd95a6425af75039
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9416.623916
+after-file-16.log sha256=50f9d11af629d32dfa99751470b01a2bdce4e7c3ebf5915b61aaef895653ae45
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9297.809591
+after-file-17.log sha256=cf1426bb0eb10a4fbcc75d1e61fa74030f3350b22dfff759ccf30dc6276b289a
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9342.004601
+after-file-18.log sha256=993d8fe2fe4ca426d35d91cf202b184dc2933894da09f08e34ef33bf77d12842
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9454.437546
+after-file-19.log sha256=e204a6cc7b53125012480785582e5fc9b819acade72f4f21518d2820868317f1
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9431.209623
+after-file-20.log sha256=828c5dc485eadf91e6d36b5657b46cadc3362acb5e4a4d5450da711fcf7f2812
+# tests 7
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 9416.748927
+after-suite-1.log sha256=fc7ee41ffa763b134f4a39319a844b60daeb2ecda77fd43e945358786a4afc18
+# tests 342
+# pass 342
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 31580.658077
+after-suite-2.log sha256=376408aad20339f3c3dfec1f34e3b9af329fa97bf1a0eba7bb9cff5468175221
+# tests 342
+# pass 342
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 31537.394892
+after-suite-3.log sha256=9fbcb0c36a998c859690189e3fa010cb9e80ab57f48660359abb160ef31ba0b8
+# tests 342
+# pass 342
+# fail 0
+# cancelled 0
+# skipped 0
+# duration_ms 31425.666076
+final-lint.log sha256=969738826ba71c849e0e74a2124f4b506c8de50dcb98896896f4737a20e40c5c
+final-tsc.log sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

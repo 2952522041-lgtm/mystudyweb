@@ -791,9 +791,11 @@ function PdfReader({
     settingsOpenRef.current = settingsOpen;
   }, [settingsOpen]);
 
+  const glossary = courseContext?.glossary;
+  const termFingerprint = courseContext?.glossaryFingerprint ?? '';
   const translationKey = useCallback(
-    (pageNumber: number, language: string) => `${pageNumber}:${language}`,
-    [],
+    (pageNumber: number, language: string) => `${pageNumber}:${language}:${termFingerprint}`,
+    [termFingerprint],
   );
 
   const publishCourseTranslation = useCallback(
@@ -1328,6 +1330,7 @@ function PdfReader({
 
         if (!bypassRequested) {
           const exactCached = await findCachedPageTranslation({
+            glossaryFingerprint: termFingerprint,
             cache: serviceRef.current!.cache,
             fingerprint: docMeta.fingerprint,
             pageNumber: translationPage,
@@ -1352,6 +1355,7 @@ function PdfReader({
           const restored = findRestorableSharedTranslation(
             publishedTranslations,
             {
+              glossaryFingerprint: termFingerprint,
               fingerprint: docMeta.fingerprint,
               pageNumber: translationPage,
               targetLanguage,
@@ -1426,6 +1430,7 @@ function PdfReader({
           cache: serviceRef.current!.cache,
           fingerprint: docMeta.fingerprint,
           request: {
+            glossary,
             text: sourceText,
             sourceLanguage: 'auto',
             targetLanguage,
@@ -1472,6 +1477,8 @@ function PdfReader({
     publishCourseTranslation,
     rememberPublishedTranslation,
     publishedTranslations,
+    glossary,
+    termFingerprint,
   ]);
 
   const retranslate = () => {
@@ -1656,6 +1663,7 @@ function PdfReader({
       targetLanguage,
       provider.id,
       provider.model,
+      termFingerprint,
     ].join(':');
     if (prefetchedTranslations.has(identity)) return;
 
@@ -1686,6 +1694,7 @@ function PdfReader({
             cache: serviceRef.current!.cache,
             fingerprint: docMeta.fingerprint,
             request: {
+              glossary,
               text: normalized.text,
               sourceLanguage: 'auto',
               targetLanguage,
@@ -1728,6 +1737,8 @@ function PdfReader({
     publishCourseTranslation,
     rememberPublishedTranslation,
     publishedTranslations,
+    glossary,
+    termFingerprint,
   ]);
 
   const openSettings = (tab: SettingsTab = 'translation') => {
@@ -2185,6 +2196,7 @@ function PdfReader({
           ) : null}
 
           {pdfDoc && docMeta && !suspended && !settingsOpen && !importOpen ? <SelectionToolbar
+            glossary={glossary}
             key={docMeta.fingerprint}
             rootRef={documentStageRef}
             settings={settings}

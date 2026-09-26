@@ -1,5 +1,6 @@
 'use client';
 
+import type { Glossary } from '@/lib/glossary';
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { Button } from '@/components/ui/button';
 import { capturePageSelection, selectionToolbarPosition, type SelectionSnapshot } from '@/lib/selection';
@@ -11,6 +12,7 @@ interface ToolbarProps {
   rootRef: RefObject<HTMLElement | null>;
   settings: ReaderSettings;
   targetLanguage: string;
+  glossary?: Glossary;
   onExplain: (selection: SelectionSnapshot) => void;
 }
 
@@ -70,7 +72,7 @@ export function SelectionToolbar(props: ToolbarProps) {
     }} />;
 }
 
-function SelectionActions({ selection, settings, targetLanguage, onExplain, onClose, hostRef }: ToolbarProps & {
+function SelectionActions({ selection, glossary, settings, targetLanguage, onExplain, onClose, hostRef }: ToolbarProps & {
   selection: SelectionSnapshot;
   onClose: () => void;
   hostRef: RefObject<HTMLDivElement | null>;
@@ -99,7 +101,7 @@ function SelectionActions({ selection, settings, targetLanguage, onExplain, onCl
     setError('');
     setResult('');
     try {
-      const translated = await translateSelection(createProviderForSettings(settings), selection, targetLanguage, {
+      const translated = await translateSelection(createProviderForSettings(settings), { ...selection, glossary }, targetLanguage, {
         signal: controller.signal,
         onPartial: (paragraphs) => {
           if (!controller.signal.aborted) setResult(paragraphs.join('\n\n'));
