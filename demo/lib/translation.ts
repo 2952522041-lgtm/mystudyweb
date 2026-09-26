@@ -1,3 +1,5 @@
+import { protectScientificText, safeScientificCut, splitScientificParagraphs } from './scientific-text.ts';
+
 export interface TranslationRequest {
   text: string;
   /** BCP-47 language name or the literal 'auto' for auto-detection. */
@@ -19,6 +21,7 @@ export type TranslationErrorCode =
   | 'rate_limit'
   | 'quota'
   | 'server'
+  | 'invalid_output'
   | 'invalid_input'
   | 'empty_text'
   | 'unknown';
@@ -35,7 +38,7 @@ export class TranslationError extends Error {
   }
 }
 
-export const PROMPT_VERSION = 5;
+export const PROMPT_VERSION = 6;
 export const MAX_AUTO_RETRIES = 2;
 export const MAX_TRANSLATION_CHUNK_CHARACTERS = 3000;
 const MAX_TRUNCATION_SPLITS = 3;
@@ -97,6 +100,7 @@ const STATUS_LABELS: Record<TranslationErrorCode, string> = {
   rate_limit: '翻译服务限流中，请稍后重试。',
   quota: '翻译服务额度不足，请检查账户余额。',
   server: '翻译服务临时故障，请稍后重试。',
+  invalid_output: '译文公式或段落校验失败，请重新翻译或在阅读服务设置中更换模型。',
   invalid_input: '本页文本过长或格式不受支持。',
   empty_text: '当前页没有可提取的文字。',
   unknown: '翻译失败，请稍后重试。',
@@ -131,7 +135,8 @@ const SYSTEM_PROMPT = [
   '- Translate every sentence. Never omit, shorten, merge away, or summarize any source content.',
   '- Output only the complete translation, no summaries or explanations.',
   '- Keep the paragraph order and paragraph count.',
-  '- Separate paragraphs with one blank line.',
+  '- The input is one source paragraph or a fragment of one. Keep its internal Markdown lists and line breaks.',
+  '- Copy every YYKEEP…ZZ placeholder exactly once in its original order. Never translate, expand, remove, duplicate or wrap placeholders in code fences.',
   '- Preserve formulas, code, citation numbers, and proper nouns.',
   '- Copy math and scientific notation character for character: Greek letters (α, β, γ, θ, λ, μ, φ, ψ, ω), operators (±, ×, ÷, ≤, ≥, ≠, ≈, ∑, ∫, √), subscripts, superscripts, and units. Never drop, transliterate, or replace them.',
   '- Never invent information that is not in the source text.',
@@ -155,6 +160,7 @@ function splitOversizedPart(part: string, maxCharacters: number): string[] {
     }
     if (cut < minimumCut) cut = window.lastIndexOf(' ', maxCharacters);
     if (cut < minimumCut) cut = maxCharacters;
+    cut = safeScientificCut(remaining, cut);
     pieces.push(remaining.slice(0, cut).trim());
     remaining = remaining.slice(cut).trim();
   }
@@ -172,8 +178,7 @@ export function splitTranslationChunks(
   maxCharacters = MAX_TRANSLATION_CHUNK_CHARACTERS,
 ): string[] {
   if (maxCharacters < 1) throw new RangeError('maxCharacters must be positive');
-  const parts = text
-    .split(/\n{2,}/)
+  const parts = splitScientificParagraphs(text)
     .flatMap((part) => splitOversizedPart(part, maxCharacters))
     .filter((part) => part.length > 0);
   const chunks: string[] = [];
@@ -217,61 +222,49 @@ export function createOpenAICompatibleProvider(
       }
 
       const completedParagraphs: string[] = [];
-      const pending = splitTranslationChunks(request.text).map((text) => ({
-        text,
-        splitDepth: 0,
-      }));
-      for (let index = 0; index < pending.length;) {
-        const chunk = pending[index];
-        const completion = await requestTranslationChunk(
-          doFetch,
-          config,
-          request,
-          chunk.text,
-          options?.signal,
-          (content) => {
-            if (!options?.onPartial) return;
-            options.onPartial([
-              ...completedParagraphs,
-              ...splitStreamParagraphs(content),
-            ]);
-          },
-        );
-        if (completion.finishReason === 'length') {
-          if (chunk.splitDepth >= MAX_TRUNCATION_SPLITS) {
-            throw new TranslationError(
-              'invalid_input',
-              '翻译输出多次达到上限，已停止并且不会缓存残缺译文。',
-            );
+      // Translate in source order and retain ownership when an oversized
+      // paragraph needs several requests. Never infer alignment from output.
+      for (const source of splitScientificParagraphs(request.text)) {
+        const protectedText = protectScientificText(source);
+        const pending = splitTranslationChunks(protectedText.text).map((text) => ({ text, splitDepth: 0 }));
+        const fragments: string[] = [];
+        for (let index = 0; index < pending.length;) {
+          const chunk = pending[index];
+          let translated = '';
+          let split = false;
+          for (let repair = 0; repair < 2; repair++) {
+            const completion = await requestTranslationChunk(doFetch, config, request, chunk.text, options?.signal,
+              (content) => {
+                // A partial marker/formula must not reach the UI. Publish only
+                // snapshots that already contain the complete protected set.
+                try {
+                  const partial = protectedText.restore(parseParagraphList(content, chunk.text).join('\n\n'), chunk.text);
+                  options?.onPartial?.([...completedParagraphs, [...fragments, partial].join(' ')]);
+                } catch { /* Wait for the next complete stream snapshot. */ }
+              }, repair > 0);
+            if (completion.finishReason === 'length') {
+              const smaller = splitTranslationChunks(chunk.text, Math.max(400, Math.floor(chunk.text.length / 2)));
+              if (chunk.splitDepth >= MAX_TRUNCATION_SPLITS || smaller.length < 2) {
+                throw new TranslationError('invalid_input', '翻译输出达到上限，已停止并且不会缓存残缺译文。');
+              }
+              pending.splice(index, 1, ...smaller.map((text) => ({ text, splitDepth: chunk.splitDepth + 1 })));
+              split = true;
+              break;
+            }
+            if (!completion.content.trim()) throw new TranslationError('server', '翻译服务未返回译文内容。');
+            try {
+              translated = protectedText.restore(parseParagraphList(completion.content, chunk.text).join('\n\n'), chunk.text);
+              break;
+            } catch {
+              if (repair === 1) throw new TranslationError('invalid_output', describeTranslationError('invalid_output'));
+            }
           }
-          const smaller = splitTranslationChunks(
-            chunk.text,
-            Math.max(400, Math.floor(chunk.text.length / 2)),
-          );
-          if (smaller.length < 2) {
-            throw new TranslationError(
-              'invalid_input',
-              '翻译输出达到上限，已停止并且不会缓存残缺译文。',
-            );
-          }
-          pending.splice(
-            index,
-            1,
-            ...smaller.map((text) => ({
-              text,
-              splitDepth: chunk.splitDepth + 1,
-            })),
-          );
-          continue;
+          if (split) continue;
+          fragments.push(translated);
+          index++;
         }
-        if (completion.content.length === 0) {
-          throw new TranslationError('server', '翻译服务未返回译文内容。');
-        }
-        completedParagraphs.push(
-          ...parseParagraphList(completion.content, chunk.text),
-        );
+        completedParagraphs.push(fragments.join(' '));
         options?.onPartial?.([...completedParagraphs]);
-        index += 1;
       }
       return {
         paragraphs: completedParagraphs,
@@ -294,6 +287,7 @@ async function requestTranslationChunk(
   text: string,
   signal: AbortSignal | undefined,
   onPartial: ((content: string) => void) | undefined,
+  repair = false,
 ): Promise<CompletionResult> {
   let response: Response;
   try {
@@ -313,7 +307,7 @@ async function requestTranslationChunk(
           max_tokens: recommendedMaxOutputTokens(text),
           ...(config.disableThinking ? { thinking: { type: 'disabled' } } : {}),
           messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'system', content: SYSTEM_PROMPT + (repair ? '\nYour previous output lost or changed protected placeholders. Correct this: copy all YYKEEP…ZZ markers exactly once, in order.' : '') },
             {
               role: 'user',
               content: [
@@ -431,17 +425,9 @@ function extractChoice(payload: unknown): CompletionResult {
   };
 }
 
-/** Same paragraph rule as the final parse, safe to run mid-stream. */
-function splitStreamParagraphs(content: string): string[] {
-  const cleaned = stripCodeFences(content);
-  return cleaned
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph.length > 0);
-}
-
 function stripCodeFences(text: string): string {
-  return text.replace(/```[^\n]*\n?/g, '');
+  // Only remove an outer response wrapper; internal Markdown code is content.
+  return text.replace(/^\s*```[ \t]*(?:translation|text|json)?[ \t]*\n([\s\S]*?)\n```\s*$/i, '$1');
 }
 
 /**
@@ -494,8 +480,7 @@ export function parseParagraphList(
     }
   }
 
-  const paragraphs = cleaned
-    .split(/\n{2,}/)
+  const paragraphs = splitScientificParagraphs(cleaned)
     .map((paragraph) => paragraph.trim())
     .filter((paragraph) => paragraph.length > 0);
   if (paragraphs.length > 0) return paragraphs;
@@ -517,8 +502,7 @@ export function createMockTranslationProvider(): TranslationProvider {
     id: 'mock',
     model: 'demo',
     async translate(request) {
-      const sourceParagraphs = request.text
-        .split(/\n{2,}/)
+      const sourceParagraphs = splitScientificParagraphs(request.text)
         .filter((part) => part.trim().length > 0);
       return {
         paragraphs: sourceParagraphs.map(

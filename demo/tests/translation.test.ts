@@ -21,7 +21,7 @@ void test('cache keys change with language, provider, model, and prompt version'
     provider: 'p',
     model: 'm',
   };
-  assert.equal(translationCacheKey(base), 'abc:简体中文:p:m:v5');
+  assert.equal(translationCacheKey(base), 'abc:简体中文:p:m:v6');
   assert.notEqual(
     translationCacheKey(base),
     translationCacheKey({ ...base, targetLanguage: '日本語' }),
@@ -168,7 +168,7 @@ void test('openai-compatible provider streams paragraphs progressively', async (
     { onPartial: (paragraphs) => snapshots.push([...paragraphs]) },
   );
 
-  assert.deepEqual(result.paragraphs, ['第一段。', '第二段。', '第三段。']);
+  assert.deepEqual(result.paragraphs, ['第一段。\n\n第二段。\n\n第三段。']);
   assert.ok(snapshots.length >= 2, 'onPartial should fire while streaming');
   assert.deepEqual(snapshots.at(-1), result.paragraphs);
   for (let index = 1; index < snapshots.length; index += 1) {
@@ -278,10 +278,10 @@ void test('length-truncated output is discarded and retried as smaller chunks', 
   });
 
   assert.ok(calls >= 3);
-  assert.equal(result.paragraphs.length, calls - 1);
+  assert.equal(result.paragraphs.length, 1);
   assert.deepEqual(
     result.paragraphs,
-    Array.from({ length: calls - 1 }, (_, index) => `完整译文 ${index + 1}。`),
+    [Array.from({ length: calls - 1 }, (_, index) => `完整译文 ${index + 1}。`).join(' ')],
   );
   assert.doesNotMatch(result.paragraphs.join(''), /残缺/);
 });
@@ -394,4 +394,57 @@ void test('paragraph parsing handles blank-line text, JSON fallback, and lines',
     parseParagraphList('``` translation\n第一段。\n\n第二段。\n```', 'src'),
     ['第一段。', '第二段。'],
   );
+});
+
+void test('scientific formulas and characters survive model requests and partial output byte for byte', async () => {
+  const source = String.raw`Use $x^2 + α$ and $$\begin{matrix}1 & 2\\
+
+3 & 4\end{matrix}$$ with H_2O m/s² N·m ℃ α β γ θ μ Ω ≈ ≤ ≥ ± × ÷ → ∑ ∫ ∂ - – —.
+
+Next \begin{align}a&=b\\
+
+c&=d\end{align}.`;
+  const snapshots: string[][] = [];
+  const provider = createOpenAICompatibleProvider({baseUrl:'https://mock.test',apiKey:'test',model:'mock',
+    fetchImpl: (async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const text = body.messages[1].content.split('\n---\n')[1];
+      assert.doesNotMatch(text, /\$|α|℃|H_2O/);
+      return streamResponse(text.replace('Use', '使用').replace('Next', '下一段'), 1);
+    }) as typeof fetch});
+  const result = await provider.translate({text:source,sourceLanguage:'auto',targetLanguage:'zh',pageNumber:1},
+    {onPartial: (parts) => snapshots.push(parts)});
+  assert.equal(result.paragraphs.length, 2);
+  assert.equal(result.paragraphs.join('\n\n'), source.replace('Use', '使用').replace('Next', '下一段'));
+  assert.ok(snapshots.every((parts) => !parts.join('').includes('YYKEEP')));
+});
+
+void test('lost or reordered math markers get one corrective attempt and never become successful output', async () => {
+  for (const mode of ['lost', 'duplicate', 'reorder']) {
+    let calls = 0;
+    const provider = createOpenAICompatibleProvider({baseUrl:'https://mock.test',apiKey:'test',model:'mock',
+      fetchImpl: (async (_url, init) => {
+        calls++;
+        const body = JSON.parse(String(init?.body));
+        const tokens = body.messages[1].content.match(/YYKEEP\d+ZZ/g);
+        return streamResponse(mode === 'lost' ? '公式丢失' : mode === 'duplicate' ? tokens.join(' ') + tokens[0] : tokens.reverse().join(' '));
+      }) as typeof fetch});
+    await assert.rejects(provider.translate({text:'$x$ then $y$',sourceLanguage:'auto',targetLanguage:'zh',pageNumber:1}),
+      (error: unknown) => error instanceof TranslationError && error.code === 'invalid_output');
+    assert.equal(calls, 2);
+  }
+});
+
+void test('a corrective response restores notation and numbered lists remain inside their source paragraph', async () => {
+  let calls = 0;
+  const provider = createOpenAICompatibleProvider({baseUrl:'https://mock.test',apiKey:'test',model:'mock',
+    fetchImpl: (async (_url, init) => {
+      calls++;
+      const text = JSON.parse(String(init?.body)).messages[1].content.split('\n---\n')[1];
+      return streamResponse(calls === 1 ? 'bad output' : text);
+    }) as typeof fetch});
+  const text = '1. $x$\n2. H_2O\n\nSecond paragraph';
+  const result = await provider.translate({text,sourceLanguage:'auto',targetLanguage:'zh',pageNumber:1});
+  assert.deepEqual(result.paragraphs, ['1. $x$\n2. H_2O', 'Second paragraph']);
+  assert.equal(calls, 3);
 });

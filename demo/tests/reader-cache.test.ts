@@ -26,6 +26,7 @@ import {
 } from '../lib/shared-translation.ts';
 import {
   createMockTranslationProvider,
+  createOpenAICompatibleProvider,
   PROMPT_VERSION,
   TranslationError,
   type TranslationRequest,
@@ -646,4 +647,46 @@ void test('reader settings validate URLs, keys, and model names safely', () => {
     }),
     null,
   );
+});
+
+void test('old or malformed local cache entries are readable but cannot masquerade as current output', async () => {
+  const store = createMemoryStore<CachedTranslation>();
+  const cache = createTranslationCache(store);
+  const parts = {fingerprint:'legacy', pageNumber:1,sourceHash:'hash',targetLanguage:'zh',provider:'mock',model:'demo'};
+  const key = `legacy:1:hash:zh:mock:demo:v${PROMPT_VERSION}`;
+  const entry = {...parts,key,paragraphs:['$x^2$ ℃ Ω'],updatedAt:'2026-09-26'};
+  for (const version of [undefined, PROMPT_VERSION - 1]) {
+    await store.set(key, {...entry,promptVersion:version});
+    assert.equal(await cache.lookup(parts), undefined);
+    assert.equal(await findCachedPageTranslation({cache,...parts}), undefined);
+    assert.equal((await cache.list()).length, 1);
+  }
+  await store.set(key, {...entry,paragraphs:[null] as unknown as string[]});
+  assert.deepEqual(await cache.list(), []);
+  assert.equal(await cache.lookup(parts), undefined);
+});
+
+void test('protected scientific output round trips through cache; corrupt model output is never saved', async () => {
+  const cache = createTranslationCache(createMemoryStore<CachedTranslation>());
+  const request = {text:'$x^2$ H_2O α β γ θ μ Ω ≈ ≤ ≥ ± × ÷ → ∑ ∫ ∂ m/s² N·m ℃ - – —',sourceLanguage:'auto',targetLanguage:'zh',pageNumber:1};
+  let corrupt = false;
+  let calls = 0;
+  const provider = createOpenAICompatibleProvider({baseUrl:'https://mock.test',apiKey:'test',model:'mock',
+    fetchImpl:(async (_url, init) => {
+      calls++;
+      const text = JSON.parse(String(init?.body)).messages[1].content.split('\n---\n')[1];
+      const event = JSON.stringify({choices:[{delta:{content:corrupt ? 'lost math' : text},finish_reason:'stop'}]});
+      return new Response(`data: ${event}\n\ndata: [DONE]\n\n`);
+    }) as typeof fetch});
+  const input = {cache,request,provider,fingerprint:'scientific'};
+  const first = await resolvePageTranslation(input);
+  const second = await resolvePageTranslation(input);
+  assert.deepEqual(first.result.paragraphs, [request.text]);
+  assert.deepEqual(second.result.paragraphs, first.result.paragraphs);
+  assert.equal(second.status, 'cached');
+  assert.equal(calls, 1);
+  corrupt = true;
+  await assert.rejects(resolvePageTranslation({...input,bypassCache:true}), /校验失败/);
+  assert.equal(calls, 3);
+  assert.deepEqual((await cache.list())[0].paragraphs, [request.text]);
 });

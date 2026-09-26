@@ -152,7 +152,7 @@ export async function findCachedPageTranslation(input: {
         entry.targetLanguage === input.targetLanguage &&
         entry.provider === input.provider &&
         entry.model === input.model &&
-        (entry.promptVersion ?? PROMPT_VERSION) === PROMPT_VERSION,
+        entry.promptVersion === PROMPT_VERSION,
     )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
 }
@@ -166,6 +166,7 @@ function isCachedTranslation(value: unknown): value is CachedTranslation {
     typeof candidate.pageNumber === 'number' &&
     typeof candidate.sourceHash === 'string' &&
     Array.isArray(candidate.paragraphs) &&
+    candidate.paragraphs.every((paragraph) => typeof paragraph === 'string') &&
     typeof candidate.targetLanguage === 'string' &&
     typeof candidate.provider === 'string' &&
     typeof candidate.model === 'string' &&
@@ -194,11 +195,12 @@ export function createTranslationCache(
 
   return {
     async lookup(parts) {
-      return store.get(storageKey(parts));
+      const entry = await store.get(storageKey(parts));
+      return isCachedTranslation(entry) && entry.promptVersion === PROMPT_VERSION ? entry : undefined;
     },
     async save(input) {
       const key = storageKey(input);
-      await store.set(key, { ...input, key });
+      await store.set(key, { ...input, promptVersion: input.promptVersion ?? PROMPT_VERSION, key });
     },
     async list() {
       const values = await Promise.all(
