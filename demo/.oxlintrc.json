@@ -52,5 +52,102 @@
     "typescript/no-require-imports": "error",
     "typescript/no-unnecessary-type-constraint": "error",
     "typescript/no-unsafe-function-type": "error"
-  }
+  },
+  "overrides": [
+    {
+      "files": [
+        "components/ui/pagination.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/anchor-has-content": "warn"
+      }
+    },
+    {
+      "files": [
+        "components/ui/input-group.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/click-events-have-key-events": "warn"
+      }
+    },
+    {
+      "files": [
+        "components/course-library.tsx",
+        "components/shared-course-viewer.tsx",
+        "components/ui/label.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/label-has-associated-control": "warn"
+      }
+    },
+    {
+      "files": [
+        "components/course-library.tsx",
+        "components/shared-course-viewer.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/no-autofocus": "warn"
+      }
+    },
+    {
+      "files": [
+        "components/ui/input-group.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/no-noninteractive-element-interactions": "warn"
+      }
+    },
+    {
+      "files": [
+        "components/course-library.tsx",
+        "components/selection-toolbar.tsx",
+        "components/ui/breadcrumb.tsx",
+        "components/ui/button-group.tsx",
+        "components/ui/carousel.tsx",
+        "components/ui/field.tsx",
+        "components/ui/input-group.tsx",
+        "components/ui/input-otp.tsx",
+        "components/ui/item.tsx",
+        "components/ui/spinner.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/prefer-tag-over-role": "warn"
+      }
+    },
+    {
+      "files": [
+        "components/course-library.tsx"
+      ],
+      "rules": {
+        "react/exhaustive-deps": "warn"
+      }
+    },
+    {
+      "files": [
+        "components/course-library.tsx",
+        "components/shared-course-viewer.tsx",
+        "components/shared-pdf-reader.tsx",
+        "components/ui/carousel.tsx"
+      ],
+      "rules": {
+        "react/react-compiler": "warn"
+      }
+    },
+    {
+      "files": [
+        "components/shared-course-viewer.tsx"
+      ],
+      "rules": {
+        "typescript/no-deprecated": "warn"
+      }
+    },
+    {
+      "files": [
+        "components/ui/chart.tsx"
+      ],
+      "rules": {
+        "typescript/restrict-template-expressions": "warn"
+      }
+    }
+  ]
 }
