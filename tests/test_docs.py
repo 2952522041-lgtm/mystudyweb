@@ -254,5 +254,19 @@ class HandoffDocumentTest(unittest.TestCase):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, content)
 
+
+class OptimizationPlanDocumentTest(unittest.TestCase):
+    def test_execution_status_reports_actual_scope_and_compatibility(self) -> None:
+        content = (PROJECT_ROOT / "docs" / "AC-OPTIMIZATION-PLAN.md").read_text(encoding="utf-8")
+        status = content.split("## 执行状态（2026-09-26）", 1)[1].split("\n---", 1)[0]
+        for item in ("C1", "C2", "C3", "A1", "A3", "P1 PDF 导入生命周期",
+                     "P1 答疑存储异常处理", "P2 首屏等待全部页面尺寸", "P2 阅读器最小高度"):
+            with self.subTest(item=item):
+                self.assertRegex(status, rf"\| {item}[^|]*\| 已完成 \|")
+        self.assertIn("| A2 原文 ↔ 译文逐段对照 | 未做 |", status)
+        for boundary in ("chat:{fingerprint}:{pageNumber}", "chat:{fingerprint}:document:v1",
+                         "allowWebSearch: false", "doc.loadingTask.destroy()", "不调用 AI", "人工验收"):
+            self.assertIn(boundary, status)
+
 if __name__ == "__main__":
     unittest.main()
