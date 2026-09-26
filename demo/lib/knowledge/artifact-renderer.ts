@@ -167,3 +167,24 @@ export function renderKnowledgeSvg(
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${geometry.width}" height="${geometry.height}" viewBox="0 0 ${geometry.width} ${geometry.height}"><rect width="100%" height="100%" fill="#f5f7fa"/>${edgeMarkup}${nodeMarkup}${hiddenNote}</svg>`;
 }
+
+/** Portable markmap-compatible Markdown; export includes nodes hidden in the UI. */
+export function renderMindmapMarkdown(knowledge: CourseKnowledge): string {
+  const layout = buildMindmapLayout(knowledge.nodes, knowledge.relations, { maxNodes: Infinity });
+  const children = new Map<string | null, typeof layout.nodes>();
+  for (const node of layout.nodes) {
+    const list = children.get(node.parentId) ?? [];
+    list.push(node); children.set(node.parentId, list);
+  }
+  const escape = (text: string) => text.replace(/[\r\n]+/g, ' ').replace(/[\\`*_[\]<>#]/g, '\\$&');
+  const lines: string[] = [];
+  const stack = [...(children.get(null) ?? [])].reverse();
+  while (stack.length) {
+    const node = stack.pop()!;
+    const indent = '  '.repeat(node.depth);
+    lines.push(`${indent}- ${escape(node.label)}`);
+    for (const source of node.sources) lines.push(`${indent}  - 来源：${escape(formatSource(source))}`);
+    stack.push(...[...(children.get(node.id) ?? [])].reverse());
+  }
+  return lines.join('\n') + '\n';
+}

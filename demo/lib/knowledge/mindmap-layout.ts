@@ -62,12 +62,18 @@ function relationKey(relation: ConceptRelation): string {
 export function buildMindmapLayout(
   nodes: KnowledgeNode[],
   relations: ConceptRelation[],
-  options?: { maxNodes?: number },
+  options?: {
+    maxNodes?: number;
+    maxDepth?: number;
+    collapsedIds?: ReadonlySet<string>;
+    maxEdges?: number;
+  },
 ): MindmapLayout {
   const maxNodes = options?.maxNodes ?? MINDMAP_DEFAULT_MAX_NODES;
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const root =
-    nodes.find((node) => node.kind === 'course') ?? (nodes[0] as KnowledgeNode | undefined);
+    nodes.find((node) => node.kind === 'course') ??
+    (nodes[0] as KnowledgeNode | undefined);
   if (!root) {
     return { rootId: null, nodes: [], edges: [], hiddenCount: 0 };
   }
@@ -81,61 +87,73 @@ export function buildMindmapLayout(
     adjacency.set(relation.from, list);
   }
 
-  const layoutNodes = new Map<string, MindmapLayoutNode>();
-  const queue: string[] = [root.id];
-  layoutNodes.set(root.id, {
-    id: root.id,
-    label: root.label,
-    description: root.description,
-    kind: root.kind,
-    ownership: root.ownership,
-    sources: root.sources,
-    depth: 0,
-    parentId: null,
-    relationLabel: '',
-  });
-
-  const parentEdge = new Map<string, { from: string; label: string }>();
-  for (let cursor = 0; cursor < queue.length; cursor += 1) {
-    const currentId = queue[cursor];
-    if (layoutNodes.size >= maxNodes && currentId !== root.id) continue;
-    for (const next of adjacency.get(currentId) ?? []) {
-      if (layoutNodes.has(next.to)) continue;
-      if (layoutNodes.size >= maxNodes) break;
-      parentEdge.set(next.to, { from: currentId, label: next.label });
-      const node = byId.get(next.to)!;
-      layoutNodes.set(next.to, {
-        id: node.id,
-        label: node.label,
-        description: node.description,
-        kind: node.kind,
-        ownership: node.ownership,
-        sources: node.sources,
-        depth: (layoutNodes.get(currentId)?.depth ?? 0) + 1,
-        parentId: currentId,
-        relationLabel: next.label,
-      });
-      queue.push(next.to);
-    }
-  }
-
-  // 未被任何 relation 连通的节点仍需展示：挂到根节点，避免丢失。
-  for (const node of nodes) {
-    if (layoutNodes.size >= maxNodes) break;
-    if (layoutNodes.has(node.id)) continue;
-    layoutNodes.set(node.id, {
-      id: node.id,
-      label: node.label,
-      description: node.description,
-      kind: node.kind,
-      ownership: node.ownership,
-      sources: node.sources,
-      depth: 1,
-      parentId: root.id,
-      relationLabel: '关联',
+  const allNodes = new Map<string, MindmapLayoutNode>();
+  const add = (node: KnowledgeNode, parentId: string | null, label: string) => {
+    allNodes.set(node.id, {
+      ...node,
+      depth: parentId ? (allNodes.get(parentId)?.depth ?? 0) + 1 : 0,
+      parentId,
+      relationLabel: label,
     });
+  };
+  add(root, null, '');
+  const incoming = new Set(
+    relations
+      .filter(
+        (edge) =>
+          edge.from !== root.id && edge.from !== edge.to && byId.has(edge.from),
+      )
+      .map((edge) => edge.to),
+  );
+  // Prefer topic roots, then traverse their actual relations. Previously disconnected
+  // topics were all attached to the root without traversing their children.
+  const queue = [root.id];
+  let cursor = 0;
+  const drain = () => {
+    for (; cursor < queue.length; cursor += 1) {
+      const parentId = queue[cursor];
+      const children = [...(adjacency.get(parentId) ?? [])].sort(
+        (a, b) =>
+          Number(b.label === '包含' || b.label === '组成') -
+          Number(a.label === '包含' || a.label === '组成'),
+      );
+      for (const edge of children) {
+        if (
+          allNodes.has(edge.to) ||
+          (parentId === root.id && incoming.has(edge.to))
+        )
+          continue;
+        add(byId.get(edge.to)!, parentId, edge.label);
+        queue.push(edge.to);
+      }
+    }
+  };
+  drain();
+  for (const node of nodes) {
+    if (allNodes.has(node.id) || incoming.has(node.id)) continue;
+    add(node, root.id, '关联');
+    queue.push(node.id);
+    drain();
   }
-
+  // Cycles and remaining components: choose a deterministic first node, visit once.
+  for (const node of nodes) {
+    if (allNodes.has(node.id)) continue;
+    add(node, root.id, '关联');
+    queue.push(node.id);
+    drain();
+  }
+  const layoutNodes = new Map<string, MindmapLayoutNode>();
+  for (const node of allNodes.values()) {
+    if (layoutNodes.size >= maxNodes) break;
+    if (node.depth > (options?.maxDepth ?? Infinity)) continue;
+    if (
+      node.parentId &&
+      (!layoutNodes.has(node.parentId) ||
+        options?.collapsedIds?.has(node.parentId))
+    )
+      continue;
+    layoutNodes.set(node.id, node);
+  }
   const hiddenCount = Math.max(0, nodes.length - layoutNodes.size);
 
   const edges: MindmapLayoutEdge[] = [];
@@ -152,7 +170,9 @@ export function buildMindmapLayout(
     seenEdges.add(relationKey(edge));
   }
   for (const relation of relations) {
-    if (!layoutNodes.has(relation.from) || !layoutNodes.has(relation.to)) continue;
+    if (edges.length >= (options?.maxEdges ?? 120)) break;
+    if (!layoutNodes.has(relation.from) || !layoutNodes.has(relation.to))
+      continue;
     const cross: MindmapLayoutEdge = {
       from: relation.from,
       to: relation.to,
@@ -213,8 +233,11 @@ export function computeMindmapGeometry(layout: MindmapLayout): MindmapGeometry {
     });
   }
 
-  const width =
-    MINDMAP_MARGIN * 2 + (maxDepth + 1) * stepX - MINDMAP_GAP_X;
+  const width = MINDMAP_MARGIN * 2 + (maxDepth + 1) * stepX - MINDMAP_GAP_X;
   const height = contentHeight + MINDMAP_MARGIN * 2;
-  return { positions, width: Math.max(width, 720), height: Math.max(height, 240) };
+  return {
+    positions,
+    width: Math.max(width, 720),
+    height: Math.max(height, 240),
+  };
 }

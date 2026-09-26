@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 
 import { CourseImportDialog } from '@/components/course-import-dialog';
+import { KnowledgeMarkdown, KnowledgeSection } from '@/components/knowledge-section';
 import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
 import { Button } from '@/components/ui/button';
 import {
@@ -1259,22 +1260,19 @@ export function CourseLibrary({
                           版本 {bundle.knowledge.version} · 汇总 {includedCount}{' '}
                           份 PDF
                         </p>
+                        <div className="mt-5">
+                          <KnowledgeMarkdown>{bundle.knowledge.nodes.find((node) => node.kind === 'course')?.description ?? ''}</KnowledgeMarkdown>
+                        </div>
                         <div className="mt-9 space-y-9">
                           {bundle.knowledge.nodes
                             .filter((node) => node.kind !== 'course')
-                            .slice(0, 12)
                             .map((node, index) => (
-                              <section key={node.id}>
-                                <h3 className="text-sm font-semibold text-slate-900">
-                                  {index + 1}. {node.label}
-                                </h3>
-                                <p className="mt-2 text-sm leading-7 text-slate-600">
-                                  {node.description}
-                                </p>
+                              <KnowledgeSection key={node.id} title={`${index + 1}. ${node.label}`} initiallyOpen={index < 2}>
+                                <KnowledgeMarkdown>{node.description}</KnowledgeMarkdown>
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  {node.sources.slice(0, 3).map((source) => (
+                                  {node.sources.map((source) => (
                                     <Button
-                                      key={`${source.documentId}-${source.pageStart}`}
+                                      key={`${source.documentId}-${source.pageStart}-${source.pageEnd}-${source.type}`}
                                       variant="outline"
                                       size="xs"
                                       className="text-blue-700"
@@ -1294,8 +1292,18 @@ export function CourseLibrary({
                                     </Button>
                                   ))}
                                 </div>
-                              </section>
+                              </KnowledgeSection>
                             ))}
+                          {bundle.knowledge.conflicts.map((conflict) => <KnowledgeSection key={conflict.id} title={`资料冲突：${bundle.knowledge.nodes.find((node) => node.id === conflict.nodeId)?.label ?? conflict.nodeId}`}>
+                            {conflict.descriptions.map((description, index) => <KnowledgeMarkdown key={index}>{description}</KnowledgeMarkdown>)}
+                            {conflict.sources.map((source, index) => <Button key={index} variant="outline" size="xs" onClick={() => {
+                              const document = sourceDocuments.get(source.documentId);
+                              if (document) void openDocument(document, source.pageStart);
+                            }}>{source.fileName} · 第 {source.pageStart} 页</Button>)}
+                          </KnowledgeSection>)}
+                          {bundle.knowledge.unresolvedQuestions?.length ? <KnowledgeSection title="待解决问题">
+                            {bundle.knowledge.unresolvedQuestions.map((question, index) => <KnowledgeMarkdown key={index}>{question}</KnowledgeMarkdown>)}
+                          </KnowledgeSection> : null}
                         </div>
                       </article>
                       <aside className="border-t border-slate-200 bg-slate-50/70 p-6 lg:border-t-0 lg:border-l">
