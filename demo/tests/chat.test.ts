@@ -73,6 +73,7 @@ void test('multimodal chat sends page text and image and streams the answer', as
   const messages = body?.messages as Array<{ role: string; content: unknown }>;
   const context = messages[1].content as Array<Record<string, unknown>>;
   assert.match(String(context[0].text), /Figure 2/);
+  assert.ok(request.pageImage);
   assert.deepEqual(context[1], {
     type: 'image_url',
     image_url: { url: request.pageImage.dataUrl, detail: 'high' },

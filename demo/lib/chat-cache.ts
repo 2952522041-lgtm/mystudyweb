@@ -80,7 +80,10 @@ export function createChatProviderForSettings(
   });
 }
 
+export type ChatScope = 'page' | 'document';
+
 export interface PageConversation {
+  scope?: ChatScope;
   fingerprint: string;
   pageNumber: number;
   messages: ChatMessage[];
@@ -91,7 +94,9 @@ export interface PageConversation {
 export function pageConversationKey(
   fingerprint: string,
   pageNumber: number,
+  scope: ChatScope = 'page',
 ): string {
+  if (scope === 'document') return `${CHAT_KEY_PREFIX}${fingerprint}:document:v1`;
   return `${CHAT_KEY_PREFIX}${fingerprint}:${pageNumber}`;
 }
 
@@ -100,17 +105,18 @@ export function createConversationStore(store: KVStore<PageConversation>) {
     async load(
       fingerprint: string,
       pageNumber: number,
+      scope: ChatScope = 'page',
     ): Promise<PageConversation | undefined> {
-      return store.get(pageConversationKey(fingerprint, pageNumber));
+      return store.get(pageConversationKey(fingerprint, pageNumber, scope));
     },
     async save(conversation: PageConversation): Promise<void> {
       await store.set(
-        pageConversationKey(conversation.fingerprint, conversation.pageNumber),
+        pageConversationKey(conversation.fingerprint, conversation.pageNumber, conversation.scope),
         conversation,
       );
     },
-    async delete(fingerprint: string, pageNumber: number): Promise<void> {
-      await store.delete(pageConversationKey(fingerprint, pageNumber));
+    async delete(fingerprint: string, pageNumber: number, scope: ChatScope = 'page'): Promise<void> {
+      await store.delete(pageConversationKey(fingerprint, pageNumber, scope));
     },
     async clearAll(): Promise<void> {
       const keys = await store.keys();

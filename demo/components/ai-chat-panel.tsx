@@ -34,9 +34,12 @@ import {
   createChatProviderForSettings,
   createChatService,
   type ChatSettings,
+  type ChatScope,
+  pageConversationKey,
 } from '@/lib/chat-cache';
 import type { PDFDocumentProxy } from '@/lib/pdfjs';
 import { selectionExplanationQuestion, type SelectionQuestion } from '@/lib/selection-translation';
+import { readDocumentChatIndex, retrieveDocumentChunks } from '@/lib/document-chat';
 import { extractPageText, renderPageImage } from '@/lib/page-vision';
 
 interface PageChatState {
@@ -61,25 +64,25 @@ const emptyState = (): PageChatState => ({
   status: 'idle',
 });
 
-function chatStateKey(fingerprint: string, pageNumber: number): string {
-  return `${fingerprint}:${pageNumber}`;
+function chatStateKey(fingerprint: string, pageNumber: number, scope: ChatScope): string {
+  return pageConversationKey(fingerprint, pageNumber, scope);
 }
 
 function messageId(role: 'user' | 'assistant'): string {
   return `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function MarkdownAnswer({ children }: { children: string }) {
+function MarkdownAnswer({ children, onNavigate }: { children: string; onNavigate?: (page: number) => void }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
       components={{
-        a: ({ children: linkChildren, ...props }) => (
-          <a {...props} target="_blank" rel="noreferrer noopener">
-            {linkChildren}
-          </a>
-        ),
+        a: ({ children: linkChildren, ...props }) => {
+          const match = props.href?.match(/^#page=(\d+)$/);
+          if (match && onNavigate) return <button type="button" className="text-violet-700 underline" onClick={() => onNavigate(Number(match[1]))}>{linkChildren}</button>;
+          return <a {...props} target="_blank" rel="noreferrer noopener">{linkChildren}</a>;
+        },
       }}
     >
       {children}
@@ -93,6 +96,7 @@ export function AIChatPanel({
   pageNumber,
   settings,
   onOpenSettings,
+  onNavigate,
   selectionQuestion,
   onSelectionQuestionHandled,
 }: {
@@ -101,16 +105,19 @@ export function AIChatPanel({
   pageNumber: number;
   settings: ChatSettings;
   onOpenSettings: () => void;
+  onNavigate?: (page: number) => void;
   selectionQuestion?: SelectionQuestion | null;
   onSelectionQuestionHandled?: () => void;
 }) {
   const service = useMemo(() => createChatService(), []);
   const [states, setStates] = useState<Record<string, PageChatState>>({});
   const [input, setInput] = useState('');
+  const [scope, setScope] = useState<ChatScope>('page');
+  const conversationPage = scope === 'document' ? 0 : pageNumber;
   const controllersRef = useRef(new Map<string, AbortController>());
   const handledSelectionRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const key = fingerprint ? chatStateKey(fingerprint, pageNumber) : '';
+  const key = fingerprint ? chatStateKey(fingerprint, conversationPage, scope) : '';
   const state = (key && states[key]) || emptyState();
   const configured = chatSettingsConfigured(settings);
 
@@ -118,9 +125,9 @@ export function AIChatPanel({
     if (!fingerprint) return;
     let cancelled = false;
     const load = async () => {
-      const conversation = await service.load(fingerprint, pageNumber);
+      const conversation = await service.load(fingerprint, conversationPage, scope);
       if (cancelled) return;
-      const stateKey = chatStateKey(fingerprint, pageNumber);
+      const stateKey = chatStateKey(fingerprint, conversationPage, scope);
       setStates((previous) => {
         if (previous[stateKey]) return previous;
         return {
@@ -137,7 +144,7 @@ export function AIChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [fingerprint, pageNumber, service]);
+  }, [fingerprint, conversationPage, scope, service]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -168,7 +175,7 @@ export function AIChatPanel({
 
   const sendQuestion = async (rawQuestion: string, retry = false, allowWebSearch = true) => {
     const question = rawQuestion.trim();
-    if (!question || !pdfDoc || !fingerprint || !key) return;
+    if (!question || !pdfDoc || !fingerprint || !key || !state.loaded || controllersRef.current.has(key)) return;
     if (!configured) {
       updateState(key, (previous) => ({
         ...previous,
@@ -204,7 +211,13 @@ export function AIChatPanel({
     const controller = new AbortController();
     controllersRef.current.set(key, controller);
     try {
-      const [pageText, pageImage] = await Promise.all([
+      const documentChunks = scope === 'document'
+        ? retrieveDocumentChunks(await readDocumentChatIndex(pdfDoc, controller.signal), question, history)
+        : undefined;
+      if (documentChunks && documentChunks.length === 0) {
+        throw new ChatError('invalid_input', '未检索到相关文字。请补充文档中的关键词或页码；扫描页、图片和图表请切换到当前页答疑。');
+      }
+      const [pageText, pageImage] = documentChunks ? [documentChunks.map((chunk) => chunk.text).join('\n'), undefined] : await Promise.all([
         extractPageText(pdfDoc, pageNumber),
         renderPageImage(pdfDoc, pageNumber, { signal: controller.signal }),
       ]);
@@ -215,6 +228,7 @@ export function AIChatPanel({
           pageNumber,
           pageText,
           pageImage,
+          documentChunks,
           messages: history,
           question,
           allowWebSearch,
@@ -253,7 +267,8 @@ export function AIChatPanel({
       }));
       await service.save({
         fingerprint,
-        pageNumber,
+        pageNumber: conversationPage,
+        ...(scope === 'document' ? { scope } : {}),
         messages: completedMessages,
         createdAt: state.messages[0]?.createdAt ?? now,
         updatedAt: completedAt,
@@ -267,14 +282,14 @@ export function AIChatPanel({
         }));
         return;
       }
-      const code = error instanceof ChatError ? error.code : 'unknown';
+      const errorCode = error instanceof ChatError ? error.code : 'unknown';
       updateState(key, (previous) => ({
         ...previous,
         status: 'error',
         partial: undefined,
-        errorCode: code,
+        errorCode,
         errorMessage:
-          error instanceof ChatError ? error.message : describeChatError(code),
+          error instanceof ChatError ? error.message : describeChatError(errorCode),
       }));
     } finally {
       if (controllersRef.current.get(key) === controller) controllersRef.current.delete(key);
@@ -283,9 +298,13 @@ export function AIChatPanel({
     }
   };
 
+  useEffect(() => {
+    if (selectionQuestion && selectionQuestion.id !== handledSelectionRef.current) setScope('page');
+  }, [selectionQuestion]);
+
   // Wait for the selected page's saved conversation before appending the question.
   useEffect(() => {
-    if (!selectionQuestion || selectionQuestion.id === handledSelectionRef.current ||
+    if (scope !== 'page' || !selectionQuestion || selectionQuestion.id === handledSelectionRef.current ||
         selectionQuestion.fingerprint !== fingerprint || selectionQuestion.pageNumber !== pageNumber ||
         !state.loaded || controllersRef.current.has(key)) return;
     handledSelectionRef.current = selectionQuestion.id;
@@ -298,7 +317,7 @@ export function AIChatPanel({
   const clear = async () => {
     if (!fingerprint || !key) return;
     controllersRef.current.get(key)?.abort();
-    await service.delete(fingerprint, pageNumber);
+    await service.delete(fingerprint, conversationPage, scope);
     updateState(key, () => ({ loaded: true, messages: [], status: 'idle' }));
   };
 
@@ -317,7 +336,7 @@ export function AIChatPanel({
   return (
     <section
       className="ai-chat-panel"
-      aria-label={`第 ${pageNumber} 页 AI 答疑`}
+      aria-label={scope === 'document' ? '全文 AI 答疑' : `第 ${pageNumber} 页 AI 答疑`}
     >
       <div className="ai-context-bar">
         <div className="flex min-w-0 items-center gap-2.5">
@@ -326,14 +345,18 @@ export function AIChatPanel({
           </span>
           <div className="min-w-0">
             <p className="text-xs font-semibold text-slate-800">
-              正在基于第 {pageNumber} 页
+              {scope === 'document' ? '全文问答 · 相关段落检索' : <>正在基于第 {pageNumber} 页</>}
             </p>
             <p className="truncate text-[11px] text-slate-500">
-              结合本页文字、图片、图表与公式回答
+              {scope === 'document' ? '本地检索全文文字；扫描页与图表请用当前页答疑' : '结合本页文字、图片、图表与公式回答'}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-1">
+          <select aria-label="提问范围" value={scope} onChange={(event) => { setScope(event.target.value as ChatScope); setInput(''); }} className="max-w-24 rounded border p-1 text-xs">
+            <option value="page">当前页</option>
+            <option value="document">全文</option>
+          </select>
           <Button
             variant="ghost"
             size="icon-sm"
@@ -345,7 +368,7 @@ export function AIChatPanel({
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="清空本页对话"
+            aria-label={scope === 'document' ? '清空全文对话' : '清空本页对话'}
             onClick={() => void clear()}
             disabled={state.messages.length === 0 && !generating}
           >
@@ -372,14 +395,14 @@ export function AIChatPanel({
             </span>
             <div>
               <h2 className="text-sm font-semibold text-slate-800">
-                这页哪里没看懂？
+                {scope === 'document' ? '就整份文档提问' : '这页哪里没看懂？'}
               </h2>
               <p className="mt-1 text-xs leading-5 text-slate-500">
-                发送问题后才会将第 {pageNumber} 页文字和图像交给 AI。
+                {scope === 'document' ? '发送后在本地提取全文，只将相关段落交给 AI。可使用关键词或指定页码连续追问。' : `发送问题后才会将第 ${pageNumber} 页文字和图像交给 AI。`}
               </p>
             </div>
             <div className="mt-2 grid w-full max-w-md grid-cols-2 gap-2">
-              {QUICK_QUESTIONS.map((question) => (
+              {(scope === 'document' ? ['第 1 页的主题是什么？', '比较第 1 到 2 页'] : QUICK_QUESTIONS).map((question) => (
                 <Button
                   key={question}
                   variant="outline"
@@ -410,7 +433,7 @@ export function AIChatPanel({
                       }
                     >
                       {message.role === 'assistant' ? (
-                        <MarkdownAnswer>{message.content}</MarkdownAnswer>
+                        <MarkdownAnswer onNavigate={onNavigate}>{message.content}</MarkdownAnswer>
                       ) : (
                         message.content
                       )}
@@ -432,7 +455,7 @@ export function AIChatPanel({
                           <LoaderCircle className="size-3.5 animate-spin" />
                           {state.status === 'searching'
                             ? '正在联网检索相关资料…'
-                            : `正在读取第 ${pageNumber} 页的文字与视觉内容…`}
+                            : scope === 'document' ? '正在检索全文相关段落…' : `正在读取第 ${pageNumber} 页的文字与视觉内容…`}
                         </p>
                       )}
                     </BubbleContent>
@@ -483,7 +506,7 @@ export function AIChatPanel({
             }
           }}
           placeholder={
-            pdfDoc ? `向 AI 提问第 ${pageNumber} 页…` : '请先导入 PDF'
+            pdfDoc ? (scope === 'document' ? '向 AI 提问整份文档…' : `向 AI 提问第 ${pageNumber} 页…`) : '请先导入 PDF'
           }
           disabled={!pdfDoc}
           className="max-h-32 min-h-20 resize-none border-0 bg-transparent px-0 py-0 shadow-none focus-visible:ring-0"
@@ -510,7 +533,7 @@ export function AIChatPanel({
               type="submit"
               size="icon-sm"
               aria-label="发送问题"
-              disabled={!pdfDoc || !input.trim()}
+              disabled={!pdfDoc || !state.loaded || !input.trim()}
             >
               <Send />
             </Button>

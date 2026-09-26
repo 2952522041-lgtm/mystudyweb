@@ -1893,6 +1893,7 @@ function PdfReader({
                           pdfDoc={pdfDoc}
                           fingerprint={docMeta?.fingerprint ?? null}
                           pageNumber={translationPage}
+                          onNavigate={goToPage}
                           settings={chatSettings}
                           selectionQuestion={selectionQuestion}
                           onSelectionQuestionHandled={() => setSelectionQuestion(null)}
