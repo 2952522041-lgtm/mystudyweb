@@ -1,7 +1,8 @@
 'use client';
 
+import { createProgressivePageSizes, captureReadingAnchor, restoreReadingAnchor, type ProgressivePageSize, type ReadingAnchor } from '@/lib/progressive-page-sizes';
 import { createPdfImportLifecycle } from '@/lib/pdf-import-lifecycle';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
   Check,
@@ -153,11 +154,6 @@ const TARGET_LANGUAGES = ['简体中文', '繁體中文', '日本語', '한국�
 const TRANSLATION_STABLE_DELAY = 300;
 const PROGRESS_SAVE_DELAY = 800;
 const DEFAULT_ZOOM = 95;
-
-interface PageView {
-  width: number;
-  height: number;
-}
 
 interface DocumentMeta {
   fingerprint: string;
@@ -602,14 +598,15 @@ function PdfReader({
   /** Called when a PDF is imported from this reader's own import dialog. */
   onStandaloneImport?: (file: File) => void;
 }) {
+  const sizeLoaderRef = useRef<ReturnType<typeof createProgressivePageSizes> | null>(null);
   const importLifecycleRef = useRef(createPdfImportLifecycle<PDFDocumentProxy>());
   useEffect(() => {
     const lifecycle = importLifecycleRef.current;
-    return () => lifecycle.dispose();
+    return () => { lifecycle.dispose(); sizeLoaderRef.current?.cancel(); };
   }, []);
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [docMeta, setDocMeta] = useState<DocumentMeta | null>(null);
-  const [pageSizes, setPageSizes] = useState<PageView[]>([]);
+  const [pageSizes, setPageSizes] = useState<ProgressivePageSize[]>([]);
   const [page, setPage] = useState(1);
   const [translationPage, setTranslationPage] = useState(1);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
@@ -653,6 +650,8 @@ function PdfReader({
   const activeThumbnailRef = useRef<HTMLButtonElement>(null);
   const scrollTargetRef = useRef<number | null>(null);
   const positionedRef = useRef(false);
+  const sizeAnchorRef = useRef<ReadingAnchor | null>(null);
+  const geometryRef = useRef<{ tops: number[]; heights: number[] }>({ tops: [], heights: [] });
   const serviceRef = useRef<ReturnType<typeof createReaderService> | null>(
     null,
   );
@@ -794,6 +793,19 @@ function PdfReader({
     return tops;
   }, [pageHeightsPx]);
 
+  useLayoutEffect(() => {
+    const stage = documentStageRef.current;
+    if (stage && sizeAnchorRef.current) {
+      stage.scrollTop = restoreReadingAnchor(sizeAnchorRef.current, pageTops, pageHeightsPx);
+      sizeAnchorRef.current = null;
+    }
+    geometryRef.current = { tops: pageTops, heights: pageHeightsPx };
+  }, [pageTops, pageHeightsPx]);
+
+  useEffect(() => {
+    for (const visiblePage of renderedPages) void sizeLoaderRef.current?.load(visiblePage);
+  }, [renderedPages]);
+
   // Render pages near the viewport, release far ones.
   useEffect(() => {
     const stage = documentStageRef.current;
@@ -833,10 +845,14 @@ function PdfReader({
       setCopied(false);
       setPage(targetPage);
       scrollTargetRef.current = targetPage;
+      sizeAnchorRef.current = { page: targetPage, fraction: 0 };
+      void sizeLoaderRef.current?.load(targetPage);
       requestAnimationFrame(() => {
         pageElementsRef.current
           .get(targetPage)
-          ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          ?.scrollIntoView({ behavior: 'auto', block: 'start' });
+        scrollTargetRef.current = null;
+        sizeAnchorRef.current = null;
       });
     },
     [docMeta?.pageCount],
@@ -899,10 +915,10 @@ function PdfReader({
   }, [goToPage, importOpen, pdfDoc]);
 
   useEffect(() => {
-    if (!stageWidth || positionedRef.current) return;
+    if (!pdfDoc || !stageWidth || positionedRef.current) return;
     positionedRef.current = true;
     pageElementsRef.current.get(page)?.scrollIntoView({ block: 'start' });
-  }, [page, stageWidth]);
+  }, [pdfDoc, page, stageWidth]);
 
   useEffect(() => {
     activeThumbnailRef.current?.scrollIntoView({ block: 'nearest' });
@@ -986,13 +1002,9 @@ function PdfReader({
         const doc = await loadingTask.promise;
         if (!job.resolved(doc)) return;
 
-        const sizes: PageView[] = [];
-        for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
-          const pdfPage = await doc.getPage(pageNumber);
-          if (!job.isCurrent()) return;
-          const viewport = pdfPage.getViewport({ scale: 1 });
-          sizes.push({ width: viewport.width, height: viewport.height });
-        }
+        const firstPage = await doc.getPage(1);
+        if (!job.isCurrent()) return;
+        const firstViewport = firstPage.getViewport({ scale: 1 });
 
         // Scanned-PDF rule: sample the first pages; no text layer means the
         // MVP cannot translate this document.
@@ -1057,8 +1069,19 @@ function PdfReader({
         prefetchedTranslationsRef.current.clear();
         setPrefetchedTranslationPage(null);
         pageElementsRef.current.clear();
+        sizeLoaderRef.current?.cancel();
+        sizeAnchorRef.current = null;
+        const sizeLoader = createProgressivePageSizes(doc, firstViewport, (sizes) => {
+          const stage = documentStageRef.current;
+          if (stage && !sizeAnchorRef.current) {
+            const geometry = geometryRef.current;
+            sizeAnchorRef.current = captureReadingAnchor(stage.scrollTop, geometry.tops, geometry.heights, scrollTargetRef.current);
+          }
+          setPageSizes(sizes);
+        });
+        sizeLoaderRef.current = sizeLoader;
         setPdfDoc(doc);
-        setPageSizes(sizes);
+        setPageSizes(sizeLoader.initial);
         setDocMeta({
           fingerprint,
           fileName: file.name,
@@ -1073,6 +1096,9 @@ function PdfReader({
           requestedPage ?? restored?.lastPage ?? 1,
           doc.numPages,
         );
+        sizeAnchorRef.current = { page: openingPage, fraction: 0 };
+        void sizeLoader.load(openingPage);
+        void sizeLoader.complete();
         setPage(openingPage);
         setTranslationPage(openingPage);
         if (origin === 'dialog') onStandaloneImportRef.current?.(file);
@@ -1699,6 +1725,7 @@ function PdfReader({
                   <div
                     ref={documentStageRef}
                     className="document-stage"
+                    style={{ overflowAnchor: 'none' }}
                     aria-label="PDF 连续阅读画布"
                     onScroll={updatePageFromScroll}
                   >
@@ -1728,7 +1755,7 @@ function PdfReader({
                                 className="relative overflow-hidden bg-white shadow-[0_3px_14px_rgba(15,23,42,0.16)] ring-1 ring-slate-900/5"
                                 style={{ height: `${height}px` }}
                               >
-                                {renderedPages.has(pageNumber) ? (
+                                {renderedPages.has(pageNumber) && pageSizes[pageNumber - 1]?.ready ? (
                                   <PdfPageCanvas
                                     key={`${pageNumber}-${width}`}
                                     pdfDoc={pdfDoc}
@@ -1739,7 +1766,7 @@ function PdfReader({
                                 ) : (
                                   <div className="flex h-full w-full items-center justify-center bg-white">
                                     <span className="text-xs text-slate-300">
-                                      {pageNumber}
+                                      {pageSizes[pageNumber - 1]?.error ? <button type="button" onClick={() => void sizeLoaderRef.current?.load(pageNumber)}>页面尺寸加载失败，点击重试</button> : pageNumber}
                                     </span>
                                   </div>
                                 )}
