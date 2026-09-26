@@ -249,7 +249,14 @@ function PdfPageCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const revealedRequestRef = useRef<object | null>(null);
-  const [rendering, setRendering] = useState(true);
+  const [renderAttempt, setRenderAttempt] = useState(0);
+  const [renderResult, setRenderResult] = useState<{
+    doc: PDFDocumentProxy; page: number; width: number; height: number; attempt: number; failed: boolean;
+  } | null>(null);
+  const currentRender = renderResult?.doc === pdfDoc && renderResult.page === pageNumber &&
+    renderResult.width === width && renderResult.height === height && renderResult.attempt === renderAttempt;
+  const rendering = !currentRender;
+  const renderError = currentRender && renderResult.failed;
   const [textAvailability, setTextAvailability] = useState<'loading' | 'ready' | 'none' | 'error'>('loading');
 
   useEffect(() => {
@@ -262,7 +269,6 @@ function PdfPageCanvas({
       const pdfPage = await pdfDoc.getPage(pageNumber);
       const canvas = canvasRef.current;
       if (cancelled || !canvas) return;
-      setRendering(true);
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const base = pdfPage.getViewport({ scale: 1 });
       // Both layers derive from one scale: the canvas backing store adds the
@@ -274,12 +280,12 @@ function PdfPageCanvas({
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       const context = canvas.getContext('2d');
-      if (!context) return;
+      if (!context) throw new Error('Canvas 2D context unavailable');
       task = pdfPage.render({ canvas, canvasContext: context, viewport });
       await task.promise;
-      if (!cancelled) setRendering(false);
+      if (!cancelled) setRenderResult({ doc: pdfDoc, page: pageNumber, width, height, attempt: renderAttempt, failed: false });
     })().catch(() => {
-      if (!cancelled) setRendering(false);
+      if (!cancelled) setRenderResult({ doc: pdfDoc, page: pageNumber, width, height, attempt: renderAttempt, failed: true });
     });
 
     // Selectable text overlay, rebuilt alongside the canvas from the same
@@ -350,7 +356,7 @@ function PdfPageCanvas({
       task?.cancel();
       activeTextLayer?.cancel();
     };
-  }, [pdfDoc, pageNumber, width, height, onParagraphsReady]);
+  }, [pdfDoc, pageNumber, width, height, onParagraphsReady, renderAttempt]);
 
   useEffect(() => {
     const spans = textLayerRef.current?.querySelectorAll<HTMLElement>('[data-source-paragraphs]');
@@ -384,6 +390,13 @@ function PdfPageCanvas({
         <span className="absolute right-2 bottom-2 rounded bg-slate-100 px-2 py-1 text-xs text-slate-500">
           {textAvailability === 'none' ? '该页无可选文字' : '该页文字层加载失败，请重试'}
         </span>
+      ) : null}
+      {renderError ? (
+        <div role="alert" className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-white p-4 text-sm text-slate-700">
+          <TriangleAlert className="size-6 text-amber-600" />
+          <p>第 {pageNumber} 页渲染失败，请重试。</p>
+          <Button variant="outline" size="sm" onClick={() => setRenderAttempt((attempt) => attempt + 1)}>重试渲染第 {pageNumber} 页</Button>
+        </div>
       ) : null}
       {rendering ? (
         <div className="absolute inset-0 flex items-center justify-center bg-white">

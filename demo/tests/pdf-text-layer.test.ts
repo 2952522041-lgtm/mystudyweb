@@ -93,7 +93,7 @@ void test('text layer geometry is rebuilt with the canvas from one scale', () =>
   assert.match(pageSource, /getViewport\(\{ scale: scale \* dpr \}\)/);
   assert.match(pageSource, /--total-scale-factor', String\(textLayerTotalScale\(width, base.width, pdfPage.userUnit\)\)/);
   // Same effect inputs as the canvas render task.
-  assert.match(pageSource, /\}, \[pdfDoc, pageNumber, width, height, onParagraphsReady\]\);/);
+  assert.match(pageSource, /\}, \[pdfDoc, pageNumber, width, height, onParagraphsReady, renderAttempt\]\);/);
   assert.match(pageSource, /activeTextLayer\?\.cancel\(\)/);
 });
 
