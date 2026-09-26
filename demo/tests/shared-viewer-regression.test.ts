@@ -697,6 +697,7 @@ function createFormalMultiPagePdf(pageCount = 6): Buffer {
 
 async function startFormalShareServer(publicDirectory: string, pdf: Buffer) {
   let loggedIn = false;
+  let translationRevision = 0;
   const course = MOCK_COURSES[0]!;
   const detail = mockCourse(course);
   const root = path.resolve(publicDirectory);
@@ -829,7 +830,7 @@ async function startFormalShareServer(publicDirectory: string, pdf: Buffer) {
             provider: 'formal-test-provider',
             model: 'formal-test-model',
             promptVersion: 4,
-            paragraphs: ['正式真实 PDF 第 6 页译文'],
+            paragraphs: [`正式真实 PDF 第 6 页译文（响应版本 ${++translationRevision}）`],
             updatedAt: '2026-09-10T02:02:00.000Z',
           },
         ],
@@ -895,7 +896,6 @@ app.whenReady().then(async () => {
 const formalBrowserMain = `
 const { app, BrowserWindow } = require('electron');
 const marker = ${JSON.stringify(BROWSER_RESULT_MARKER)};
-const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const execute = (window, expression) =>
   window.webContents.executeJavaScript(expression, true);
 const setup = String.raw\`(() => {
@@ -1074,18 +1074,46 @@ const setup = String.raw\`(() => {
       if (!visible(translationTab) || translationTab.hasAttribute('disabled')) {
         throw new Error('窄窗口面板内页面翻译标签不可见或不可点击');
       }
-      const mindmapRect = mindmapTab.getBoundingClientRect();
-      const translationRect = translationTab.getBoundingClientRect();
       return {
         lazyPage: 6,
         realLazyPageRendered: true,
         ...position,
-        translationClickX: translationRect.left + translationRect.width / 2,
-        translationClickY: translationRect.top + translationRect.height / 2,
-        mindmapClickX: mindmapRect.left + mindmapRect.width / 2,
-        mindmapClickY: mindmapRect.top + mindmapRect.height / 2,
         panelVisible: true,
       };
+    },
+    async prepareNarrowClick(label) {
+      let target;
+      await waitFor('可点击的窄窗口控件：' + label, () => {
+        const panel = document.querySelector('[aria-label="已有课程成果（窄窗口）"]');
+        target = [...(panel?.querySelectorAll('button') ?? [])].find((element) =>
+          element.getAttribute('aria-label') === label || element.textContent?.trim() === label,
+        );
+        return visible(target) && !target.hasAttribute('disabled');
+      });
+      // Measure immediately before each native click, including after a tab's
+      // content changed the panel height. Verify the integer input coordinates.
+      const rect = target.getBoundingClientRect();
+      const x = Math.floor(rect.left + rect.width / 2);
+      const y = Math.floor(rect.top + rect.height / 2);
+      if (document.elementFromPoint(x, y)?.closest('button') !== target) {
+        throw new Error('窄窗口点击命中错误控件：' + label);
+      }
+      window.__lastNarrowClick = { label, delivered: false };
+      window.addEventListener('click', (event) => {
+        const actual = event.target instanceof Element ? event.target.closest('button') : null;
+        window.__lastNarrowClick.delivered = true;
+        window.__lastNarrowClick.correctTarget = actual === target;
+      }, { capture: true, once: true });
+      return { x, y };
+    },
+    async assertNarrowClick(label) {
+      await waitFor('原生点击送达：' + label, () => window.__lastNarrowClick?.delivered);
+      if (window.__lastNarrowClick.label !== label || !window.__lastNarrowClick.correctTarget) {
+        throw new Error('原生点击实际目标错误：' + label);
+      }
+    },
+    async waitForMindmapAssertionStarted() {
+      await waitFor('脑图断言已在输入送达前启动', () => window.__mindmapAssertionStarted);
     },
     async assertNarrowTranslation() {
       const panel = document.querySelector('[aria-label="已有课程成果（窄窗口）"]');
@@ -1129,12 +1157,11 @@ const setup = String.raw\`(() => {
       if (!visible(refreshButton) || refreshButton.hasAttribute('disabled')) {
         throw new Error('页面翻译刷新按钮不可见或不可点击');
       }
-      const refreshRect = refreshButton.getBoundingClientRect();
+      window.__translationBeforeRefresh = visibleContent.textContent;
       return {
         translationVisible: true,
         page: 6,
-        refreshClickX: refreshRect.left + refreshRect.width / 2,
-        refreshClickY: refreshRect.top + refreshRect.height / 2,
+        text: visibleContent.textContent,
       };
     },
     async assertNarrowTranslationRefresh() {
@@ -1145,6 +1172,7 @@ const setup = String.raw\`(() => {
         [...(panel?.querySelectorAll('[role="tabpanel"]') ?? [])].some(
           (element) =>
             element.textContent?.includes('正式真实 PDF 第 6 页译文') &&
+            element.textContent !== window.__translationBeforeRefresh &&
             visible(element),
         ),
       );
@@ -1159,6 +1187,19 @@ const setup = String.raw\`(() => {
     },
     async assertNarrowMindmap() {
       const panel = document.querySelector('[aria-label="已有课程成果（窄窗口）"]');
+      window.__mindmapAssertionStarted = true;
+      const startedBeforeInput = !window.__lastNarrowClick?.delivered;
+      // Native input delivery and React's commit are separate asynchronous work.
+      // Observe BOTH the selected tab and its visible content before asserting.
+      await waitFor('窄窗口脑图标签选中且内容可见', () => {
+        const tab = [...(panel?.querySelectorAll('[role="tab"]') ?? [])].find(
+          (element) => element.textContent?.includes('PDF 脑图'),
+        );
+        return tab?.getAttribute('aria-selected') === 'true' &&
+          [...(panel?.querySelectorAll('[role="tabpanel"]') ?? [])].some(
+            (element) => element.textContent?.includes('A 脑图概念') && visible(element),
+          );
+      });
       const visibleContent = [...(panel?.querySelectorAll('[role="tabpanel"]') ?? [])].find(
         (element) => element.textContent?.includes('A 脑图概念') && visible(element),
       );
@@ -1189,7 +1230,7 @@ const setup = String.raw\`(() => {
             contents,
         );
       }
-      return { mindmapVisible: true, contentVisible: true };
+      return { mindmapVisible: true, contentVisible: true, startedBeforeInput };
     },
   };
 })()\`;
@@ -1213,20 +1254,29 @@ app.whenReady().then(async () => {
     const source = await execute(window, 'window.__formalSharedViewer.openSource()');
     const reopened = await execute(window, 'window.__formalSharedViewer.reopenDocument()');
     window.setSize(700, 900);
-    await sleep(100);
     const narrow = await execute(window, 'window.__formalSharedViewer.zoomAndPrepareNarrowPanels()');
-    await window.webContents.sendInputEvent({ type: 'mouseMove', x: narrow.translationClickX, y: narrow.translationClickY });
-    await window.webContents.sendInputEvent({ type: 'mouseDown', x: narrow.translationClickX, y: narrow.translationClickY, button: 'left', clickCount: 1 });
-    await window.webContents.sendInputEvent({ type: 'mouseUp', x: narrow.translationClickX, y: narrow.translationClickY, button: 'left', clickCount: 1 });
+    const click = async (label, point) => {
+      window.webContents.sendInputEvent({ type: 'mouseMove', ...point });
+      window.webContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+      window.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
+      await execute(window, 'window.__formalSharedViewer.assertNarrowClick(' + JSON.stringify(label) + ')');
+    };
+    const prepare = (label) => execute(window,
+      'window.__formalSharedViewer.prepareNarrowClick(' + JSON.stringify(label) + ')');
+    await click('页面翻译', await prepare('页面翻译'));
     const translation = await execute(window, 'window.__formalSharedViewer.assertNarrowTranslation()');
-    await window.webContents.sendInputEvent({ type: 'mouseMove', x: translation.refreshClickX, y: translation.refreshClickY });
-    await window.webContents.sendInputEvent({ type: 'mouseDown', x: translation.refreshClickX, y: translation.refreshClickY, button: 'left', clickCount: 1 });
-    await window.webContents.sendInputEvent({ type: 'mouseUp', x: translation.refreshClickX, y: translation.refreshClickY, button: 'left', clickCount: 1 });
+    await click('刷新译文', await prepare('刷新译文'));
     const refreshedTranslation = await execute(window, 'window.__formalSharedViewer.assertNarrowTranslationRefresh()');
-    await window.webContents.sendInputEvent({ type: 'mouseMove', x: narrow.mindmapClickX, y: narrow.mindmapClickY });
-    await window.webContents.sendInputEvent({ type: 'mouseDown', x: narrow.mindmapClickX, y: narrow.mindmapClickY, button: 'left', clickCount: 1 });
-    await window.webContents.sendInputEvent({ type: 'mouseUp', x: narrow.mindmapClickX, y: narrow.mindmapClickY, button: 'left', clickCount: 1 });
-    const mindmap = await execute(window, 'window.__formalSharedViewer.assertNarrowMindmap()');
+    const mindmapPoint = await prepare('PDF 脑图');
+    // Force the previously flaky ordering: start checking while translation is
+    // still selected, then deliver exactly one native click. No timing sleeps.
+    const [mindmap] = await Promise.all([
+      execute(window, 'window.__formalSharedViewer.assertNarrowMindmap()'),
+      (async () => {
+        await execute(window, 'window.__formalSharedViewer.waitForMindmapAssertionStarted()');
+        await click('PDF 脑图', mindmapPoint);
+      })(),
+    ]);
     process.stdout.write(marker + ' ' + JSON.stringify({ ok: true, source, reopened, narrow, translation, refreshedTranslation, mindmap, diagnostics: await execute(window, 'window.__sharedViewerDiagnostics()') }) + '\\n');
   } catch (error) {
     exitCode = 1;
@@ -1423,15 +1473,14 @@ type FormalBrowserResult = {
   translation?: {
     translationVisible?: boolean;
     page?: number;
-    refreshClickX?: number;
-    refreshClickY?: number;
+    text?: string;
   };
   refreshedTranslation?: {
     page?: number;
     zoom?: number;
     scrollPreserved?: boolean;
   };
-  mindmap?: { mindmapVisible?: boolean; contentVisible?: boolean };
+  mindmap?: { mindmapVisible?: boolean; contentVisible?: boolean; startedBeforeInput?: boolean };
 };
 
 let formalBrowserPromise: Promise<FormalBrowserResult> | null = null;
@@ -1561,5 +1610,15 @@ void test(
     assert.equal(result.mindmap?.contentVisible, true);
     assert.ok(result.diagnostics?.events.some((event) => event.type === 'click'), '原生点击诊断应记录真实事件');
     assert.ok(result.diagnostics?.tabs.every((tab) => tab.hit), '窄窗口标签中心应命中对应标签');
+  },
+);
+
+void test(
+  'narrow mindmap assertion waits for native input delivery and the React commit',
+  { skip: noDisplay },
+  async () => {
+    const result = await runFormalBrowserBehavior();
+    assert.equal(result.mindmap?.startedBeforeInput, true);
+    assert.equal(result.mindmap?.contentVisible, true);
   },
 );
