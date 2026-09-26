@@ -88,7 +88,7 @@ import {
   type TextLayer,
 } from '@/lib/pdfjs';
 import { itemsFromPdfJs, normalizePage, pageHasText } from '@/lib/pdf-text';
-import { shouldBuildTextLayer, textLayerScale } from '@/lib/pdf-text-layer';
+import { shouldBuildTextLayer, textLayerScale, textLayerTotalScale } from '@/lib/pdf-text-layer';
 import {
   createOcrProviderForSettings,
   createOcrService,
@@ -237,16 +237,19 @@ function PdfPageCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const [rendering, setRendering] = useState(true);
+  const [textAvailability, setTextAvailability] = useState<'loading' | 'ready' | 'none' | 'error'>('loading');
 
   useEffect(() => {
     let cancelled = false;
     let task: RenderTask | null = null;
     let activeTextLayer: TextLayer | null = null;
+    textLayerRef.current?.replaceChildren();
 
     void (async () => {
       const pdfPage = await pdfDoc.getPage(pageNumber);
       const canvas = canvasRef.current;
       if (cancelled || !canvas) return;
+      setRendering(true);
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const base = pdfPage.getViewport({ scale: 1 });
       // Both layers derive from one scale: the canvas backing store adds the
@@ -273,6 +276,7 @@ function PdfPageCanvas({
       const pdfPage = await pdfDoc.getPage(pageNumber);
       const container = textLayerRef.current;
       if (cancelled || !container) return;
+      setTextAvailability('loading');
       const base = pdfPage.getViewport({ scale: 1 });
       const scale = textLayerScale(width, base.width);
       const content = await pdfPage.getTextContent();
@@ -288,16 +292,21 @@ function PdfPageCanvas({
         base.height,
       );
       // Scanned pages have no extractable text — keep them canvas-only.
-      if (!shouldBuildTextLayer(items)) return;
-      container.style.setProperty('--total-scale-factor', String(scale));
+      if (!shouldBuildTextLayer(items)) {
+        setTextAvailability('none');
+        return;
+      }
+      container.style.setProperty('--total-scale-factor', String(textLayerTotalScale(width, base.width, pdfPage.userUnit)));
       activeTextLayer = new pdfjs.TextLayer({
         textContentSource: content,
         container,
         viewport: pdfPage.getViewport({ scale }),
       });
       await activeTextLayer.render();
+      if (!cancelled) setTextAvailability('ready');
     })().catch(() => {
       // Cancelled rebuilds reject; a missing text layer never blocks reading.
+      if (!cancelled) setTextAvailability('error');
     });
 
     return () => {
@@ -314,7 +323,12 @@ function PdfPageCanvas({
         className="block bg-white"
         aria-label={`第 ${pageNumber} 页内容`}
       />
-      <div ref={textLayerRef} className="pdf-text-layer" aria-hidden="true" />
+      <div ref={textLayerRef} className="pdf-text-layer" aria-hidden="true" data-page-number={pageNumber} />
+      {textAvailability === 'none' || textAvailability === 'error' ? (
+        <span className="absolute right-2 bottom-2 rounded bg-slate-100 px-2 py-1 text-xs text-slate-500">
+          {textAvailability === 'none' ? '该页无可选文字' : '该页文字层加载失败，请重试'}
+        </span>
+      ) : null}
       {rendering ? (
         <div className="absolute inset-0 flex items-center justify-center bg-white">
           <LoaderCircle className="size-6 animate-spin text-slate-400" />

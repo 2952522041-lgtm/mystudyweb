@@ -21,3 +21,8 @@ export function textLayerScale(
   if (basePageWidth <= 0 || displayWidth <= 0) return 1;
   return displayWidth / basePageWidth;
 }
+
+/** PDF UserUnit affects CSS glyph sizes, but canvas DPR must never enter this factor. */
+export function textLayerTotalScale(displayWidth: number, basePageWidth: number, userUnit = 1): number {
+  return textLayerScale(displayWidth, basePageWidth) * userUnit;
+}

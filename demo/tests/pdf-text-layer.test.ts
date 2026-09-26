@@ -81,7 +81,7 @@ void test('PdfPageCanvas renders TextLayer through the pdf.js module class', () 
 
 void test('only pages with extractable text get a text layer', () => {
   assert.match(pageSource, /shouldBuildTextLayer\(items\)/);
-  assert.match(pageSource, /if \(!shouldBuildTextLayer\(items\)\) return;/);
+  assert.match(pageSource, /if \(!shouldBuildTextLayer\(items\)\) \{\s*setTextAvailability\('none'\)/);
   assert.match(pageSource, /itemsFromPdfJs\(\s*content\.items as Array<\{/);
 });
 
@@ -91,7 +91,7 @@ void test('text layer geometry is rebuilt with the canvas from one scale', () =>
     /const scale = textLayerScale\(width, base\.width\)/,
   );
   assert.match(pageSource, /getViewport\(\{ scale: scale \* dpr \}\)/);
-  assert.match(pageSource, /--total-scale-factor', String\(scale\)/);
+  assert.match(pageSource, /--total-scale-factor', String\(textLayerTotalScale\(width, base.width, pdfPage.userUnit\)\)/);
   // Same effect inputs as the canvas render task.
   assert.match(pageSource, /\}, \[pdfDoc, pageNumber, width, height\]\);/);
   assert.match(pageSource, /activeTextLayer\?\.cancel\(\)/);

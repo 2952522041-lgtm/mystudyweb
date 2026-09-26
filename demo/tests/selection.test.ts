@@ -73,12 +73,12 @@ void test('selectionInLayer true when the shared ancestor is inside the containe
   );
 });
 
-void test('selectionInLayer falls back to client rects when ancestor not matched', () => {
+void test('selectionInLayer rejects visible selections outside the page', () => {
   const sel = selection({
     rangeCount: 1,
     getRangeAt: () => range({ commonAncestorContainer: null, getClientRects: () => [rect(1, 1, 10, 10)] }),
   });
-  assert.equal(selectionInLayer(sel, container({ contains: () => false })), true);
+  assert.equal(selectionInLayer(sel, container({ contains: () => false })), false);
 });
 
 void test('selectionBox returns null for empty or collapsed selections', () => {
