@@ -957,6 +957,31 @@ const setup = String.raw\`(() => {
     }
     return { scrollTop: stage.scrollTop, pageTop: pageRect.top };
   };
+  // Observe without changing event order, assertions or deadlines.
+  // sendInputEvent queues native input; returning is not a React commit barrier.
+  const events = [];
+  for (const name of ['pointerdown', 'pointerup', 'click', 'focusin', 'resize']) {
+    window.addEventListener(name, (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      events.push({ type: name, time: performance.now(), target: target?.textContent?.trim().slice(0, 80),
+        x: event.clientX, y: event.clientY, width: window.innerWidth });
+      if (events.length > 80) events.shift();
+    }, true);
+  }
+  window.__sharedViewerDiagnostics = () => {
+    const panel = document.querySelector('[aria-label="已有课程成果（窄窗口）"]');
+    return { events, width: window.innerWidth,
+      tabs: [...(panel?.querySelectorAll('[role="tab"]') ?? [])].map((tab) => {
+        const rect = tab.getBoundingClientRect();
+        const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+        return { text: tab.textContent, selected: tab.getAttribute('aria-selected'),
+          x, y, hit: document.elementFromPoint(x, y)?.closest('[role="tab"]') === tab };
+      }),
+      panels: [...(panel?.querySelectorAll('[role="tabpanel"]') ?? [])].map((element) => ({
+        text: element.textContent?.slice(0, 120), visible: visible(element), hidden: element.hasAttribute('hidden'),
+      })),
+    };
+  };
   window.__formalSharedViewer = {
     async openSource() {
       await waitFor(
@@ -1202,10 +1227,10 @@ app.whenReady().then(async () => {
     await window.webContents.sendInputEvent({ type: 'mouseDown', x: narrow.mindmapClickX, y: narrow.mindmapClickY, button: 'left', clickCount: 1 });
     await window.webContents.sendInputEvent({ type: 'mouseUp', x: narrow.mindmapClickX, y: narrow.mindmapClickY, button: 'left', clickCount: 1 });
     const mindmap = await execute(window, 'window.__formalSharedViewer.assertNarrowMindmap()');
-    process.stdout.write(marker + ' ' + JSON.stringify({ ok: true, source, reopened, narrow, translation, refreshedTranslation, mindmap }) + '\\n');
+    process.stdout.write(marker + ' ' + JSON.stringify({ ok: true, source, reopened, narrow, translation, refreshedTranslation, mindmap, diagnostics: await execute(window, 'window.__sharedViewerDiagnostics()') }) + '\\n');
   } catch (error) {
     exitCode = 1;
-    process.stdout.write(marker + ' ' + JSON.stringify({ ok: false, error: String(error) }) + '\\n');
+    process.stdout.write(marker + ' ' + JSON.stringify({ ok: false, error: String(error), diagnostics: await execute(window, 'window.__sharedViewerDiagnostics?.()').catch(() => null) }) + '\\n');
   } finally {
     if (window && !window.isDestroyed()) window.destroy();
     app.exit(exitCode);
@@ -1333,7 +1358,7 @@ function runBrowserBehavior(): Promise<BrowserBehaviorResults> {
             results?: BrowserBehaviorResults;
             error?: string;
           };
-          assert.equal(result.ok, true, result.error ?? launched.stdout);
+          assert.equal(result.ok, true, JSON.stringify(result));
           assert.equal(result.results?.length, 6);
           return result.results ?? [];
         } finally {
@@ -1381,6 +1406,7 @@ function runCommand(
 }
 
 type FormalBrowserResult = {
+  diagnostics?: { events: Array<{ type: string }>; tabs: Array<{ hit: boolean }> };
   source?: {
     sourcePage?: number;
     realPdfRendered?: boolean;
@@ -1439,7 +1465,7 @@ function runFormalBrowserBehavior(): Promise<FormalBrowserResult> {
             mindmap?: FormalBrowserResult['mindmap'];
             error?: string;
           };
-          assert.equal(result.ok, true, result.error ?? launched.stdout);
+          assert.equal(result.ok, true, JSON.stringify(result));
           return result;
         } finally {
           await server.close();
@@ -1533,5 +1559,7 @@ void test(
     assert.equal(result.refreshedTranslation?.scrollPreserved, true);
     assert.equal(result.mindmap?.mindmapVisible, true);
     assert.equal(result.mindmap?.contentVisible, true);
+    assert.ok(result.diagnostics?.events.some((event) => event.type === 'click'), '原生点击诊断应记录真实事件');
+    assert.ok(result.diagnostics?.tabs.every((tab) => tab.hit), '窄窗口标签中心应命中对应标签');
   },
 );
