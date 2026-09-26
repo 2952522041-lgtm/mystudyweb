@@ -76,7 +76,7 @@ export function CourseImportDialog({
     file: File,
     options: ImportOptions,
     onProgress: (message: string, percent: number) => void,
-  ) => Promise<void>;
+  ) => Promise<string | void>;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -96,12 +96,12 @@ export function CourseImportDialog({
     setProgress(3);
     setProgressMessage('准备复制到课程文件夹');
     try {
-      await onImport(file, options, (message, percent) => {
+      const completionMessage = await onImport(file, options, (message, percent) => {
         setProgressMessage(message);
         setProgress(percent);
       });
       setProgress(100);
-      setProgressMessage('处理完成，成果已保存到本地');
+      setProgressMessage(completionMessage ?? '处理完成，成果已保存到本地');
       setTimeout(() => {
         onOpenChange(false);
         setFile(null);
@@ -125,6 +125,7 @@ export function CourseImportDialog({
           <DialogTitle className="text-lg">导入 PDF 到课程</DialogTitle>
           <DialogDescription>
             文件会复制到课程的 PDFs 目录，原文件不会被修改。
+            同一课程中内容相同的 PDF（即使文件名不同）会直接跳过，不进行文字提取或 AI 分析。
           </DialogDescription>
         </DialogHeader>
 

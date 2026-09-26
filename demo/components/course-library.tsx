@@ -60,7 +60,7 @@ import { publishCachedTranslation } from '@/lib/shared-translation';
 import { loadChatSettings, type ChatSettings } from '@/lib/chat-cache';
 import { loadKnowledgeSettings } from '@/lib/knowledge-settings';
 import type { PageImageInput } from '@/lib/chat';
-import { stableDocumentId } from '@/lib/course-storage/file-utils';
+import { sha256Hex, stableDocumentId } from '@/lib/course-storage/file-utils';
 import type { LanShareStatus } from '@/electron/api';
 import {
   createKnowledgeProviderForSettings,
@@ -583,7 +583,21 @@ export function CourseLibrary({
     onProgress: (message: string, percent: number) => void,
   ) => {
     if (!active?.bundle) throw new Error('请先连接课程文件夹。');
-    const bundle = active.bundle;
+    setError(null);
+    setMessage(null);
+    onProgress('正在检查 PDF 内容是否已存在', 3);
+    const fingerprint = await sha256Hex(await file.arrayBuffer());
+    // 读取当前清单，避免课程在其他窗口更新后仍按旧界面状态启动 AI。
+    const bundle = await active.storage.load();
+    const existing = bundle.manifest.documents.find(
+      (document) => document.fingerprint === fingerprint,
+    );
+    if (existing) {
+      const message = `“${file.name}”已存在，已跳过（课程文件：${existing.fileName}）；未进行文字提取或 AI 分析。`;
+      setEntryBundle(active.id, bundle);
+      setMessage(message);
+      return message;
+    }
     // 知识库成果完全由 AI 生成，使用独立的「知识库 AI」配置；未配置时明确报错，不回退本地规则。
     // 扫描页 OCR 是视觉任务，仍使用「AI 答疑」的视觉模型配置。
     const provider = createKnowledgeProviderForSettings(
