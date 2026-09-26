@@ -1,3 +1,4 @@
+import { validateServiceBaseUrl } from './service-settings.ts';
 import { sha256Hex } from './pdf-text.ts';
 import {
   cachedTranslationFromShared,
@@ -454,8 +455,8 @@ export function validateReaderSettings(
   settings: ReaderSettings,
 ): string | null {
   if (settings.providerMode === 'mock') return null;
-  if (!readerServiceHost(settings.baseUrl))
-    return '请输入有效的 HTTP(S) 接口地址。';
+  const addressError = validateServiceBaseUrl(settings.baseUrl);
+  if (addressError) return addressError;
   if (settings.apiKey.trim().length === 0) return '请输入 API Key。';
   if (settings.model.trim().length === 0) return '请输入模型名称。';
   return null;

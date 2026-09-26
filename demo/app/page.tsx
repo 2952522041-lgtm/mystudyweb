@@ -515,6 +515,7 @@ function TranslationBody({
   remoteProvider,
   onRetry,
   onRetrySave,
+  onOpenSettings,
   alignment,
   activeParagraphs,
   onParagraphActivate,
@@ -526,6 +527,7 @@ function TranslationBody({
   remoteProvider: boolean;
   onRetry: () => void;
   onRetrySave: () => void;
+  onOpenSettings: () => void;
   alignment: ParagraphAlignment;
   activeParagraphs: number[];
   onParagraphActivate: (index: number) => void;
@@ -541,13 +543,14 @@ function TranslationBody({
       return (
         <article className="translation-copy">
           <TranslationParagraphs paragraphs={state.paragraphs} />
-          <p
+          <output
             className="flex items-center gap-2 text-xs text-amber-700"
+            aria-live="polite"
             aria-label="翻译中"
           >
             <LoaderCircle className="size-3.5 animate-spin" />
             正在翻译…
-          </p>
+          </output>
         </article>
       );
     }
@@ -556,11 +559,11 @@ function TranslationBody({
         <span className="mb-5 flex size-11 items-center justify-center rounded-full bg-amber-100 text-amber-700">
           <LoaderCircle className="size-5 animate-spin" />
         </span>
-        <h2 className="text-sm font-semibold text-slate-800">
+        <output aria-live="polite" className="text-sm font-semibold text-slate-800">
           {state?.status === 'recognizing'
             ? `正在识别第 ${page} 页`
             : `正在翻译第 ${page} 页`}
-        </h2>
+        </output>
         <p className="mt-2 max-w-xs text-xs leading-5 text-slate-500">
           {state?.status === 'recognizing'
             ? '正在用视觉模型转录扫描或手写内容，识别结果会缓存在本机…'
@@ -585,12 +588,13 @@ function TranslationBody({
           第 {page} 页翻译失败
         </h2>
         <p className="mt-2 max-w-xs text-xs leading-5 text-slate-500">
-          {state.errorMessage ?? '翻译服务出现错误。'}
+          <span role="alert">{state.errorMessage ?? '翻译服务出现错误。'}</span>
         </p>
         <Button className="mt-6" size="sm" onClick={onRetry}>
           <RotateCcw />
           重新翻译
         </Button>
+        <Button className="mt-2" size="sm" variant="outline" onClick={onOpenSettings}>检查或更换服务</Button>
       </div>
     );
   }
@@ -642,8 +646,9 @@ function TranslationBody({
       state.source === 'course' ||
       state.source === 'indexeddb' ? null : (
         <p className="mt-10 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-xs text-slate-500">
-          当前显示的是内置演示译文。在右上角“翻译设置”中配置 OpenAI
+          当前显示的是内置演示译文。在“阅读服务设置 → 页面翻译”中配置 OpenAI
           兼容服务后，这里将显示真实译文。
+          <button type="button" className="ml-2 underline" onClick={onOpenSettings}>配置翻译服务</button>
         </p>
       )}
     </article>
@@ -694,6 +699,7 @@ function PdfReader({
     DEFAULT_KNOWLEDGE_SETTINGS,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('translation');
   const [rightMode, setRightMode] = useState<ReaderRightModeName>(
     courseContext?.digest ? 'summary' : 'translation',
@@ -944,7 +950,7 @@ function PdfReader({
       if (event.target !== document.body &&
           !readerRootRef.current?.contains(event.target as Node)) return;
       // While the settings dialog owns the screen, only dismiss applies.
-      if (shortcut.action !== 'dismiss' && (settingsOpenRef.current || importOpen || !pdfDoc)) return;
+      if (shortcut.action !== 'dismiss' && (settingsOpenRef.current || importOpen || shortcutsOpen || !pdfDoc)) return;
       // The reader stays mounted behind the course library; ignore keys there.
       if (suspendedRef.current) return;
 
@@ -979,6 +985,7 @@ function PdfReader({
           break;
         case 'dismiss':
           setSettingsOpen(false);
+          setShortcutsOpen(false);
           setImportOpen(false);
           window.getSelection()?.removeAllRanges();
           break;
@@ -988,7 +995,7 @@ function PdfReader({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [goToPage, importOpen, pdfDoc]);
+  }, [goToPage, importOpen, shortcutsOpen, pdfDoc]);
 
   useEffect(() => {
     if (!pdfDoc || !stageWidth || positionedRef.current) return;
@@ -2025,6 +2032,7 @@ function PdfReader({
                                 remoteProvider={remoteProvider}
                                 onRetry={retranslate}
                                 onRetrySave={retrySave}
+                                onOpenSettings={() => openSettings(currentState?.errorMessage?.includes('OCR') ? 'chat' : 'translation')}
                                 alignment={paragraphAlignment}
                                 activeParagraphs={activeTargetParagraphs}
                                 revealRequest={paragraphSelection?.side === 'source' ? paragraphSelection : null}
@@ -2154,6 +2162,7 @@ function PdfReader({
             </span>
           </div>
           <ReaderStatusFacts parts={statusBarItems} />
+          <button type="button" className="rounded px-1 underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-amber-600" onClick={() => setShortcutsOpen(true)}>快捷键说明</button>
           <div className="flex items-center gap-4">
             {docMeta?.restoredPage ? (
               <span>已恢复上次阅读进度（第 {docMeta.restoredPage} 页）</span>
@@ -2167,6 +2176,23 @@ function PdfReader({
             </span>
           </div>
         </footer>
+
+        <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
+          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-[480px]">
+            <DialogHeader><DialogTitle>阅读快捷键</DialogTitle>
+              <DialogDescription>输入框、下拉框和编辑器内不触发阅读快捷键；弹窗打开时暂停阅读快捷键。</DialogDescription>
+            </DialogHeader>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-3 text-sm">
+              <dt>← / → · PageUp / PageDown</dt><dd>上一页 / 下一页</dd>
+              <dt>Home / End</dt><dd>首页 / 末页</dd>
+              <dt>+ / − / 0</dt><dd>放大 / 缩小 / 默认缩放</dd>
+              <dt>Alt + 1 / 2 / 3 / 4</dt><dd>翻译 / 答疑 / 总结 / 脑图</dd>
+              <dt>F · Ctrl + Shift + F</dt><dd>收起 / 展开右栏</dd>
+              <dt>Esc</dt><dd>关闭弹窗或清除选区</dd>
+            </dl>
+            <DialogFooter><Button onClick={() => setShortcutsOpen(false)}>知道了</Button></DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={importOpen} onOpenChange={setImportOpen}>
           <DialogContent className="sm:max-w-[480px]">

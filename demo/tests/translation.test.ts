@@ -407,7 +407,7 @@ c&=d\end{align}.`;
   const snapshots: string[][] = [];
   const provider = createOpenAICompatibleProvider({baseUrl:'https://mock.test',apiKey:'test',model:'mock',
     fetchImpl: (async (_url, init) => {
-      const body = JSON.parse(String(init?.body));
+      const body = JSON.parse(init?.body as string);
       const text = body.messages[1].content.split('\n---\n')[1];
       assert.doesNotMatch(text, /\$|α|℃|H_2O/);
       return streamResponse(text.replace('Use', '使用').replace('Next', '下一段'), 1);
@@ -425,7 +425,7 @@ void test('lost or reordered math markers get one corrective attempt and never b
     const provider = createOpenAICompatibleProvider({baseUrl:'https://mock.test',apiKey:'test',model:'mock',
       fetchImpl: (async (_url, init) => {
         calls++;
-        const body = JSON.parse(String(init?.body));
+        const body = JSON.parse(init?.body as string);
         const tokens = body.messages[1].content.match(/YYKEEP\d+ZZ/g);
         return streamResponse(mode === 'lost' ? '公式丢失' : mode === 'duplicate' ? tokens.join(' ') + tokens[0] : tokens.reverse().join(' '));
       }) as typeof fetch});
@@ -440,7 +440,7 @@ void test('a corrective response restores notation and numbered lists remain ins
   const provider = createOpenAICompatibleProvider({baseUrl:'https://mock.test',apiKey:'test',model:'mock',
     fetchImpl: (async (_url, init) => {
       calls++;
-      const text = JSON.parse(String(init?.body)).messages[1].content.split('\n---\n')[1];
+      const text = JSON.parse(init?.body as string).messages[1].content.split('\n---\n')[1];
       return streamResponse(calls === 1 ? 'bad output' : text);
     }) as typeof fetch});
   const text = '1. $x$\n2. H_2O\n\nSecond paragraph';

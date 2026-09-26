@@ -37,12 +37,14 @@ function OptionRow({
   title,
   description,
   checked,
+  disabled,
   onCheckedChange,
 }: {
   icon: React.ReactNode;
   title: string;
   description: string;
   checked: boolean;
+  disabled: boolean;
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
@@ -58,7 +60,7 @@ function OptionRow({
           {description}
         </span>
       </span>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+      <Switch aria-label={title} disabled={disabled} checked={checked} onCheckedChange={onCheckedChange} />
     </label>
   );
 }
@@ -107,6 +109,7 @@ export function CourseImportDialog({
         setProgressMessage('');
       }, 450);
     } catch (importError) {
+      setProgressMessage('处理已停止，可检查设置后重试');
       setError(
         importError instanceof Error ? importError.message : '导入失败。',
       );
@@ -166,6 +169,7 @@ export function CourseImportDialog({
           AI」中保存的接口地址、API Key 与模型。文字型 PDF
           会先在本地提取；扫描或手写页面会使用「AI 答疑」中的视觉模型进行
           OCR，并把对应页面图像发送给该服务。识别结果与 AI 分析会缓存在本机。
+          即使关闭下面的可见成果选项，导入仍需知识库 AI 建立内部摘要；这些选项控制成果保存和课程合并。
         </div>
 
         <div className="space-y-2">
@@ -173,6 +177,7 @@ export function CourseImportDialog({
             生成这个 PDF 的学习成果
           </p>
           <OptionRow
+            disabled={processing}
             icon={<BrainCircuit className="size-4" />}
             title="生成 PDF 总结"
             description="AI 概括全文，生成内容概览、章节摘要与来源页码"
@@ -182,6 +187,7 @@ export function CourseImportDialog({
             }
           />
           <OptionRow
+            disabled={processing}
             icon={<Network className="size-4" />}
             title="生成 PDF 脑图"
             description="AI 提炼概念节点、真实关系与来源页码"
@@ -197,6 +203,7 @@ export function CourseImportDialog({
             更新课程知识库
           </p>
           <OptionRow
+            disabled={processing}
             icon={<GitMerge className="size-4" />}
             title="并入课程总总结和总脑图"
             description="AI 综合所有已纳入文档，重建跨文档概念、关系与冲突"
@@ -206,6 +213,7 @@ export function CourseImportDialog({
             }
           />
           <OptionRow
+            disabled={processing}
             icon={<MessageSquareText className="size-4" />}
             title="提炼后续 AI 问答"
             description="仅记录有效学习洞察，不复制整段原始对话"
@@ -217,7 +225,7 @@ export function CourseImportDialog({
         </div>
 
         {progressMessage ? (
-          <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-3">
+          <output aria-live="polite" className="block rounded-xl border border-violet-100 bg-violet-50/60 p-3">
             <div className="mb-2 flex items-center gap-2 text-xs font-medium text-violet-800">
               {processing ? (
                 <LoaderCircle className="size-3.5 animate-spin" />
@@ -225,14 +233,15 @@ export function CourseImportDialog({
               {progressMessage}
             </div>
             <Progress
+              aria-label="课程导入进度"
               value={progress}
               className="[&_[data-slot=progress-indicator]]:bg-violet-600"
             />
-          </div>
+          </output>
         ) : null}
 
         {error ? (
-          <p className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">
+          <p role="alert" className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">
             <TriangleAlert className="mt-0.5 size-4 shrink-0" />
             {error}
           </p>
@@ -252,7 +261,7 @@ export function CourseImportDialog({
             ) : (
               <FileUp />
             )}
-            导入并处理
+            {processing ? '正在处理…' : error ? '重试导入' : '导入并处理'}
           </Button>
         </DialogFooter>
       </DialogContent>

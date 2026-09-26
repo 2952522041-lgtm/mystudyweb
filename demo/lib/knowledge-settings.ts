@@ -1,3 +1,4 @@
+import { validateServiceBaseUrl } from './service-settings.ts';
 import { loadChatSettings } from './chat-cache.ts';
 
 /**
@@ -21,14 +22,8 @@ const KNOWLEDGE_SETTINGS_STORAGE_KEY = 'pdf-reader-knowledge-settings';
 export function validateKnowledgeSettings(
   settings: KnowledgeSettings,
 ): string | null {
-  try {
-    const url = new URL(settings.baseUrl);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-      return '请输入有效的 HTTP(S) 知识库 AI 接口地址。';
-    }
-  } catch {
-    return '请输入有效的 HTTP(S) 知识库 AI 接口地址。';
-  }
+  const addressError = validateServiceBaseUrl(settings.baseUrl);
+  if (addressError) return addressError;
   if (settings.apiKey.trim().length === 0) {
     return '请输入知识库 AI API Key。';
   }

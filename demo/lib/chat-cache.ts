@@ -1,3 +1,4 @@
+import { validateServiceBaseUrl } from './service-settings.ts';
 import { createIndexedDBStore, type KVStore } from './reader-cache.ts';
 import {
   createOpenAICompatibleChatProvider,
@@ -23,14 +24,8 @@ const CHAT_SETTINGS_STORAGE_KEY = 'pdf-reader-chat-settings';
 const CHAT_KEY_PREFIX = 'chat:';
 
 export function validateChatSettings(settings: ChatSettings): string | null {
-  try {
-    const url = new URL(settings.baseUrl);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-      return '请输入有效的 HTTP(S) AI 接口地址。';
-    }
-  } catch {
-    return '请输入有效的 HTTP(S) AI 接口地址。';
-  }
+  const addressError = validateServiceBaseUrl(settings.baseUrl);
+  if (addressError) return addressError;
   if (settings.apiKey.trim().length === 0) return '请输入 AI 答疑 API Key。';
   if (settings.model.trim().length === 0)
     return '请输入支持视觉输入的模型名称。';

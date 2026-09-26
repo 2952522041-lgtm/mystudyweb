@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -58,6 +58,8 @@ export function ReaderSettingsDialog({
   const [chatDraft, setChatDraft] = useState(chatSettings);
   const [knowledgeDraft, setKnowledgeDraft] = useState(knowledgeSettings);
   const [error, setError] = useState<string | null>(null);
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
 
   const save = () => {
     const translationError = validateReaderSettings(translationDraft);
@@ -98,12 +100,12 @@ export function ReaderSettingsDialog({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-[520px]">
+      <DialogContent onChangeCapture={() => setError(null)} className="max-h-[88vh] overflow-y-auto sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle className="text-lg">阅读服务设置</DialogTitle>
           <DialogDescription>
             页面翻译、AI 答疑与知识库 AI
-            分别保存接口、API Key 和模型，互不串用。
+            分别保存接口、API Key 和模型，互不串用。接口地址填写基础路径，程序会追加 /chat/completions；模型填写服务商提供的模型 ID。
           </DialogDescription>
         </DialogHeader>
 
@@ -410,7 +412,7 @@ export function ReaderSettingsDialog({
         </Tabs>
 
         {error ? (
-          <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+          <p ref={errorRef} tabIndex={-1} role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
             {error}
           </p>
         ) : null}

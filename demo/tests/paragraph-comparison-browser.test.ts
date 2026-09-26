@@ -48,6 +48,14 @@ const source = (page,index) => document.querySelector('.pdf-text-layer[data-page
 const active = () => [...document.querySelectorAll('.paragraph-source-active')];
 window.runReaderRegression = async () => {
   await waitFor('real PDF text layer and translation', () => source(1,1) && target(1));
+  [...document.querySelectorAll('button')].find((button) => button.textContent === '快捷键说明').click();
+  await waitFor('shortcut help', () => document.querySelector('[role="dialog"]')?.textContent.includes('Alt + 1'));
+  const helpPage = document.querySelector('input[inputmode="numeric"]').value;
+  document.body.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowRight',bubbles:true}));
+  await sleep(40);
+  check(document.querySelector('input[inputmode="numeric"]').value === helpPage, 'help dialog allowed page navigation');
+  [...document.querySelectorAll('button')].find((button) => button.textContent === '知道了').click();
+  await waitFor('help closed', () => !document.querySelector('[role="dialog"]'));
   const stage = document.querySelector('.document-stage');
   check(source(1,1).getBoundingClientRect().top > stage.getBoundingClientRect().bottom, 'fixture second paragraph should be below viewport');
   target(1).click();

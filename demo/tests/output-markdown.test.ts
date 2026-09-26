@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import os from 'node:os';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import test from 'node:test';
 import { build } from 'esbuild';
 import { MATH_FALLBACK, prepareOutputMarkdown, repairCrossParagraphMath } from '../lib/output-markdown.ts';
 
 const root = path.resolve(import.meta.dirname, '..');
+const require = createRequire(import.meta.url);
 const bundle = await build({stdin:{contents:`
   import React from 'react';
   import { renderToStaticMarkup } from 'react-dom/server';
@@ -13,10 +16,15 @@ const bundle = await build({stdin:{contents:`
   import { TranslationParagraphs } from '@/components/translation-paragraphs';
   export const render = (text) => renderToStaticMarkup(<MarkdownOutput onNavigate={() => {}}>{text}</MarkdownOutput>);
   export const translation = (paragraphs) => renderToStaticMarkup(<TranslationParagraphs paragraphs={paragraphs} />);
-`,loader:'tsx',resolveDir:root},alias:{'@':root},bundle:true,format:'cjs',platform:'node',external:['react','react-dom/server','react/jsx-runtime'],write:false,logLevel:'silent'});
-const module = {exports: {} as {render: (text:string) => string; translation: (paragraphs:string[]) => string}};
-new Function('require','module','exports',bundle.outputFiles[0].text)(createRequire(import.meta.url),module,module.exports);
-const {render,translation} = module.exports;
+`,loader:'tsx',resolveDir:root},alias:{'@':root},bundle:true,format:'cjs',platform:'node',plugins:[{name:'external-react',setup(build){build.onResolve({filter:/^react(?:\/jsx-runtime|-dom\/server)?$/},(args)=>({path:require.resolve(args.path),external:true}));}}],write:false,logLevel:'silent'});
+const directory = await mkdtemp(path.join(os.tmpdir(), 'yeyu-markdown-'));
+let renderer: {render: (text:string) => string; translation: (paragraphs:string[]) => string};
+try {
+  const file = path.join(directory, 'render.cjs');
+  await writeFile(file, bundle.outputFiles[0].text);
+  renderer = require(file);
+} finally { await rm(directory, {recursive:true,force:true}); }
+const {render,translation} = renderer;
 
 void test('translation and answers share actual Markdown, GFM and KaTeX rendering', () => {
   const text = '**重点** $x^2$ H_2O α β γ θ μ Ω ≈ ≤ ≥ ± × ÷ → ∑ ∫ ∂ m/s² N·m ℃ - – —\n\n|A|B|\n|-|-|\n|1|2|';

@@ -674,7 +674,7 @@ void test('protected scientific output round trips through cache; corrupt model 
   const provider = createOpenAICompatibleProvider({baseUrl:'https://mock.test',apiKey:'test',model:'mock',
     fetchImpl:(async (_url, init) => {
       calls++;
-      const text = JSON.parse(String(init?.body)).messages[1].content.split('\n---\n')[1];
+      const text = JSON.parse(init?.body as string).messages[1].content.split('\n---\n')[1];
       const event = JSON.stringify({choices:[{delta:{content:corrupt ? 'lost math' : text},finish_reason:'stop'}]});
       return new Response(`data: ${event}\n\ndata: [DONE]\n\n`);
     }) as typeof fetch});
