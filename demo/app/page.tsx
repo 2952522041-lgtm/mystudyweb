@@ -600,6 +600,7 @@ function PdfReader({
 }) {
   const sizeLoaderRef = useRef<ReturnType<typeof createProgressivePageSizes> | null>(null);
   const importLifecycleRef = useRef(createPdfImportLifecycle<PDFDocumentProxy>());
+  const consumedInitialFileRef = useRef<File | null>(null);
   useEffect(() => {
     const lifecycle = importLifecycleRef.current;
     return () => { lifecycle.dispose(); sizeLoaderRef.current?.cancel(); };
@@ -1115,8 +1116,12 @@ function PdfReader({
   );
 
   useEffect(() => {
-    if (initialFile) {
+    if (initialFile && consumedInitialFileRef.current !== initialFile) {
       const timer = setTimeout(() => {
+        // Consume the file handoff when it starts, including while pending.
+        // Context refresh/clearing must not reopen an old course PDF. Marking
+        // inside the timer also leaves StrictMode cleanup free to cancel it.
+        consumedInitialFileRef.current = initialFile;
         void handleFile(initialFile, courseContext?.initialPage);
       }, 0);
       return () => clearTimeout(timer);
