@@ -89,11 +89,19 @@ export function mergeDocumentDigest(
     idMap.set(concept.id, target.id);
     if (
       root &&
+      (concept.parentId === undefined || concept.parentId === null) &&
       !relations.some(
         (relation) => relation.from === root.id && relation.to === target.id,
       )
     ) {
       relations.push({ from: root.id, to: target.id, label: '包含' });
+    }
+  }
+
+  for (const concept of digest.concepts) {
+    const target = nodes.find(node => node.id === idMap.get(concept.id));
+    if (target && target.ownership !== 'user' && concept.parentId !== undefined) {
+      target.parentId = concept.parentId === null ? null : idMap.get(concept.parentId) ?? concept.parentId;
     }
   }
 
@@ -178,6 +186,13 @@ export function applyAiCourseKnowledge(
     idMap.set(aiNode.id, target.id);
   }
 
+  for (const aiNode of ai.nodes) {
+    const target = nodes.find(node => node.id === idMap.get(aiNode.id));
+    if (target && target.ownership !== 'user' && aiNode.parentId !== undefined) {
+      target.parentId = aiNode.parentId === null ? null : idMap.get(aiNode.parentId) ?? aiNode.parentId;
+    }
+  }
+
   // Keep user-authored relationships even when the model omits their generated endpoint.
   const userIds = new Set(current.nodes.filter((node) => node.ownership === 'user').map((node) => node.id));
   const userRelations = current.relations.filter((relation) => userIds.has(relation.from) || userIds.has(relation.to));
@@ -242,7 +257,7 @@ export function removeDocumentContribution(
   return {
     ...current,
     version: current.version + 1,
-    nodes,
+    nodes: nodes.map(node => node.parentId && !ids.has(node.parentId) ? { ...node, parentId: null } : node),
     relations: current.relations.filter(
       (relation) => ids.has(relation.from) && ids.has(relation.to),
     ),

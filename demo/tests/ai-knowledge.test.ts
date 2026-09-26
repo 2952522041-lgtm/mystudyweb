@@ -149,7 +149,7 @@ function digestReply(overrides: Record<string, unknown> = {}) {
     pageStart,
     ...(pageEnd ? { pageEnd } : {}),
   });
-  return JSON.stringify({
+  const payload = {
     title: '线性代数讲义',
     overview:
       '这份讲义系统讲解向量空间、线性映射与特征值分解三大主题，逐步给出定义、定理与几何直觉，并在最后一节用二维例子演示如何求特征向量。全文由浅入深，适合作为线性代数入门材料。',
@@ -175,14 +175,17 @@ function digestReply(overrides: Record<string, unknown> = {}) {
     unresolvedQuestions: ['奇异矩阵是否一定可对角化？'],
     sourcePages: [1, 2, 3],
     ...overrides,
-  });
+  };
+  return JSON.stringify({...payload, hierarchy:{mode:"flat",reason:"夹具只有少量并列概念，没有章节从属论点"}, concepts: (payload.concepts as Array<Record<string,unknown>>).map(node => ({parentId:null,...node}))});
 }
 
 function courseReply() {
   return JSON.stringify({
+    hierarchy: {mode:"flat",reason:"夹具仅有两个并列概念"},
     theme: '本课程围绕线性代数的结构与分解展开。',
     concepts: [
       {
+        parentId: null,
         id: 'k1',
         label: '向量空间',
         description: '两份讲义共同定义的核心结构。',
@@ -192,6 +195,7 @@ function courseReply() {
         ],
       },
       {
+        parentId: null,
         id: 'k2',
         label: '特征值分解',
         description: '第二份讲义给出的分解方法。',
@@ -846,8 +850,8 @@ void test('single-PDF summary and mindmap come from the mocked AI response', asy
     pages: PAGES,
   });
 
-  assert.equal(digest.schemaVersion, 2);
-  assert.equal(digest.promptVersion, 'ai-digest-v3');
+  assert.equal(digest.schemaVersion, 3);
+  assert.equal(digest.promptVersion, 'ai-digest-v4');
   assert.ok(digest.overview.length > 80, 'overview should be a real synthesis');
   assert.equal(digest.sourcePages, digest.sourcePages); // sanity
   assert.deepEqual(digest.sourcePages, [1, 2, 3]);
@@ -912,12 +916,12 @@ void test('course knowledge is synthesized across multiple documents by AI', asy
   assert.match(prompt, /doc-bbbbbbbbbbbbbbbb/);
   assert.match(prompt, /我的疑问/);
 
-  assert.equal(aiKnowledge.promptVersion, 'ai-course-v2');
+  assert.equal(aiKnowledge.promptVersion, 'ai-course-v3');
   assert.equal(aiKnowledge.provider, 'openai-compatible-knowledge');
 
   let knowledge = emptyCourseKnowledge('course-1', '线性代数', '2026-08-31T00:00:00.000Z');
   knowledge = applyAiCourseKnowledge(knowledge, aiKnowledge, '2026-08-31T01:00:00.000Z');
-  assert.equal(knowledge.schemaVersion, 2);
+  assert.equal(knowledge.schemaVersion, 3);
   assert.equal(knowledge.version, 1);
   assert.equal(knowledge.model, settings.model);
   assert.match(knowledge.nodes.find((node) => node.kind === 'course')!.description, /线性代数的结构与分解/);
@@ -1305,7 +1309,7 @@ void test('browser and desktop storages produce identical AI artifacts', async (
       .replaceAll(browserInitial.manifest.id, 'COURSE');
     assert.equal(browserKnowledgeNormalized, desktopKnowledgeRaw);
     const browserKnowledge = JSON.parse(browserKnowledgeRaw) as { schemaVersion: number };
-    assert.equal(browserKnowledge.schemaVersion, 2);
+    assert.equal(browserKnowledge.schemaVersion, 3);
 
     // 课程总结 Markdown 结构一致（仅时间戳与课程 id 不同）。
     assert.equal(

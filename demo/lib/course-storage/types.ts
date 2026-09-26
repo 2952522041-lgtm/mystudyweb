@@ -1,9 +1,9 @@
 import type { Glossary } from '../glossary.ts';
 export const COURSE_SCHEMA_VERSION = 1 as const;
-/** AI 生成的 DocumentDigest 使用 schemaVersion 2；本地规则生成的旧摘要仍为 1。 */
-export const DIGEST_SCHEMA_VERSION = 2 as const;
-/** AI 生成的课程知识库使用 schemaVersion 2；旧版增量合并结果仍为 1。 */
-export const KNOWLEDGE_SCHEMA_VERSION = 2 as const;
+/** AI 生成的 DocumentDigest 使用 schemaVersion 3（显式 parentId）；本地规则生成的旧摘要仍为 1。 */
+export const DIGEST_SCHEMA_VERSION = 3 as const;
+/** AI 生成的课程知识库使用 schemaVersion 3（显式 parentId）；旧版增量合并结果仍为 1。 */
+export const KNOWLEDGE_SCHEMA_VERSION = 3 as const;
 
 export type ImportStage =
   | 'selected'
@@ -34,6 +34,8 @@ export interface DigestSection {
 }
 
 export interface DigestConcept {
+  /** undefined: 旧数据；null: 主题的一级分支；string: 父概念 id。 */
+  parentId?: string | null;
   id: string;
   label: string;
   description: string;
@@ -50,7 +52,7 @@ export type DigestPromptVersion = 'local-structure-v1' | (string & {});
 
 export interface DocumentDigest {
   glossaryFingerprint?: string;
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   documentId: string;
   fingerprint: string;
   title: string;
@@ -95,6 +97,7 @@ export interface CourseManifest {
 }
 
 export interface KnowledgeNode {
+  parentId?: string | null;
   id: string;
   label: string;
   description: string;
@@ -117,6 +120,7 @@ export interface KnowledgeConflict {
 export interface AiCourseKnowledge {
   theme: string;
   nodes: Array<{
+    parentId?: string | null;
     id: string;
     label: string;
     description: string;
@@ -135,7 +139,7 @@ export interface AiCourseKnowledge {
 }
 
 export interface CourseKnowledge {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   courseId: string;
   version: number;
   nodes: KnowledgeNode[];

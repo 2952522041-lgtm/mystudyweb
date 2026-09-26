@@ -32,9 +32,10 @@ export async function extractLecture() {
 export function lectureReply(documentId: string, hierarchical: boolean) {
   const labels = ['电路基础', '电阻电路', '欧姆定律 U=IR', '串联电阻 R=R1+R2', '动态电路', '电容储能', '电容定义 Q=CU', '储能 W=CU²/2'];
   return {
+    hierarchy: {mode:'structured',reason:'第1–2页有章、小节和定义/公式/结论'},
     title: '电路讲义', overview: '电阻电路与动态电路的定义、公式和储能结论。',
     sections: pages.map((text, i) => ({ title: text.split('\n')[0], summary: text, pageStart: i+1, pageEnd: i+1 })),
-    concepts: labels.map((label, i) => ({ id: `c${i+1}`, label, description: label,
+    concepts: labels.map((label, i) => ({ id: `c${i+1}`, parentId: hierarchical ? [null,"c1","c2","c2",null,"c5","c6","c6"][i] : null, label, description: label,
       sources: [{documentId, fileName:'电路讲义.pdf', pageStart:i<4?1:2}] })),
     relations: hierarchical ? [[1,2],[2,3],[2,4],[5,6],[6,7],[6,8]].map(([a,b]) => ({from:`c${a}`,to:`c${b}`,label:'包含'})) : [],
     unresolvedQuestions: [],
@@ -46,7 +47,7 @@ export function mockProvider(replies: unknown[], store = createMemoryStore<Docum
   const provider = createKnowledgeProviderForSettings({
     baseUrl:'https://mock.invalid/v1', apiKey:'mock-only', model:'mock-hierarchy',
   }, async (_url, init) => {
-    requests.push(JSON.parse(String(init?.body)));
+    requests.push(JSON.parse(typeof init?.body === 'string' ? init.body : '{}'));
     const text = JSON.stringify(replies[Math.min(requests.length-1,replies.length-1)]);
     return new Response(`data: ${JSON.stringify({choices:[{delta:{content:text},finish_reason:'stop'}]})}\ndata: [DONE]\n`, {headers:{'content-type':'text/event-stream'}});
   }, createKnowledgeDigestCache(store));

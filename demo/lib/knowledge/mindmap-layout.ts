@@ -78,8 +78,15 @@ export function buildMindmapLayout(
     return { rootId: null, nodes: [], edges: [], hiddenCount: 0 };
   }
 
+  // Schema 3 declares parents explicitly. Semantic cross-links cannot steal a child
+  // in BFS. Legacy graphs still use the historical relation traversal unchanged.
+  const treeRelations = relations.filter(edge => byId.get(edge.to)?.parentId === undefined);
+  for (const node of nodes) {
+    if (node.id === root.id || node.parentId === undefined) continue;
+    treeRelations.push({ from: node.parentId ?? root.id, to: node.id, label: '包含' });
+  }
   const adjacency = new Map<string, Array<{ to: string; label: string }>>();
-  for (const relation of relations) {
+  for (const relation of treeRelations) {
     if (!byId.has(relation.from) || !byId.has(relation.to)) continue;
     if (relation.from === relation.to) continue;
     const list = adjacency.get(relation.from) ?? [];
@@ -98,7 +105,7 @@ export function buildMindmapLayout(
   };
   add(root, null, '');
   const incoming = new Set(
-    relations
+    treeRelations
       .filter(
         (edge) =>
           edge.from !== root.id && edge.from !== edge.to && byId.has(edge.from),

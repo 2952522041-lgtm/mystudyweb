@@ -1,3 +1,4 @@
+import { hasExplicitChapterHierarchy, hierarchyIssues, inspectHierarchy, MINDMAP_MAX_CHILDREN, MINDMAP_MAX_DEPTH } from './mindmap-structure.ts';
 import { glossaryFingerprint, glossaryPrompt, type Glossary } from '../glossary.ts';
 import { conceptKey as normalizeConceptKey } from './concept-identity.ts';
 import { ChatError } from '../ai-errors.ts';
@@ -30,8 +31,8 @@ import { buildPdfChunks, type PdfChunk } from './pdf-chunks.ts';
 
 export const KNOWLEDGE_PROVIDER_ID = 'openai-compatible-knowledge';
 /** 知识库提示词版本：修改提示词必须递增，缓存与课程成果都会记录它。 */
-export const KNOWLEDGE_DIGEST_PROMPT_VERSION = 'ai-digest-v3';
-export const KNOWLEDGE_COURSE_PROMPT_VERSION = 'ai-course-v2';
+export const KNOWLEDGE_DIGEST_PROMPT_VERSION = 'ai-digest-v4';
+export const KNOWLEDGE_COURSE_PROMPT_VERSION = 'ai-course-v3';
 /** 分块分析与综合共用的默认输出 token 上限；过小会触发 finish_reason=length 截断。 */
 export const KNOWLEDGE_MAX_OUTPUT_TOKENS = 8192;
 /**
@@ -104,6 +105,7 @@ const KNOWLEDGE_SYSTEM_PROMPT = [
   'Within JSON strings preserve LaTeX verbatim (escape backslashes for JSON), use Markdown lists and GFM tables with headers, units and footnotes. Never flatten tables into prose or reconstruct unreadable formulas; explicitly mark missing evidence.',
   'Summaries should state definitions, assumptions, conclusions and limitations supported by the text. Avoid boilerplate, duplicate claims and unsupported deductions.',
   'Reply in Simplified Chinese by default; technical terms may stay in their original language.',
+  'Mindmaps must preserve source-supported parent/child hierarchy separately from dependency, contrast and causal links. Do not invent structure for genuinely flat material.',
   'Your output must be exactly one JSON value that matches the requested schema.',
   'Do not output Markdown code fences, explanations, a preface, or a closing note.',
 ].join('\n');
@@ -271,6 +273,7 @@ async function completeJson(
     maxTokens: number;
     signal?: AbortSignal;
     contextLabel: string;
+    validate?: (raw: unknown) => void;
   },
 ): Promise<unknown> {
   const messages: ChatApiMessage[] = [
@@ -297,8 +300,11 @@ async function completeJson(
       );
     }
     try {
-      return extractJsonObject(result.content);
+      const raw = extractJsonObject(result.content);
+      input.validate?.(raw);
+      return raw;
     } catch (error) {
+      if (error instanceof KnowledgeError && error.code !== 'invalid_output') throw error;
       lastFailure = error instanceof Error ? error.message : String(error);
     }
     if (attempt === 0) {
@@ -309,13 +315,13 @@ async function completeJson(
       messages.push({
         role: 'user',
         content:
-          '你上一次的输出无法解析为 JSON。请重新输出：只输出一个符合要求的 JSON 对象，不要包含 Markdown 代码围栏、解释、前言或结语。',
+          `你上一次的输出无法解析为 JSON 或未通过结构校验。具体问题：${lastFailure}。请定向修复这些问题，保留真实要点和来源，重新输出完整 JSON；不要虚构层级、事实或来源。只输出 JSON。`,
       });
     }
   }
   throw new KnowledgeError(
     'invalid_output',
-    `${input.contextLabel}的 AI 输出无法解析为 JSON（${lastFailure}），已自动重试一次仍失败。`,
+    `${input.contextLabel}的 AI 输出无法解析为 JSON 或脑图结构不达标（${lastFailure}），已自动重试一次仍失败；未保存本次结果，请检查材料或更换模型后重试。`,
   );
 }
 
@@ -399,7 +405,8 @@ interface AiDigestPayload {
     pageEnd: number;
   }>;
   concepts: Array<{
-    id?: string;
+    id: string;
+    parentId: string | null;
     label: string;
     description: string;
     sources: SourceReference[];
@@ -458,7 +465,8 @@ function validateDigestPayload(
     );
   }
   const concepts: Array<{
-    id?: string;
+    id: string;
+    parentId: string | null;
     label: string;
     description: string;
     sources: SourceReference[];
@@ -489,10 +497,8 @@ function validateDigestPayload(
       };
     });
     concepts.push({
-      id:
-        typeof concept.id === 'string' && concept.id.trim()
-          ? concept.id.trim()
-          : undefined,
+      parentId: concept.parentId as string | null,
+      id: requireString(concept.id, 'id', label),
       label: requireString(concept.label, 'label', label),
       description: requireString(concept.description, 'description', label),
       sources,
@@ -580,8 +586,7 @@ function buildDocumentDigest(
       ? concepts.find((item) => normalizeConceptKey(item.label) === key)
       : undefined;
     if (existing) {
-      if (concept.id) idMap.set(concept.id, existing.id);
-      idMap.set(`c${index + 1}`, existing.id);
+      idMap.set(concept.id, existing.id);
       existing.sources = uniqueSources([
         ...existing.sources,
         ...concept.sources,
@@ -590,9 +595,7 @@ function buildDocumentDigest(
     }
     usedLabels.add(key);
     const id = `${meta.documentId}-concept-${concepts.length + 1}`;
-    if (concept.id) idMap.set(concept.id, id);
-    // 兜底映射 AI 常见的按位置编号（c1、c2…）。
-    idMap.set(`c${index + 1}`, id);
+    idMap.set(concept.id, id);
     concepts.push({
       id,
       label: concept.label,
@@ -600,6 +603,14 @@ function buildDocumentDigest(
       sources: concept.sources,
     });
   }
+
+  for (const concept of payload.concepts) {
+    const id = idMap.get(concept.id);
+    const target = concepts.find(node => node.id === id);
+    if (target) target.parentId = concept.parentId === null ? null : idMap.get(concept.parentId) ?? concept.parentId;
+  }
+  const normalizedIssues = hierarchyIssues(concepts, 1);
+  if (normalizedIssues.length) throw new KnowledgeError('invalid_output', normalizedIssues.join('；'));
 
   const relations = payload.relations
     .map((relation) => ({
@@ -613,6 +624,10 @@ function buildDocumentDigest(
         concepts.some((concept) => concept.id === relation.to) &&
         relation.from !== relation.to,
     );
+
+  for (const node of concepts) if (node.parentId && !relations.some(r => r.from === node.parentId && r.to === node.id && r.label === '包含')) {
+    relations.push({ from: node.parentId, to: node.id, label: '包含' });
+  }
 
   const sections: DigestSection[] = payload.sections.map((section, index) => ({
     id: `${meta.documentId}-section-${index + 1}`,
@@ -641,6 +656,53 @@ function buildDocumentDigest(
   };
 }
 
+/** Executable schema: hierarchy metadata + explicit parent IDs; semantic links never choose parents. */
+const HIERARCHY_PROMPT = [
+  '脑图 schema 补充（必填）：根对象必须有 "hierarchy":{"mode":"structured 或 flat","reason":"材料中支持该组织方式的章节/页码依据"}；每个 concepts 节点必须有唯一 id、parentId（父概念 id，一级分支为 null）、sources（documentId/fileName/pageStart/pageEnd）。',
+  `有章节/小节的材料须用 structured：主题(depth=0) → 一级分支(章,1) → 二级分支(小节,2) → 要点(定义/公式/结论,3)。最大深度 ${MINDMAP_MAX_DEPTH}；主题、一级分支、二级分支各自的直接子节点最多 ${MINDMAP_MAX_CHILDREN}，要点层为叶子（0 个子节点）。禁止把全部要点挂在主题下；超限时依据原文主题拆分该层，不得机械按序号分组。`,
+  '平坦材料（如仅一个主题且无从属论点的短文）可用 flat 并说明原文依据，不设最小深度、不虚构章/节来凑层级；存在章→小节结构不能声明 flat。',
+  'relations 必须是数组；包含边必须与 parentId 一致；依赖（from 依赖 to）/对比/导致（from 导致 to）是独立横向关系，不改变父子层次。有依据的关键关系必须输出，无证据则允许 []。parentId 会生成包含边，不能靠关联边代替父子关系。',
+  '所有节点（包括章/节分支与每个叶子要点）须有真实来源；禁止未知父 id、孤立节点、循环。保留原文分支命名、章/节标题及公式。',
+].join('\n');
+
+function validateHierarchyPayload(raw: unknown, minimumDepth: number): void {
+  const root = assertObject(raw, '脑图结构');
+  const hierarchy = assertObject(root.hierarchy, '脑图 hierarchy');
+  if (hierarchy.mode !== 'structured' && hierarchy.mode !== 'flat') throw new KnowledgeError('invalid_output', 'hierarchy.mode 必须是 structured 或 flat。');
+  requireString(hierarchy.reason, 'hierarchy.reason（原文层级依据）', '脑图结构');
+  if (minimumDepth >= 3 && hierarchy.mode === 'flat') throw new KnowledgeError('invalid_output', '输入已有章→小节层级，不能声明 flat；请恢复最大深度至少 3 的结构。');
+  if (!Array.isArray(root.concepts)) throw new KnowledgeError('invalid_output', '脑图 concepts 必须是数组。');
+  const nodes = root.concepts.map(item => {
+    const node = assertObject(item, '脑图结构');
+    const id = requireString(node.id, 'id', '脑图结构');
+    if (node.parentId !== null && (typeof node.parentId !== 'string' || !node.parentId.trim())) throw new KnowledgeError('invalid_output', `节点 ${id} 缺少有效 parentId；一级分支用 null，其余使用父概念 id。`);
+    return { id, parentId: node.parentId as string | null, sources: Array.isArray(node.sources) ? node.sources as SourceReference[] : [] };
+  });
+  const issues = hierarchyIssues(nodes, hierarchy.mode === 'structured' ? 3 : minimumDepth);
+  if (hierarchy.mode === 'structured') {
+    const labels = root.concepts.map(item => normalizeConceptKey(String((item as Record<string, unknown>).label)));
+    if (new Set(labels).size !== labels.length) issues.push('结构化节点名称重复；请按章节语境区分或去重，并同步更新 parentId');
+  }
+  const byId = new Map(nodes.map(n => [n.id,n]));
+  if (!Array.isArray(root.relations)) issues.push('relations 必须显式提供数组，保留有依据的包含/依赖/对比/导致关系');
+  else for (const item of root.relations) {
+    const relation = assertObject(item, '脑图关系');
+    if (typeof relation.from !== 'string' || typeof relation.to !== 'string' || !byId.has(relation.from) || !byId.has(relation.to) || relation.from === relation.to) {
+      issues.push(`关系端点无效：${String(relation.from)} → ${String(relation.to)}`);
+    } else if (relation.label === '包含' && byId.get(relation.to)?.parentId !== relation.from) {
+      issues.push(`包含关系 ${relation.from} → ${relation.to} 与 parentId 不一致`);
+    }
+    if (!['包含','依赖','导致','对比','组成','应用','冲突','关联'].includes(String(relation.label))) issues.push('关系 label 必须使用 包含/依赖/导致/对比/组成/应用/冲突/关联');
+  }
+  if (issues.length) throw new KnowledgeError('invalid_output', `脑图结构不达标：${issues.join('；')}`);
+}
+
+function assertNormalizedHierarchy(nodes: DigestConcept[], raw: unknown): void {
+  const mode = (raw as {hierarchy: {mode: string}}).hierarchy.mode;
+  const issues = hierarchyIssues(nodes, mode === 'structured' ? 3 : 1);
+  if (issues.length) throw new KnowledgeError('invalid_output', `规范化后的脑图结构不达标：${issues.join('；')}`);
+}
+
 function chunkAnalysisPrompt(input: {
   fileName: string;
   documentId: string;
@@ -654,11 +716,12 @@ function chunkAnalysisPrompt(input: {
     input.chunk.text,
     '',
     '请输出一个 JSON 对象，结构如下：',
-    '{"sections":[{"title":"章节标题","summary":"简短主题概括", "points":[{"text":"独立知识要点，可含 LaTeX 或完整表格","pageStart":整数,"pageEnd":整数}],"pageStart":起始页整数,"pageEnd":结束页整数}],"concepts":[{"label":"概念名","description":"60-120 字解释","sources":[{"pageStart":起始页整数,"pageEnd":结束页整数}]}],"unresolvedQuestions":["文档提出但没有回答的问题"]}',
+    '{"hierarchy":{"mode":"structured 或 flat","reason":"原文结构依据"},"sections":[{"title":"章节标题","summary":"简短主题概括", "points":[{"text":"独立知识要点，可含 LaTeX 或完整表格","pageStart":整数,"pageEnd":整数}],"pageStart":起始页整数,"pageEnd":结束页整数}],"concepts":[{"id":"c1","parentId":null,"label":"概念名","description":"60-120 字解释","sources":[{"documentId":"<documentId>","fileName":"<fileName>","pageStart":起始页整数,"pageEnd":结束页整数}]}],"relations":[{"from":"c1","to":"c2","label":"包含|依赖|对比|导致"}],"unresolvedQuestions":["文档提出但没有回答的问题"]}',
+    HIERARCHY_PROMPT,
     '要求：',
     '- 只根据分块中出现的内容分析，不得引入外部知识补全结论。',
     '- 所有页码只能取自 <page number> 标签，禁止编造。',
-    '- sections 最多 8 个，按内容主题归纳而不是每页一节，保持文档顺序；concepts 提取 3-10 个核心概念并给出真实来源页码。',
+    '- sections 最多 8 个，按内容主题归纳而不是每页一节，保持文档顺序；concepts 保留章、小节与要点的从属关系并给出真实来源页码。',
     '- 保留公式、符号、变量、术语和专有名词；默认使用简体中文，专业术语可保留英文。',
     '- points 按小节组织定义、条件、结论与局限，每个要点给出最小真实页码范围；summary 不重复 points。公式用 LaTeX 原样保留，表格保留表头、行列、单位与脚注；不可读处明确标注，禁止补造。',
     '- 只输出 JSON。',
@@ -676,11 +739,12 @@ function digestSynthesisPrompt(input: {
     JSON.stringify(input.chunkResults),
     '',
     '请把分块结果综合成整份文档的知识摘要，输出一个 JSON 对象，结构如下：',
-    '{"title":"文档标题（不含 .pdf 后缀）","overview":"300-500 字整体概述，概括全文核心内容，不要照抄开头","sections":[{"id":"s1","title":"章节标题","summary":"章节摘要", "points":[{"text":"独立要点，可含小节标题、LaTeX 或完整表格","pageStart":整数,"pageEnd":整数}],"pageStart":整数,"pageEnd":整数}],"concepts":[{"id":"c1","label":"概念名","description":"概念解释","sources":[{"documentId":"<documentId>","fileName":"<fileName>","pageStart":整数,"pageEnd":整数}]}],"relations":[{"from":"c1","to":"c2","label":"包含|依赖|导致|对比|组成|应用|冲突|关联"}],"unresolvedQuestions":["..."],"sourcePages":[1,2,3]}',
+    '{"hierarchy":{"mode":"structured 或 flat","reason":"原文结构依据"},"title":"文档标题（不含 .pdf 后缀）","overview":"300-500 字整体概述，概括全文核心内容，不要照抄开头","sections":[{"id":"s1","title":"章节标题","summary":"章节摘要", "points":[{"text":"独立要点，可含小节标题、LaTeX 或完整表格","pageStart":整数,"pageEnd":整数}],"pageStart":整数,"pageEnd":整数}],"concepts":[{"id":"c1","parentId":null,"label":"概念名","description":"概念解释","sources":[{"documentId":"<documentId>","fileName":"<fileName>","pageStart":整数,"pageEnd":整数}]}],"relations":[{"from":"c1","to":"c2","label":"包含|依赖|导致|对比|组成|应用|冲突|关联"}],"unresolvedQuestions":["..."],"sourcePages":[1,2,3]}',
+    HIERARCHY_PROMPT,
     '要求：',
     '- 每节 points 必须保留独立来源页码、关键公式和完整表格；不得为压缩篇幅改写符号或丢失适用条件。',
     '- 同义概念使用同一术语，首次出现写出原文名/译名；不要凭相似拼写合并不同数学符号。',
-    '- 概念必须跨分块去重（同一概念只出现一次），并合并所有来源页码；给出 6-16 个概念。',
+    '- 概念必须跨分块去重（同一概念只出现一次），并合并所有来源页码；至多 60 个节点（含分支），依据材料决定数量。',
     '- relations 描述概念之间真实存在的关系，形成有层次的结构，不要把所有概念都连向同一个节点。',
     '- 所有页码必须来自分块分析中出现过的页码，禁止编造不存在的页码。',
     '- sources 中的 documentId 与 fileName 必须逐字使用上面提供的值。',
@@ -705,7 +769,10 @@ function courseSynthesisPrompt(input: {
       pageStart: section.pageStart,
       pageEnd: section.pageEnd,
     })),
+    relations: digest.relations,
     concepts: digest.concepts.map((concept) => ({
+      id: concept.id,
+      parentId: concept.parentId,
       label: concept.label,
       description: concept.description,
       sources: concept.sources,
@@ -721,10 +788,11 @@ function courseSynthesisPrompt(input: {
       : '目前没有用户手工创建的节点。',
     '',
     '请综合所有文档输出一个 JSON 对象，结构如下：',
-    '{"theme":"2-4 句话的课程核心主题概述","concepts":[{"id":"k1","label":"概念名","description":"跨文档的概念解释","sources":[{"documentId":"...","fileName":"...","pageStart":整数,"pageEnd":整数}]}],"relations":[{"from":"k1","to":"k2","label":"包含|依赖|导致|对比|组成|应用|冲突|关联"}],"conflicts":[{"nodeId":"k1","descriptions":["文档A认为...","文档B认为..."],"sources":[{"documentId":"...","fileName":"...","pageStart":整数,"pageEnd":整数}]}],"unresolvedQuestions":["..."]}',
+    '{"hierarchy":{"mode":"structured 或 flat","reason":"原文结构依据"},"theme":"2-4 句话的课程核心主题概述","concepts":[{"id":"k1","parentId":null,"label":"概念名","description":"跨文档的概念解释","sources":[{"documentId":"...","fileName":"...","pageStart":整数,"pageEnd":整数}]}],"relations":[{"from":"k1","to":"k2","label":"包含|依赖|导致|对比|组成|应用|冲突|关联"}],"conflicts":[{"nodeId":"k1","descriptions":["文档A认为...","文档B认为..."],"sources":[{"documentId":"...","fileName":"...","pageStart":整数,"pageEnd":整数}]}],"unresolvedQuestions":["..."]}',
+    HIERARCHY_PROMPT,
     '要求：',
     '- 跨文档去重同一概念；每个概念合并它在所有文档中的来源文件与页码。统一术语与译名，优先沿用输入中最早文档的名称；同义词在解释中注明，不合并仅符号相似的不同概念。',
-    '- concepts 最多 60 个；按主题/概念/关键结论形成 2–4 层，每个主题建议不超过 8 个子概念；不为凑数生成概念。与单 PDF 总结保持一致，不同条件下的结论应明确区分。',
+    '- concepts 最多 60 个；按主题→一级分支→二级分支→要点组织，单层子节点硬上限 9；不为凑数生成概念。与单 PDF 总结保持一致，不同条件下的结论应明确区分。',
     '- relations 描述概念之间真实的关系（联系、补充、依赖、冲突等），形成有层次的结构，不要把所有概念都连向同一个节点。',
     '- conflicts 只在文档之间确实存在观点或结论分歧时输出，并给出双方来源。',
     '- 所有 documentId、fileName、页码必须来自输入的摘要，禁止编造。',
@@ -799,8 +867,7 @@ function validateCoursePayload(
       );
     }
     const id = `${context.courseId}-kn-${index + 1}`;
-    if (typeof item.id === 'string' && item.id.trim()) idMap.set(item.id.trim(), id);
-    idMap.set(`k${index + 1}`, id);
+    idMap.set(requireString(item.id, 'id', label), id);
     nodes.push({
       id,
       label: conceptLabel,
@@ -809,6 +876,10 @@ function validateCoursePayload(
     });
   }
 
+  for (let index = 0; index < conceptsRaw.length; index++) {
+    const parent = (conceptsRaw[index] as Record<string, unknown>).parentId;
+    nodes[index].parentId = parent === null ? null : typeof parent === 'string' ? idMap.get(parent) ?? parent : undefined;
+  }
   const nodeIds = new Set(nodes.map((node) => node.id));
   const relations: ConceptRelation[] = [];
   if (root.relations !== undefined && root.relations !== null) {
@@ -829,6 +900,10 @@ function validateCoursePayload(
             : '关联',
       });
     }
+  }
+
+  for (const node of nodes) if (node.parentId && !relations.some(r => r.from === node.parentId && r.to === node.id && r.label === '包含')) {
+    relations.push({ from: node.parentId, to: node.id, label: '包含' });
   }
 
   const conflicts: AiCourseKnowledge['conflicts'] = [];
@@ -917,7 +992,10 @@ export function createKnowledgeProviderForSettings(
         let cached: DocumentDigest | undefined;
         try { cached = await digestCache.lookup(cacheKey); }
         catch { input.onStage?.('cache-unavailable', {}); }
-        if (cached && isDocumentDigestLike(cached) && cached.documentId === documentId) {
+        if (cached && isDocumentDigestLike(cached) && cached.documentId === documentId
+          && cached.schemaVersion === DIGEST_SCHEMA_VERSION && cached.promptVersion === KNOWLEDGE_DIGEST_PROMPT_VERSION
+          && cached.model === model && cached.provider === KNOWLEDGE_PROVIDER_ID
+          && hierarchyIssues(cached.concepts, hasExplicitChapterHierarchy(input.pages) ? 3 : 1).length === 0) {
           input.onStage?.('cached', {});
           return cached;
         }
@@ -960,6 +1038,12 @@ export function createKnowledgeProviderForSettings(
         maxTokens: maxOutputTokens,
         signal: input.signal,
         contextLabel: '单文档综合',
+        validate: raw => {
+          const payload = validateDigestPayload(raw, { fileName: input.fileName, documentId, pageCount });
+          validateHierarchyPayload(raw, hasExplicitChapterHierarchy(input.pages) ? 3 : 1);
+          const candidate = buildDocumentDigest(payload, { documentId, fingerprint: input.fingerprint, fileName: input.fileName, pageCount, provider: KNOWLEDGE_PROVIDER_ID, model, now: '' });
+          assertNormalizedHierarchy(candidate.concepts, raw);
+        },
       });
 
       const payload = validateDigestPayload(synthesisRaw, {
@@ -998,6 +1082,11 @@ export function createKnowledgeProviderForSettings(
         maxTokens: maxOutputTokens,
         signal: input.signal,
         contextLabel: '课程综合',
+        validate: raw => {
+          const payload = validateCoursePayload(raw, { digests: input.digests, courseId: input.courseId });
+          validateHierarchyPayload(raw, input.digests.some(d => inspectHierarchy(d.concepts).maxDepth >= 3) ? 3 : 1);
+          assertNormalizedHierarchy(payload.nodes, raw);
+        },
       });
       const payload = validateCoursePayload(raw, {
         digests: input.digests,

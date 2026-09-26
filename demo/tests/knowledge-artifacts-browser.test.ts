@@ -19,8 +19,8 @@ import {KnowledgeMindmap} from '@/components/knowledge-mindmap';
 const source = {documentId:'d',fileName:'fixture.pdf',pageStart:2,type:'pdf'};
 const knowledge = {schemaVersion:2,courseId:'c',version:1,updatedAt:'today',conflicts:[],nodes:[
   {id:'root',label:'科学',kind:'course',ownership:'generated',description:'概览',sources:[]},
-  ...Array.from({length:80},(_,i) => ({id:'n'+i,label:'概念 '+i,description:'说明 '+i,kind:'concept',ownership:'generated',sources:[source]})),
-],relations:[{from:'n0',to:'n1',label:'包含'}]};
+  ...Array.from({length:80},(_,i) => ({id:'n'+i,label:'概念 '+i,description:'说明 '+i,...(i < 3 ? {parentId:i===0?null:'n'+(i-1)} : {}),kind:'concept',ownership:'generated',sources:[source]})),
+],relations:[{from:'n0',to:'n1',label:'包含'},{from:'n1',to:'n2',label:'包含'},{from:'n0',to:'n2',label:'对比'}]};
 const scientific = '$$E=mc^2$$'+ '\\n\\n|量|单位|\\n|---|---|\\n|E|J|';
 const digest = {documentId:'d',title:'测试总结',promptVersion:'test',sourcePages:[1,2],overview:'概览',unresolvedQuestions:['边界条件？'],sections:
   Array.from({length:15},(_,i) => ({id:'s'+i,title:'章节 '+i,summary:'小节概述',pageStart:1,pageEnd:2,points:[{text:scientific,pageStart:2,pageEnd:2}]}))};
@@ -39,6 +39,10 @@ window.runReaderRegression = async () => {
   button('章节 14').click(); await sleep(50);
   check(document.querySelectorAll('table').length === 3,'all later chapters reachable');
   button('要点来源').click(); check(window.sourceJumps[0][0] === 2,'point source jump');
+  const canvas = document.querySelector('[aria-label="脑图画布"]');
+  const conceptButton = (label) => [...canvas.querySelectorAll('button')].find(node => node.querySelector('.line-clamp-1')?.textContent === label);
+  check(conceptButton('概念 2') && conceptButton('概念 2').offsetLeft > conceptButton('概念 1').offsetLeft && conceptButton('概念 1').offsetLeft > conceptButton('概念 0').offsetLeft, 'three hierarchy levels visible by default despite cross link');
+  check([...canvas.querySelectorAll('svg text')].some(node => node.textContent === '对比'),'cross relation label visible');
   document.querySelector('[aria-label="缩小脑图"]').click(); await sleep(30);
   check(document.querySelector('[aria-label="脑图缩放比例"]').textContent === '75%','zoom works');
   button('折叠此分支').click(); await sleep(30);

@@ -39,6 +39,7 @@ const mockSources: Record<string, string> = {
       return {
         async analyzeDocument(input) {
           f.calls.analyze++;
+          if (f.hierarchyFailure) throw new Error(f.hierarchyFailure);
           return {documentId: input.documentId, fingerprint: input.fingerprint, sourcePages: [1]};
         },
         async synthesizeCourseKnowledge() { f.calls.synthesize++; return {}; }
@@ -188,6 +189,19 @@ window.runImportRegression = async () => {
   await waitFor('import saved', () => text().includes('已保存版本 4'));
   check(f.glossary.entries[0].target === '质量' && f.glossary.version === 4, 'import did not use local revision');
 
+  const beforeFailure = JSON.stringify(f.bundle);
+  f.hierarchyFailure = '脑图结构不达标：最大深度 1 < 3，已自动重试一次仍失败；未保存本次结果';
+  button('导入 PDF').click();
+  await waitFor('failure dialog', () => document.querySelector('input[accept="application/pdf,.pdf"]'));
+  const failedInput = document.querySelector('input[accept="application/pdf,.pdf"]');
+  const failedFile = new DataTransfer();
+  failedFile.items.add(new File(['flat hierarchy bytes'], 'flat.pdf', {type:'application/pdf'}));
+  failedInput.files = failedFile.files; failedInput.dispatchEvent(new Event('change',{bubbles:true}));
+  await waitFor('failure submit', () => button('导入并处理') && !button('导入并处理').disabled);
+  button('导入并处理').click();
+  await waitFor('visible structure error', () => [...document.querySelectorAll('[role=alert]')].some(node => node.textContent.includes('最大深度 1 < 3')));
+  check(button('重试导入'), 'structure failure must offer retry');
+  check(JSON.stringify(f.bundle) === beforeFailure && f.calls.save === 1, 'structure failure mutated existing course');
   return f.calls;
 };
 `;
@@ -235,7 +249,7 @@ void test('course import skips identical and renamed PDFs before extraction/AI, 
       child.on('error', (error) => { clearTimeout(timer); reject(error); });
       child.on('close', (code) => { clearTimeout(timer); if (code === 0) resolve(logs); else reject(new Error(logs)); });
     });
-    assert.match(output, /IMPORT_OK .*"analyze":1,"synthesize":1,"extract":1,"save":1/);
+    assert.match(output, /IMPORT_OK .*"analyze":2,"synthesize":1,"extract":2,"save":1/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });

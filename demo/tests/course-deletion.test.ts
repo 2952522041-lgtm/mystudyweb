@@ -452,7 +452,7 @@ void test('desktop storage removeDocument rebuilds course knowledge from AI outp
     );
 
     // 知识库被 AI 输出重建，而不是只做本地裁剪。
-    assert.equal(next.knowledge.schemaVersion, 2);
+    assert.equal(next.knowledge.schemaVersion, 3);
     assert.equal(next.knowledge.version, versionBefore + 1);
     assert.equal(next.knowledge.provider, 'knowledge-provider-test');
     assert.equal(next.knowledge.model, 'knowledge-model-x');
@@ -504,7 +504,7 @@ void test('browser storage removeDocument also accepts AI knowledge', async () =
 
   const next = await storage.removeDocument(imported.document.id, 1, ai);
 
-  assert.equal(next.knowledge.schemaVersion, 2);
+  assert.equal(next.knowledge.schemaVersion, 3);
   assert.equal(next.knowledge.provider, 'knowledge-provider-test');
   assert.equal(next.manifest.documents.length, 0);
   assert.equal(next.manifest.revision, 2);
