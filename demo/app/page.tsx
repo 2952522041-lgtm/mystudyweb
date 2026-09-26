@@ -35,6 +35,7 @@ import {
 } from '@/components/course-library';
 import { DocumentSummaryPanel } from '@/components/document-summary-panel';
 import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
+import type { SelectionQuestion } from '@/lib/selection-translation';
 import { ReaderStatusFacts } from '@/components/reader-status-facts';
 import { SelectionToolbar } from '@/components/selection-toolbar';
 import { SharedCourseViewer } from '@/components/shared-course-viewer';
@@ -629,6 +630,7 @@ function PdfReader({
     () => new Set(),
   );
   const [copied, setCopied] = useState(false);
+  const [selectionQuestion, setSelectionQuestion] = useState<SelectionQuestion | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -821,6 +823,7 @@ function PdfReader({
   const goToPage = useCallback(
     (nextPage: number) => {
       const targetPage = clampPage(nextPage, docMeta?.pageCount ?? 1);
+      setSelectionQuestion(null);
       setCopied(false);
       setPage(targetPage);
       scrollTargetRef.current = targetPage;
@@ -1031,6 +1034,7 @@ function PdfReader({
         positionedRef.current = false;
         setRenderedPages(new Set());
         setTranslationStates({});
+        setSelectionQuestion(null);
         translationStatesRef.current = {};
         setPublishedTranslations(restoredTranslations);
         courseDocumentIdRef.current =
@@ -1890,6 +1894,8 @@ function PdfReader({
                           fingerprint={docMeta?.fingerprint ?? null}
                           pageNumber={translationPage}
                           settings={chatSettings}
+                          selectionQuestion={selectionQuestion}
+                          onSelectionQuestionHandled={() => setSelectionQuestion(null)}
                           onOpenSettings={() => openSettings('chat')}
                         />
                       </TabsContent>
@@ -1947,7 +1953,20 @@ function PdfReader({
             </Button>
           ) : null}
 
-          {pdfDoc && docMeta ? <SelectionToolbar /> : null}
+          {pdfDoc && docMeta && !suspended && !settingsOpen && !importOpen ? <SelectionToolbar
+            key={docMeta.fingerprint}
+            rootRef={documentStageRef}
+            settings={settings}
+            targetLanguage={targetLanguage}
+            onExplain={(selection) => {
+              goToPage(selection.pageNumber);
+              setTranslationPage(selection.pageNumber);
+              setTranslationVisible(true);
+              setRightMode('chat');
+              setSelectionQuestion({ id: Date.now(), fingerprint: docMeta.fingerprint,
+                pageNumber: selection.pageNumber, text: selection.text });
+            }}
+          /> : null}
         </section>
 
         <footer className="status-bar" aria-label="阅读器状态栏">

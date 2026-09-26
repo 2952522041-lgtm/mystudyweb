@@ -24,6 +24,8 @@ export interface ChatMessage {
   role: ChatRole;
   content: string;
   createdAt: string;
+  /** Selected PDF quotes cannot request tools; retained when retrying a message. */
+  allowWebSearch?: boolean;
 }
 
 export interface PageImageInput {
@@ -40,6 +42,7 @@ export interface PageChatRequest {
   pageImage: PageImageInput;
   messages: ChatMessage[];
   question: string;
+  allowWebSearch?: boolean;
 }
 
 export interface ChatResult {
@@ -137,7 +140,7 @@ export function createOpenAICompatibleChatProvider(
       }
 
       let webSearchContext: string | undefined;
-      if (wantsWebSearch(request.question)) {
+      if (request.allowWebSearch !== false && wantsWebSearch(request.question)) {
         if (!supportsZhipuWebSearch(config.baseUrl)) {
           throw new ChatError(
             'invalid_input',

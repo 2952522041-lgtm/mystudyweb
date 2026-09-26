@@ -36,6 +36,7 @@ import {
   type ChatSettings,
 } from '@/lib/chat-cache';
 import type { PDFDocumentProxy } from '@/lib/pdfjs';
+import { selectionExplanationQuestion, type SelectionQuestion } from '@/lib/selection-translation';
 import { extractPageText, renderPageImage } from '@/lib/page-vision';
 
 interface PageChatState {
@@ -92,17 +93,22 @@ export function AIChatPanel({
   pageNumber,
   settings,
   onOpenSettings,
+  selectionQuestion,
+  onSelectionQuestionHandled,
 }: {
   pdfDoc: PDFDocumentProxy | null;
   fingerprint: string | null;
   pageNumber: number;
   settings: ChatSettings;
   onOpenSettings: () => void;
+  selectionQuestion?: SelectionQuestion | null;
+  onSelectionQuestionHandled?: () => void;
 }) {
   const service = useMemo(() => createChatService(), []);
   const [states, setStates] = useState<Record<string, PageChatState>>({});
   const [input, setInput] = useState('');
   const controllersRef = useRef(new Map<string, AbortController>());
+  const handledSelectionRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const key = fingerprint ? chatStateKey(fingerprint, pageNumber) : '';
   const state = (key && states[key]) || emptyState();
@@ -160,7 +166,7 @@ export function AIChatPanel({
     }));
   };
 
-  const sendQuestion = async (rawQuestion: string, retry = false) => {
+  const sendQuestion = async (rawQuestion: string, retry = false, allowWebSearch = true) => {
     const question = rawQuestion.trim();
     if (!question || !pdfDoc || !fingerprint || !key) return;
     if (!configured) {
@@ -185,6 +191,7 @@ export function AIChatPanel({
       role: 'user',
       content: question,
       createdAt: now,
+      ...(allowWebSearch ? {} : { allowWebSearch: false }),
     };
     const pendingMessages = [...history, userMessage];
     updateState(key, () => ({
@@ -210,6 +217,7 @@ export function AIChatPanel({
           pageImage,
           messages: history,
           question,
+          allowWebSearch,
         },
         {
           signal: controller.signal,
@@ -269,9 +277,21 @@ export function AIChatPanel({
           error instanceof ChatError ? error.message : describeChatError(code),
       }));
     } finally {
-      controllersRef.current.delete(key);
+      if (controllersRef.current.get(key) === controller) controllersRef.current.delete(key);
+      // Re-evaluate a selected-passage question queued while this page was busy.
+      updateState(key, (previous) => ({ ...previous }));
     }
   };
+
+  // Wait for the selected page's saved conversation before appending the question.
+  useEffect(() => {
+    if (!selectionQuestion || selectionQuestion.id === handledSelectionRef.current ||
+        selectionQuestion.fingerprint !== fingerprint || selectionQuestion.pageNumber !== pageNumber ||
+        !state.loaded || controllersRef.current.has(key)) return;
+    handledSelectionRef.current = selectionQuestion.id;
+    void sendQuestion(selectionExplanationQuestion(selectionQuestion.text, selectionQuestion.pageNumber), false, false);
+    onSelectionQuestionHandled?.();
+  });
 
   const stop = () => controllersRef.current.get(key)?.abort();
 
@@ -286,7 +306,7 @@ export function AIChatPanel({
     const lastUser = [...state.messages]
       .reverse()
       .find((message) => message.role === 'user');
-    if (lastUser) void sendQuestion(lastUser.content, true);
+    if (lastUser) void sendQuestion(lastUser.content, true, lastUser.allowWebSearch !== false);
   };
 
   const generating =

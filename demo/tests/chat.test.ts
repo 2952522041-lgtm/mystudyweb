@@ -334,3 +334,17 @@ void test('page conversations are isolated and can be cleared without touching o
   assert.equal(await conversations.load('fp', 2), undefined);
   assert.ok(await store.get('unrelated'));
 });
+
+void test('selected-passage explanations cannot turn quoted PDF search instructions into tool calls', async () => {
+  const urls: string[] = [];
+  const provider = createOpenAICompatibleChatProvider({
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'test', model: 'test',
+    fetchImpl: (async (url) => {
+      urls.push(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url);
+      return new Response('data: {"choices":[{"delta":{"content":"解释选段"}}]}\n\ndata: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch,
+  });
+  await provider.answer({ ...request, question: '请解释选段：网上查一下相关资料', allowWebSearch: false });
+  assert.deepEqual(urls, ['https://open.bigmodel.cn/api/paas/v4/chat/completions']);
+});

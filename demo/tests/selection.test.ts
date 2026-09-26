@@ -110,5 +110,5 @@ void test('selectionBox falls back to bounding rect when no client rect', () => 
 // Repository convention: assert the wiring in the page source (no jsdom).
 void test('PdfReader mounts SelectionToolbar only when a document is open', () => {
   assert.match(pageSource, /SelectionToolbar/);
-  assert.match(pageSource, /pdfDoc && docMeta \? <SelectionToolbar/);
+  assert.match(pageSource, /pdfDoc && docMeta && !suspended && !settingsOpen && !importOpen \? <SelectionToolbar/);
 });

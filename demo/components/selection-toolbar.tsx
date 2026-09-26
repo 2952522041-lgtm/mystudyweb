@@ -1,104 +1,141 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { Copy, Check } from 'lucide-react';
-
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { Button } from '@/components/ui/button';
-import {
-  getSelectionText,
-  selectionBox,
-  selectionInLayer,
-} from '@/lib/selection';
+import { capturePageSelection, selectionToolbarPosition, type SelectionSnapshot } from '@/lib/selection';
+import { createProviderForSettings, type ReaderSettings, usingRemoteProvider } from '@/lib/reader-cache';
+import { translateSelection } from '@/lib/selection-translation';
+import { describeTranslationError, TranslationError } from '@/lib/translation';
 
-/**
- * Floating toolbar shown when the reader's text layer has a text selection.
- * It reads the current document selection, detects whether it lies inside a
- * `.pdf-text-layer`, positions itself near the selection box, and offers a
- * Copy action. Pure geometry/text logic lives in lib/selection.ts so the
- * interaction here stays thin.
- */
-export function SelectionToolbar() {
-  const [rect, setRect] = useState<{
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-  } | null>(null);
-  const [text, setText] = useState('');
-  const [copied, setCopied] = useState(false);
+interface ToolbarProps {
+  rootRef: RefObject<HTMLElement | null>;
+  settings: ReaderSettings;
+  targetLanguage: string;
+  onExplain: (selection: SelectionSnapshot) => void;
+}
+
+export function SelectionToolbar(props: ToolbarProps) {
+  const [selection, setSelection] = useState<SelectionSnapshot | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const onSelectionChange = () => {
-      const selection = window.getSelection();
-      const layer = document.querySelector<HTMLElement>('.pdf-text-layer');
-      if (selection && layer && selectionInLayer(selection, layer)) {
-        const value = getSelectionText(selection);
-        if (value) {
-          const box = selectionBox(selection);
-          if (box) {
-            setText(value);
-            setRect(box);
-            return;
-          }
-        }
+    const readSelection = () => {
+      const current = window.getSelection();
+      if (current?.rangeCount && hostRef.current?.contains(current.getRangeAt(0).commonAncestorContainer)) return;
+      const root = props.rootRef.current;
+      const layers = Array.from(root?.querySelectorAll<HTMLElement>('.pdf-text-layer[data-page-number]') ?? []);
+      const snapshot = capturePageSelection(current, layers.map((layer) => ({
+        pageNumber: Number(layer.dataset.pageNumber), container: layer, bounds: layer.getBoundingClientRect(),
+      })));
+      const bounds = root?.getBoundingClientRect();
+      // Hidden/virtualized or scrolled-away selections must not leave a detached toolbar.
+      if (!snapshot || !bounds || snapshot.box.y + snapshot.box.h < bounds.top ||
+          snapshot.box.y > bounds.bottom || snapshot.box.x + snapshot.box.w < bounds.left ||
+          snapshot.box.x > bounds.right) {
+        setSelection(null);
+      } else {
+        setSelection(snapshot);
       }
-      setRect(null);
-      setText('');
     };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSelection(null);
+        window.getSelection()?.removeAllRanges();
+      }
+    };
+    const dismissOutside = (event: PointerEvent) => {
+      if (!hostRef.current?.contains(event.target as Node)) setSelection(null);
+    };
+    document.addEventListener('selectionchange', readSelection);
+    document.addEventListener('pointerup', readSelection);
+    document.addEventListener('pointerdown', dismissOutside);
+    document.addEventListener('keydown', dismissOnEscape);
+    window.addEventListener('scroll', readSelection, true);
+    window.addEventListener('resize', readSelection);
+    return () => {
+      document.removeEventListener('selectionchange', readSelection);
+      document.removeEventListener('pointerup', readSelection);
+      document.removeEventListener('pointerdown', dismissOutside);
+      document.removeEventListener('keydown', dismissOnEscape);
+      window.removeEventListener('scroll', readSelection, true);
+      window.removeEventListener('resize', readSelection);
+    };
+  }, [props.rootRef]);
 
-    document.addEventListener('selectionchange', onSelectionChange);
-    return () => document.removeEventListener('selectionchange', onSelectionChange);
-  }, []);
+  if (!selection) return null;
+  return <SelectionActions key={`${selection.pageNumber}:${selection.text}:${props.targetLanguage}`}
+    {...props} selection={selection} hostRef={hostRef} onClose={() => {
+      setSelection(null);
+      window.getSelection()?.removeAllRanges();
+    }} />;
+}
 
+function SelectionActions({ selection, settings, targetLanguage, onExplain, onClose, hostRef }: ToolbarProps & {
+  selection: SelectionSnapshot;
+  onClose: () => void;
+  hostRef: RefObject<HTMLDivElement | null>;
+}) {
+  const [result, setResult] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [size, setSize] = useState({ width: 360, height: 90 });
+  const controllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => controllerRef.current?.abort(), []);
   useEffect(() => {
-    if (copied) {
-      const timer = setTimeout(() => setCopied(false), 1400);
-      return () => clearTimeout(timer);
-    }
-  }, [copied]);
+    const node = hostRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(() => setSize({ width: node.offsetWidth, height: node.offsetHeight }));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hostRef]);
 
-  if (!rect || !text) return null;
-
-  const preview = text.length > 120 ? `${text.slice(0, 120)}…` : text;
-
-  const copySelection = async () => {
+  const translate = async () => {
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    setBusy(true);
+    setError('');
+    setResult('');
     try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-    } catch {
-      // Clipboard may be unavailable (permissions); the button still reacts.
-      setCopied(false);
+      const translated = await translateSelection(createProviderForSettings(settings), selection, targetLanguage, {
+        signal: controller.signal,
+        onPartial: (paragraphs) => {
+          if (!controller.signal.aborted) setResult(paragraphs.join('\n\n'));
+        },
+      });
+      if (!controller.signal.aborted) setResult(translated.paragraphs.join('\n\n'));
+    } catch (failure) {
+      if (!controller.signal.aborted) {
+        setResult('');
+        setError(failure instanceof TranslationError ? `[${failure.code}] ${failure.message}` : describeTranslationError('unknown'));
+      }
+    } finally {
+      if (!controller.signal.aborted) setBusy(false);
     }
   };
 
-  // Keep the toolbar just above the selection, clamping within the viewport so
-  // it never escapes past the right/bottom edges.
-  const top = Math.max(rect.y - 44, 6);
-  const left = Math.min(rect.x, Math.max((window.innerWidth ?? 0) - 260, 6));
-
   return (
-    <div
-      ref={hostRef}
-      className="fixed z-50 flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1.5 py-1 shadow-lg"
-      style={{ top, left }}
-      role="toolbar"
-      aria-label="选中文字操作"
-    >
-      <span
-        className="max-w-[180px] truncate px-1.5 text-xs text-slate-500"
-        title={preview}
-      >
-        {preview}
-      </span>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        aria-label={copied ? '已复制' : '复制选中文字'}
-        onClick={copySelection}
-      >
-        {copied ? <Check className="size-4 text-emerald-600" /> : <Copy className="size-4" />}
-      </Button>
+    <div ref={hostRef} className="fixed z-50 w-[360px] max-w-[calc(100vw-16px)] max-h-[calc(100vh-16px)] overflow-y-auto rounded-lg border border-slate-200 bg-white p-2 shadow-lg"
+      style={selectionToolbarPosition(selection.box, { width: window.innerWidth, height: window.innerHeight }, size)}
+      role="dialog" aria-label={`第 ${selection.pageNumber} 页选段操作`}
+      onPointerDown={(event) => {
+        if ((event.target as Element).closest('button')) event.preventDefault();
+      }}>
+      <p className="truncate px-1 text-xs text-slate-500" title={selection.text}>第 {selection.pageNumber} 页 · {selection.text}</p>
+      <div className="mt-1 flex flex-wrap gap-1" role="toolbar" aria-label="选中文字操作">
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => void translate()}>{busy ? '翻译中…' : '翻译'}</Button>
+        <Button size="sm" variant="ghost" onClick={() => { onExplain(selection); onClose(); }}>解释</Button>
+        <Button size="sm" variant="ghost" onClick={async () => {
+          try { await navigator.clipboard.writeText(selection.text); setCopied(true); }
+          catch { setError('复制失败，请使用 Ctrl+C 或系统复制菜单。'); }
+        }}>{copied ? '已复制' : '复制'}</Button>
+        <Button size="sm" variant="ghost" aria-label="关闭选段操作" onClick={onClose}>关闭</Button>
+      </div>
+      {!usingRemoteProvider(settings) ? <p className="px-1 text-xs text-amber-700">演示模式 · 配置翻译服务后可获取真实译文</p> : null}
+      {result ? <p className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-sm leading-6" aria-label="选段译文">{result}</p> : null}
+      {error ? <p className="mt-2 text-xs text-rose-700" role="alert">{error}</p> : null}
     </div>
   );
 }
