@@ -26,6 +26,8 @@ export interface DigestSection {
   id: string;
   title: string;
   summary: string;
+  /** 可选以兼容既有摘要；每个要点保留独立来源与 Markdown/LaTeX 原文。 */
+  points?: Array<{ text: string; pageStart: number; pageEnd: number }>;
   pageStart: number;
   pageEnd: number;
 }

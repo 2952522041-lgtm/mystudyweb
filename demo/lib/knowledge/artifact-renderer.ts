@@ -45,7 +45,10 @@ export function renderDocumentSummary(digest: DocumentDigest): string {
         section.pageEnd > section.pageStart
           ? `第 ${section.pageStart}–${section.pageEnd} 页`
           : `第 ${section.pageStart} 页`;
-      return `## ${section.title}\n\n${section.summary}\n\n来源：${pages}`;
+      const points = section.points?.map((point) =>
+        `${point.text}\n\n来源：第 ${point.pageStart}${point.pageEnd !== point.pageStart ? `–${point.pageEnd}` : ''} 页`,
+      ).join('\n\n') ?? '';
+      return `## ${section.title}\n\n${section.summary}\n\n${points}${points ? '\n\n' : ''}来源：${pages}`;
     })
     .join('\n\n');
   const questions = digest.unresolvedQuestions.length

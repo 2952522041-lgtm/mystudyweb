@@ -1,3 +1,4 @@
+import { conceptKey as normalizeConceptKey } from './concept-identity.ts';
 import { ChatError } from '../ai-errors.ts';
 import {
   knowledgeSettingsConfigured,
@@ -28,8 +29,8 @@ import { buildPdfChunks, type PdfChunk } from './pdf-chunks.ts';
 
 export const KNOWLEDGE_PROVIDER_ID = 'openai-compatible-knowledge';
 /** 知识库提示词版本：修改提示词必须递增，缓存与课程成果都会记录它。 */
-export const KNOWLEDGE_DIGEST_PROMPT_VERSION = 'ai-digest-v2';
-export const KNOWLEDGE_COURSE_PROMPT_VERSION = 'ai-course-v1';
+export const KNOWLEDGE_DIGEST_PROMPT_VERSION = 'ai-digest-v3';
+export const KNOWLEDGE_COURSE_PROMPT_VERSION = 'ai-course-v2';
 /** 分块分析与综合共用的默认输出 token 上限；过小会触发 finish_reason=length 截断。 */
 export const KNOWLEDGE_MAX_OUTPUT_TOKENS = 8192;
 /**
@@ -52,6 +53,7 @@ export function knowledgeMaxOutputTokens(model: string): number {
 }
 
 export type KnowledgeStage =
+  | 'cache-unavailable'
   | 'cached'
   | 'chunk-analysis'
   | 'synthesize'
@@ -98,6 +100,8 @@ const KNOWLEDGE_SYSTEM_PROMPT = [
   'Every important conclusion must carry documentId, fileName, and pageStart/pageEnd taken from the actual page labels in the input.',
   'Never invent page numbers, formulas, experimental results, or citations.',
   'Preserve formulas, symbols, variable names, terminology, and proper nouns exactly.',
+  'Within JSON strings preserve LaTeX verbatim (escape backslashes for JSON), use Markdown lists and GFM tables with headers, units and footnotes. Never flatten tables into prose or reconstruct unreadable formulas; explicitly mark missing evidence.',
+  'Summaries should state definitions, assumptions, conclusions and limitations supported by the text. Avoid boilerplate, duplicate claims and unsupported deductions.',
   'Reply in Simplified Chinese by default; technical terms may stay in their original language.',
   'Your output must be exactly one JSON value that matches the requested schema.',
   'Do not output Markdown code fences, explanations, a preface, or a closing note.',
@@ -384,6 +388,7 @@ interface AiDigestPayload {
   sections: Array<{
     title: string;
     summary: string;
+    points?: DigestSection['points'];
     pageStart: number;
     pageEnd: number;
   }>;
@@ -419,7 +424,20 @@ function validateDigestPayload(
       context.pageCount,
       `第 ${index + 1} 个章节`,
     );
+    let points: DigestSection['points'];
+    if (section.points !== undefined) {
+      if (!Array.isArray(section.points)) throw new KnowledgeError('invalid_output', '章节 points 必须是数组。');
+      points = section.points.map((rawPoint) => {
+        const point = assertObject(rawPoint, label);
+        const range = assertValidPageRange(point.pageStart, point.pageEnd, context.pageCount, '要点来源');
+        if (range.pageStart < pages.pageStart || range.pageEnd > pages.pageEnd) {
+          throw new KnowledgeError('invalid_output', '要点来源超出所在章节页码。');
+        }
+        return { text: requireString(point.text, 'text', label), ...range };
+      });
+    }
     return {
+      ...(points ? { points } : {}),
       title: requireString(section.title, 'title', label),
       summary: requireString(section.summary, 'summary', label),
       ...pages,
@@ -524,13 +542,6 @@ function validateDigestPayload(
   };
 }
 
-function normalizeConceptKey(label: string): string {
-  return label
-    .toLocaleLowerCase()
-    .replace(/[\s\p{P}\p{S}]+/gu, '')
-    .slice(0, 60);
-}
-
 function uniqueSources(sources: SourceReference[]): SourceReference[] {
   const seen = new Set<string>();
   return sources.filter((source) => {
@@ -563,6 +574,8 @@ function buildDocumentDigest(
       ? concepts.find((item) => normalizeConceptKey(item.label) === key)
       : undefined;
     if (existing) {
+      if (concept.id) idMap.set(concept.id, existing.id);
+      idMap.set(`c${index + 1}`, existing.id);
       existing.sources = uniqueSources([
         ...existing.sources,
         ...concept.sources,
@@ -599,6 +612,7 @@ function buildDocumentDigest(
     id: `${meta.documentId}-section-${index + 1}`,
     title: section.title,
     summary: section.summary,
+    ...(section.points ? { points: section.points } : {}),
     pageStart: section.pageStart,
     pageEnd: section.pageEnd,
   }));
@@ -634,12 +648,13 @@ function chunkAnalysisPrompt(input: {
     input.chunk.text,
     '',
     '请输出一个 JSON 对象，结构如下：',
-    '{"sections":[{"title":"章节标题","summary":"80-150 字的客观摘要","pageStart":起始页整数,"pageEnd":结束页整数}],"concepts":[{"label":"概念名","description":"60-120 字解释","sources":[{"pageStart":起始页整数,"pageEnd":结束页整数}]}],"unresolvedQuestions":["文档提出但没有回答的问题"]}',
+    '{"sections":[{"title":"章节标题","summary":"简短主题概括", "points":[{"text":"独立知识要点，可含 LaTeX 或完整表格","pageStart":整数,"pageEnd":整数}],"pageStart":起始页整数,"pageEnd":结束页整数}],"concepts":[{"label":"概念名","description":"60-120 字解释","sources":[{"pageStart":起始页整数,"pageEnd":结束页整数}]}],"unresolvedQuestions":["文档提出但没有回答的问题"]}',
     '要求：',
     '- 只根据分块中出现的内容分析，不得引入外部知识补全结论。',
     '- 所有页码只能取自 <page number> 标签，禁止编造。',
     '- sections 最多 8 个，按内容主题归纳而不是每页一节，保持文档顺序；concepts 提取 3-10 个核心概念并给出真实来源页码。',
     '- 保留公式、符号、变量、术语和专有名词；默认使用简体中文，专业术语可保留英文。',
+    '- points 按小节组织定义、条件、结论与局限，每个要点给出最小真实页码范围；summary 不重复 points。公式用 LaTeX 原样保留，表格保留表头、行列、单位与脚注；不可读处明确标注，禁止补造。',
     '- 只输出 JSON。',
   ].join('\n');
 }
@@ -655,8 +670,10 @@ function digestSynthesisPrompt(input: {
     JSON.stringify(input.chunkResults),
     '',
     '请把分块结果综合成整份文档的知识摘要，输出一个 JSON 对象，结构如下：',
-    '{"title":"文档标题（不含 .pdf 后缀）","overview":"300-500 字整体概述，概括全文核心内容，不要照抄开头","sections":[{"id":"s1","title":"章节标题","summary":"章节摘要","pageStart":整数,"pageEnd":整数}],"concepts":[{"id":"c1","label":"概念名","description":"概念解释","sources":[{"documentId":"<documentId>","fileName":"<fileName>","pageStart":整数,"pageEnd":整数}]}],"relations":[{"from":"c1","to":"c2","label":"包含|依赖|导致|对比|组成|应用|冲突|关联"}],"unresolvedQuestions":["..."],"sourcePages":[1,2,3]}',
+    '{"title":"文档标题（不含 .pdf 后缀）","overview":"300-500 字整体概述，概括全文核心内容，不要照抄开头","sections":[{"id":"s1","title":"章节标题","summary":"章节摘要", "points":[{"text":"独立要点，可含小节标题、LaTeX 或完整表格","pageStart":整数,"pageEnd":整数}],"pageStart":整数,"pageEnd":整数}],"concepts":[{"id":"c1","label":"概念名","description":"概念解释","sources":[{"documentId":"<documentId>","fileName":"<fileName>","pageStart":整数,"pageEnd":整数}]}],"relations":[{"from":"c1","to":"c2","label":"包含|依赖|导致|对比|组成|应用|冲突|关联"}],"unresolvedQuestions":["..."],"sourcePages":[1,2,3]}',
     '要求：',
+    '- 每节 points 必须保留独立来源页码、关键公式和完整表格；不得为压缩篇幅改写符号或丢失适用条件。',
+    '- 同义概念使用同一术语，首次出现写出原文名/译名；不要凭相似拼写合并不同数学符号。',
     '- 概念必须跨分块去重（同一概念只出现一次），并合并所有来源页码；给出 6-16 个概念。',
     '- relations 描述概念之间真实存在的关系，形成有层次的结构，不要把所有概念都连向同一个节点。',
     '- 所有页码必须来自分块分析中出现过的页码，禁止编造不存在的页码。',
@@ -678,6 +695,7 @@ function courseSynthesisPrompt(input: {
     sections: digest.sections.map((section) => ({
       title: section.title,
       summary: section.summary,
+      points: section.points,
       pageStart: section.pageStart,
       pageEnd: section.pageEnd,
     })),
@@ -699,7 +717,8 @@ function courseSynthesisPrompt(input: {
     '请综合所有文档输出一个 JSON 对象，结构如下：',
     '{"theme":"2-4 句话的课程核心主题概述","concepts":[{"id":"k1","label":"概念名","description":"跨文档的概念解释","sources":[{"documentId":"...","fileName":"...","pageStart":整数,"pageEnd":整数}]}],"relations":[{"from":"k1","to":"k2","label":"包含|依赖|导致|对比|组成|应用|冲突|关联"}],"conflicts":[{"nodeId":"k1","descriptions":["文档A认为...","文档B认为..."],"sources":[{"documentId":"...","fileName":"...","pageStart":整数,"pageEnd":整数}]}],"unresolvedQuestions":["..."]}',
     '要求：',
-    '- 跨文档去重同一概念；每个概念合并它在所有文档中的来源文件与页码。',
+    '- 跨文档去重同一概念；每个概念合并它在所有文档中的来源文件与页码。统一术语与译名，优先沿用输入中最早文档的名称；同义词在解释中注明，不合并仅符号相似的不同概念。',
+    '- concepts 最多 60 个；按主题/概念/关键结论形成 2–4 层，每个主题建议不超过 8 个子概念；不为凑数生成概念。与单 PDF 总结保持一致，不同条件下的结论应明确区分。',
     '- relations 描述概念之间真实的关系（联系、补充、依赖、冲突等），形成有层次的结构，不要把所有概念都连向同一个节点。',
     '- conflicts 只在文档之间确实存在观点或结论分歧时输出，并给出双方来源。',
     '- 所有 documentId、fileName、页码必须来自输入的摘要，禁止编造。',
@@ -760,6 +779,7 @@ function validateCoursePayload(
     return { documentId, fileName: meta.fileName, ...pages, type: 'pdf' as const };
   };
 
+  if (conceptsRaw.length > 60) throw new KnowledgeError('invalid_output', '课程概念超过 60 个，请按主题归纳后重试；未保存截断结果。');
   const nodes: AiCourseKnowledge['nodes'] = [];
   const idMap = new Map<string, string>();
   for (let index = 0; index < conceptsRaw.length; index += 1) {
@@ -833,8 +853,8 @@ function validateCoursePayload(
 
   return {
     theme: requireString(root.theme, 'theme', label),
-    nodes: nodes.slice(0, 60),
-    relations: relations.slice(0, 120),
+    nodes,
+    relations,
     conflicts,
     unresolvedQuestions: optionalStringArray(
       root.unresolvedQuestions,
@@ -885,7 +905,9 @@ export function createKnowledgeProviderForSettings(
         schemaVersion: DIGEST_SCHEMA_VERSION,
       });
       if (!input.bypassCache) {
-        const cached = await digestCache.lookup(cacheKey);
+        let cached: DocumentDigest | undefined;
+        try { cached = await digestCache.lookup(cacheKey); }
+        catch { input.onStage?.('cache-unavailable', {}); }
         if (cached && isDocumentDigestLike(cached) && cached.documentId === documentId) {
           input.onStage?.('cached', {});
           return cached;
@@ -943,7 +965,9 @@ export function createKnowledgeProviderForSettings(
         model,
         now: new Date().toISOString(),
       });
-      await digestCache.save(cacheKey, digest);
+      if (input.signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
+      try { await digestCache.save(cacheKey, digest); }
+      catch { input.onStage?.('cache-unavailable', {}); }
       return digest;
     },
 

@@ -847,7 +847,7 @@ void test('single-PDF summary and mindmap come from the mocked AI response', asy
   });
 
   assert.equal(digest.schemaVersion, 2);
-  assert.equal(digest.promptVersion, 'ai-digest-v2');
+  assert.equal(digest.promptVersion, 'ai-digest-v3');
   assert.ok(digest.overview.length > 80, 'overview should be a real synthesis');
   assert.equal(digest.sourcePages, digest.sourcePages); // sanity
   assert.deepEqual(digest.sourcePages, [1, 2, 3]);
@@ -912,7 +912,7 @@ void test('course knowledge is synthesized across multiple documents by AI', asy
   assert.match(prompt, /doc-bbbbbbbbbbbbbbbb/);
   assert.match(prompt, /我的疑问/);
 
-  assert.equal(aiKnowledge.promptVersion, 'ai-course-v1');
+  assert.equal(aiKnowledge.promptVersion, 'ai-course-v2');
   assert.equal(aiKnowledge.provider, 'openai-compatible-knowledge');
 
   let knowledge = emptyCourseKnowledge('course-1', '线性代数', '2026-08-31T00:00:00.000Z');
@@ -1008,10 +1008,10 @@ void test('AI regeneration keeps ownership=user nodes and their relations', () =
   assert.equal(userNode.ownership, 'user');
   assert.equal(userNode.description, '用户自己的理解，不能被覆盖。');
   assert.equal(next.nodes.filter((node) => node.label === '梯度下降').length, 1);
-  // AI 关系指向被跳过的重复节点，应被丢弃而不是报错。
+  // 去重后应指向受保护的用户节点，不能静默丢失关系。
   assert.equal(
-    next.relations.some((relation) => relation.label === '依赖'),
-    false,
+    next.relations.some((relation) => relation.label === '依赖' && relation.to === 'user-2'),
+    true,
   );
   assert.equal(
     next.relations.some((relation) => relation.from === 'user-1' && relation.to === 'user-2'),
@@ -1439,4 +1439,93 @@ void test('provider errors surface service details without exposing credentials'
     assert.match(message, /额度不足|402|配额已用尽/);
     assert.doesNotMatch(message, /kb-secret-key-123/);
   }
+});
+
+void test('scientific summary points preserve LaTeX and tables through synthesis, cache and Markdown', async () => {
+  const text = String.raw`### 能量关系
+$$E = mc^2 + \frac{p^2}{2m}$$
+
+| 量 | 单位 |
+| --- | --- |
+| E | J |`;
+  const { provider, requests } = makeProvider([chunkAnalysisReply(), digestReply({sections:[{
+    title:'能量', summary:'适用条件', pageStart:1, pageEnd:2,
+    points:[{text,pageStart:2,pageEnd:2}],
+  }]})]);
+  const input = {fingerprint:FINGERPRINT,documentId:DOCUMENT_ID,fileName:FILE_NAME,pages:PAGES};
+  const digest = await provider.analyzeDocument(input);
+  assert.equal(digest.sections[0].points?.[0].text, text);
+  assert.ok(renderDocumentSummary(digest).includes(text));
+  assert.match(renderDocumentSummary(digest), /来源：第 2 页/);
+  assert.deepEqual(await provider.analyzeDocument(input), digest);
+  assert.equal(requests.length, 2);
+  const prompts = JSON.stringify(requests.map((request) => request.body.messages));
+  assert.match(prompts, /points/);
+  assert.match(prompts, /GFM tables/);
+});
+
+void test('out-of-section point sources are rejected before cache writes', async () => {
+  const { provider, store } = makeProvider([chunkAnalysisReply(), digestReply({sections:[{
+    title:'能量',summary:'条件',pageStart:1,pageEnd:1,points:[{text:'结论',pageStart:2,pageEnd:2}],
+  }]})]);
+  await assert.rejects(provider.analyzeDocument({fingerprint:FINGERPRINT,documentId:DOCUMENT_ID,fileName:FILE_NAME,pages:PAGES}), /要点来源超出/);
+  assert.equal((await store.keys()).length, 0);
+});
+
+void test('unavailable IndexedDB cache does not discard successful AI work', async () => {
+  const stages: string[] = [];
+  const broken: KVStore<DocumentDigest> = {
+    get:async () => {throw new Error('blocked IDB');},
+    set:async () => {throw new Error('quota');}, delete:async () => {}, keys:async () => [],
+  };
+  const { provider } = makeProvider([chunkAnalysisReply(), digestReply()], broken);
+  const digest = await provider.analyzeDocument({fingerprint:FINGERPRINT,documentId:DOCUMENT_ID,fileName:FILE_NAME,pages:PAGES,onStage:(stage) => stages.push(stage)});
+  assert.equal(digest.title, '线性代数讲义');
+  assert.equal(stages.filter((stage) => stage === 'cache-unavailable').length, 2);
+});
+
+void test('duplicate document concepts remap every relation and retain scientific signs', async () => {
+  const concept = (id: string,label: string,page: number) => ({id,label,description:label,sources:[{pageStart:page}]});
+  const { provider } = makeProvider([chunkAnalysisReply(), digestReply({
+    concepts:[concept('c1','C++',1),concept('c2','C++',2),concept('c3','C',3)],
+    relations:[{from:'c2',to:'c3',label:'对比'}],
+  })]);
+  const digest = await provider.analyzeDocument({fingerprint:FINGERPRINT,documentId:DOCUMENT_ID,fileName:FILE_NAME,pages:PAGES});
+  assert.equal(digest.concepts.length, 2);
+  assert.equal(digest.concepts[0].sources.length, 2);
+  assert.equal(digest.relations[0].from, digest.concepts[0].id);
+  assert.equal(digest.relations[0].to, digest.concepts[1].id);
+});
+
+void test('course regeneration deduplicates, keeps stable IDs and preserves user-connected endpoints', () => {
+  const source = (documentId: string, fileName: string, pageStart: number): SourceReference => ({documentId,fileName,pageStart,type:'pdf'});
+  const current = emptyCourseKnowledge('c','科学');
+  current.nodes.push(
+    {id:'old',label:'Gradient Descent',description:'old',kind:'concept',ownership:'generated',sources:[]},
+    {id:'omitted',label:'前提',description:'保留的前提',kind:'concept',ownership:'generated',sources:[]},
+    {id:'note',label:'我的笔记',description:'禁止覆盖',kind:'insight',ownership:'user',sources:[]},
+  );
+  current.relations.push({from:'note',to:'old',label:'关联'},{from:'note',to:'omitted',label:'依赖'});
+  const ai: AiCourseKnowledge = {theme:'优化',nodes:[
+    {id:'k1',label:'gradient  descent',description:'新解释',sources:[source('d1','a.pdf',1)]},
+    {id:'k2',label:'Gradient Descent',description:'重复',sources:[source('d2','b.pdf',2)]},
+    {id:'k3',label:'我的笔记',description:'覆盖尝试',sources:[source('d1','a.pdf',2)]},
+  ],relations:[{from:'k2',to:'k3',label:'应用'}],conflicts:[{nodeId:'k2',descriptions:['a','b'],sources:[]}],unresolvedQuestions:[],provider:'mock',model:'mock',promptVersion:'test'};
+  const next = applyAiCourseKnowledge(current, ai);
+  assert.equal(next.nodes.filter((node) => /descent/i.test(node.label)).length, 1);
+  assert.equal(next.nodes.find((node) => node.id === 'old')?.sources.length, 2);
+  assert.equal(next.nodes.find((node) => node.id === 'note')?.description, '禁止覆盖');
+  assert.equal(next.nodes.find((node) => node.id === 'note')?.sources.length, 1);
+  assert.ok(next.nodes.some((node) => node.id === 'omitted'));
+  assert.ok(next.relations.some((relation) => relation.from === 'old' && relation.to === 'note'));
+  assert.equal(next.relations.filter((relation) => relation.from === 'note').length, 2);
+  assert.equal(next.conflicts[0].nodeId, 'old');
+  assert.equal(current.nodes.find((node) => node.id === 'note')?.sources.length, 0);
+});
+
+void test('oversized course output is rejected instead of retaining dangling relations', async () => {
+  const raw = JSON.parse(courseReply()) as {concepts: Array<Record<string, unknown>>};
+  raw.concepts = Array.from({length:61}, (_,index) => ({...raw.concepts[0],id:`k${index+1}`,label:`概念 ${index}`}));
+  const { provider } = makeProvider([JSON.stringify(raw)]);
+  await assert.rejects(provider.synthesizeCourseKnowledge({courseId:'c',courseName:'科学',digests:[makeAiDigest(),makeAiDigest({documentId:'doc-bbbbbbbbbbbb',sourcePages:[1,2,3]})]}), /超过 60/);
 });

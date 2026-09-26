@@ -1,3 +1,4 @@
+import { conceptKey } from './concept-identity.ts';
 import type {
   AiCourseKnowledge,
   CourseKnowledge,
@@ -6,10 +7,6 @@ import type {
   SourceReference,
 } from '../course-storage/types.ts';
 import { KNOWLEDGE_SCHEMA_VERSION } from '../course-storage/types.ts';
-
-function conceptKey(value: string): string {
-  return value.toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
-}
 
 function uniqueSources(sources: SourceReference[]): SourceReference[] {
   const seen = new Set<string>();
@@ -58,6 +55,7 @@ export function mergeDocumentDigest(
   const root = nodes.find((node) => node.kind === 'course');
   const relations = [...current.relations];
 
+  const idMap = new Map<string, string>();
   for (const concept of digest.concepts) {
     const existing = nodes.find(
       (node) =>
@@ -88,6 +86,7 @@ export function mergeDocumentDigest(
       };
       nodes.push(target);
     }
+    idMap.set(concept.id, target.id);
     if (
       root &&
       !relations.some(
@@ -100,7 +99,8 @@ export function mergeDocumentDigest(
 
   // 摘要里概念之间的真实关系也要进入知识库，脑图才能呈现层次结构。
   const nodeIds = new Set(nodes.map((node) => node.id));
-  for (const relation of digest.relations) {
+  for (const raw of digest.relations) {
+    const relation = { ...raw, from: idMap.get(raw.from) ?? raw.from, to: idMap.get(raw.to) ?? raw.to };
     if (!nodeIds.has(relation.from) || !nodeIds.has(relation.to)) continue;
     if (relation.from === relation.to) continue;
     if (
@@ -152,54 +152,53 @@ export function applyAiCourseKnowledge(
   const userNodes = current.nodes.filter(
     (node) => node.kind !== 'course' && node.ownership === 'user',
   );
-  const userKeys = new Set(userNodes.map((node) => conceptKey(node.label)));
   for (const userNode of userNodes) {
     nodes.push({ ...userNode, sources: [...userNode.sources] });
   }
 
-  const usedIds = new Set(nodes.map((node) => node.id));
+  const byKey = new Map(nodes.filter((node) => node.kind !== 'course').map((node) => [conceptKey(node.label), node]));
+  const previousByKey = new Map(current.nodes.filter((node) => node.kind !== 'course').map((node) => [conceptKey(node.label), node]));
+  // Reserve every old ID so a reordered model response cannot steal another concept's ID.
+  const usedIds = new Set(current.nodes.map((node) => node.id));
+  const idMap = new Map<string, string>();
   for (const aiNode of ai.nodes) {
-    if (userKeys.has(conceptKey(aiNode.label))) continue;
-    let id = aiNode.id;
-    while (usedIds.has(id)) id = `${id}-x`;
-    usedIds.add(id);
-    nodes.push({
-      id,
-      label: aiNode.label,
-      description: aiNode.description,
-      kind: 'concept',
-      ownership: 'generated',
-      sources: uniqueSources(aiNode.sources),
-    });
+    const key = conceptKey(aiNode.label);
+    let target = byKey.get(key);
+    if (target) {
+      target.sources = uniqueSources([...target.sources, ...aiNode.sources]);
+    } else {
+      const previous = previousByKey.get(key);
+      let id = previous?.id ?? aiNode.id;
+      if (!previous) while (usedIds.has(id)) id = `${id}-x`;
+      usedIds.add(id);
+      target = { ...aiNode, id, kind: 'concept', ownership: 'generated', sources: uniqueSources(aiNode.sources) };
+      nodes.push(target);
+      byKey.set(key, target);
+    }
+    idMap.set(aiNode.id, target.id);
   }
 
-  const nodeIds = new Set(nodes.map((node) => node.id));
-  const relations = [...ai.relations].filter(
-    (relation) =>
-      nodeIds.has(relation.from) &&
-      nodeIds.has(relation.to) &&
-      relation.from !== relation.to,
-  );
-  // 用户节点相关的关系不交给 AI，直接保留，避免用户手工整理丢失。
-  const ownershipById = new Map(nodes.map((node) => [node.id, node.ownership]));
-  for (const relation of current.relations) {
-    if (!nodeIds.has(relation.from) || !nodeIds.has(relation.to)) continue;
-    const involvesUser = [relation.from, relation.to].some(
-      (id) => ownershipById.get(id) === 'user',
-    );
-    if (!involvesUser) continue;
-    if (
-      relations.some(
-        (item) =>
-          item.from === relation.from &&
-          item.to === relation.to &&
-          item.label === relation.label,
-      )
-    ) {
-      continue;
+  // Keep user-authored relationships even when the model omits their generated endpoint.
+  const userIds = new Set(current.nodes.filter((node) => node.ownership === 'user').map((node) => node.id));
+  const userRelations = current.relations.filter((relation) => userIds.has(relation.from) || userIds.has(relation.to));
+  for (const relation of userRelations) {
+    for (const id of [relation.from, relation.to]) {
+      if (nodes.some((node) => node.id === id)) continue;
+      const previous = current.nodes.find((node) => node.id === id);
+      if (previous) nodes.push({ ...previous, sources: [...previous.sources] });
     }
-    relations.push(relation);
   }
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const seen = new Set<string>();
+  const relations = [
+    ...ai.relations.map((relation) => ({ ...relation, from: idMap.get(relation.from) ?? relation.from, to: idMap.get(relation.to) ?? relation.to })),
+    ...userRelations,
+  ].filter((relation) => {
+    const key = JSON.stringify([relation.from, relation.to, relation.label]);
+    if (!nodeIds.has(relation.from) || !nodeIds.has(relation.to) || relation.from === relation.to || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 
   return {
     ...current,
@@ -207,9 +206,9 @@ export function applyAiCourseKnowledge(
     version: current.version + 1,
     nodes,
     relations,
-    conflicts: ai.conflicts.map((conflict, index) => ({
+    conflicts: ai.conflicts.filter((conflict) => nodeIds.has(idMap.get(conflict.nodeId) ?? conflict.nodeId)).map((conflict, index) => ({
       id: `${current.courseId}-conflict-${index + 1}`,
-      nodeId: conflict.nodeId,
+      nodeId: idMap.get(conflict.nodeId) ?? conflict.nodeId,
       descriptions: conflict.descriptions,
       sources: uniqueSources(conflict.sources),
     })),
