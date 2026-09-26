@@ -57,7 +57,7 @@ export function splitScientificParagraphs(text: string): string[] {
 
 // Keep explicit notation and units out of the model's editable text. This is
 // deliberately not a parser that guesses formulas from arbitrary prose.
-const SCIENTIFIC = /[A-Za-z][A-Za-z0-9]*(?:[_^](?:\{[^{}\n]+\}|[A-Za-z0-9+−-]+))+[A-Za-z0-9]*|\b(?:m\/s[²³]?|N·m)\b[²³]?|[\u0370-\u03ff\u2070-\u209f℃℉Ω]|[≈≤≥±×÷→∑∫∂≠√∞−–—-]/gu;
+const SCIENTIFIC = /[A-Za-z][A-Za-z0-9]*(?:[_^](?:\{[^{}\n]+\}|[A-Za-z0-9+−-]+))+[A-Za-z0-9]*|\b(?:m\/s[²³]?|N·m)\b[²³]?|[\u0370-\u03ff\u2070-\u209f℃℉Ωµ°¹²³]|[≈≤≥±×÷→∑∫∂≠√∞−–—-]/gu;
 
 export function protectScientificText(source: string) {
   let prefix = 'YYKEEP';

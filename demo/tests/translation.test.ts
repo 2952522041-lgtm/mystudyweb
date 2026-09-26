@@ -448,3 +448,22 @@ void test('a corrective response restores notation and numbered lists remain ins
   assert.deepEqual(result.paragraphs, ['1. $x$\n2. H_2O', 'Second paragraph']);
   assert.equal(calls, 3);
 });
+
+void test('an oversized source paragraph retains its ownership and an atomic matrix across chunks', async () => {
+  const formula = '$$'+String.raw`\begin{matrix}`+'1 & 2 '.repeat(700)+String.raw`\end{matrix}`+'$$';
+  const first = 'Long scientific paragraph. '.repeat(150)+formula+' End.';
+  let calls = 0;
+  const provider = createOpenAICompatibleProvider({baseUrl:'https://mock.test',apiKey:'test',model:'mock',
+    fetchImpl:(async (_url, init) => {
+      calls++;
+      const text = JSON.parse(init?.body as string).messages[1].content.split('\n---\n')[1];
+      assert.doesNotMatch(text, /\$|matrix/);
+      return streamResponse(text);
+    }) as typeof fetch});
+  const result = await provider.translate({text:first+'\n\nSecond.',sourceLanguage:'auto',targetLanguage:'zh',pageNumber:1});
+  assert.ok(calls >= 3);
+  assert.deepEqual(result.paragraphs, [first, 'Second.']);
+  const rawChunks = splitTranslationChunks('Before '+formula+' After', 100);
+  assert.ok(rawChunks.some((chunk) => chunk.includes(formula)));
+  assert.equal(rawChunks.join(' '), 'Before '+formula+' After');
+});

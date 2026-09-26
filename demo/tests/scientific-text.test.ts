@@ -23,3 +23,11 @@ void test('chunk boundaries do not cut placeholders or Unicode surrogate pairs',
   assert.equal(safeScientificCut('text YYKEEP12ZZ after', 8), 5);
   assert.equal(safeScientificCut('𝜑value', 1), 2);
 });
+
+void test('Latin-1 superscripts and micro/degree symbols are protected as well as Greek Unicode', () => {
+  const source = 'x² y³ z¹ 25 °C 4 µm';
+  const protectedText = protectScientificText(source);
+  assert.doesNotMatch(protectedText.text, /[²³¹µ°]/u);
+  assert.equal(protectedText.restore(protectedText.text), source);
+  assert.throws(() => protectedText.restore(protectedText.text.replace(/YYKEEP\d+ZZ/, '')));
+});
