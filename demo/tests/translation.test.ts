@@ -21,7 +21,7 @@ void test('cache keys change with language, provider, model, and prompt version'
     provider: 'p',
     model: 'm',
   };
-  assert.equal(translationCacheKey(base), 'abc:简体中文:p:m:v6');
+  assert.equal(translationCacheKey(base), 'abc:简体中文:p:m:v7');
   assert.notEqual(
     translationCacheKey(base),
     translationCacheKey({ ...base, targetLanguage: '日本語' }),
@@ -213,11 +213,14 @@ void test('dense pages are split into bounded translation chunks without losing 
   assert.equal(sentenceChunks.join(' '), oversized);
 });
 
-void test('provider translates a dense page in multiple sequential requests', async () => {
+void test('provider translates a dense page in bounded batches with fewer requests', async () => {
   const calls: Array<{ init: RequestInit }> = [];
   const fetchImpl = (async (_url: string | URL, init: RequestInit = {}) => {
     calls.push({ init });
-    return streamResponse(`译文分块 ${calls.length}。`);
+    const text = JSON.parse(init.body as string).messages[1].content.split('\n---\n')[1];
+    if (!text.startsWith('{')) return streamResponse(`译文 page-4-paragraph-${text.match(/Source paragraph (\d+)/)[1]}`);
+    const payload = JSON.parse(text);
+    return streamResponse(JSON.stringify({ paragraphs: payload.paragraphs.map((entry: {id: string}) => ({ id: entry.id, text: `译文 ${entry.id}` })) }));
   }) as typeof fetch;
   const provider = createOpenAICompatibleProvider({
     baseUrl: 'https://api.example.com/v1',
@@ -236,7 +239,8 @@ void test('provider translates a dense page in multiple sequential requests', as
   });
 
   assert.ok(calls.length >= 2);
-  assert.equal(result.paragraphs.length, calls.length);
+  assert.ok(calls.length < 10);
+  assert.deepEqual(result.paragraphs, Array.from({ length: 10 }, (_, index) => `译文 page-4-paragraph-${index + 1}`));
   for (const call of calls) {
     const body = JSON.parse(call.init.body as string);
     const userText = body.messages[1].content.split('\n---\n')[1];
@@ -441,12 +445,12 @@ void test('a corrective response restores notation and numbered lists remain ins
     fetchImpl: (async (_url, init) => {
       calls++;
       const text = JSON.parse(init?.body as string).messages[1].content.split('\n---\n')[1];
-      return streamResponse(calls === 1 ? 'bad output' : text);
+      return streamResponse(calls <= 2 ? 'bad output' : text);
     }) as typeof fetch});
   const text = '1. $x$\n2. H_2O\n\nSecond paragraph';
   const result = await provider.translate({text,sourceLanguage:'auto',targetLanguage:'zh',pageNumber:1});
   assert.deepEqual(result.paragraphs, ['1. $x$\n2. H_2O', 'Second paragraph']);
-  assert.equal(calls, 3);
+  assert.equal(calls, 4);
 });
 
 void test('an oversized source paragraph retains its ownership and an atomic matrix across chunks', async () => {
@@ -466,4 +470,115 @@ void test('an oversized source paragraph retains its ownership and an atomic mat
   const rawChunks = splitTranslationChunks('Before '+formula+' After', 100);
   assert.ok(rawChunks.some((chunk) => chunk.includes(formula)));
   assert.equal(rawChunks.join(' '), 'Before '+formula+' After');
+});
+
+const batchRequest = { text: 'First $x$.\n\nSecond $y$.\n\nThird.', sourceLanguage: 'auto', targetLanguage: 'zh', pageNumber: 9 };
+function batchProvider(answer: (text: string, signal?: AbortSignal | null) => Response | Promise<Response>, requestTimeoutMs = 1000) {
+  return createOpenAICompatibleProvider({ baseUrl: 'https://mock.test', apiKey: 'mock', model: 'mock', requestTimeoutMs,
+    fetchImpl: (async (_url, init) => answer(JSON.parse(init?.body as string).messages[1].content.split('\n---\n')[1], init?.signal)) as typeof fetch });
+}
+
+void test('one batch preserves stable IDs and restores out-of-order scientific paragraphs', async () => {
+  const seen: string[][] = [];
+  const provider = batchProvider((text) => {
+    const payload = JSON.parse(text);
+    seen.push(payload.paragraphs.map((entry: { id: string }) => entry.id));
+    return streamResponse(JSON.stringify({ paragraphs: payload.paragraphs.reverse() }), 1);
+  });
+  const snapshots: string[][] = [];
+  const result = await provider.translate(batchRequest, { onPartial: (parts) => snapshots.push(parts) });
+  assert.deepEqual(result.paragraphs, ['First $x$.', 'Second $y$.', 'Third.']);
+  assert.equal(seen.length, 1, 'three paragraphs use one request');
+  await provider.translate(batchRequest);
+  assert.deepEqual(seen[0], seen[1], 'IDs must be stable across retries');
+  assert.ok(snapshots.every((parts) => parts.every((part, index) => part === result.paragraphs[index])));
+});
+
+void test('a missing batch paragraph falls back individually without losing returned paragraphs', async () => {
+  const calls: string[] = [];
+  const provider = batchProvider((text) => {
+    calls.push(text);
+    if (calls.length === 1) {
+      const payload = JSON.parse(text);
+      payload.paragraphs.splice(1, 1);
+      return streamResponse(JSON.stringify(payload));
+    }
+    return streamResponse(text);
+  });
+  const result = await provider.translate(batchRequest);
+  assert.deepEqual(result.paragraphs, ['First $x$.', 'Second $y$.', 'Third.']);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1], /^Second YYKEEP/);
+});
+
+void test('extra IDs, duplicate IDs, wrong counts and malformed batch output fall back safely', async () => {
+  for (const mode of ['extra', 'duplicate', 'strings', 'malformed', 'truncated', 'server']) {
+    let calls = 0;
+    const provider = batchProvider((text) => {
+      calls++;
+      if (calls > 1) return streamResponse(text);
+      const payload = JSON.parse(text);
+      if (mode === 'server') return new Response('', { status: 503 });
+      if (mode === 'extra') payload.paragraphs.push({id: 'unknown', text: 'invented'});
+      if (mode === 'duplicate') payload.paragraphs.push(payload.paragraphs[0]);
+      if (mode === 'strings') payload.paragraphs = ['unowned translation'];
+      return streamResponse(mode === 'malformed' ? 'not JSON' : JSON.stringify(payload), 8, mode === 'truncated' ? 'length' : 'stop');
+    });
+    const result = await provider.translate(batchRequest);
+    assert.equal(calls, 4, mode);
+    assert.deepEqual(result.paragraphs, ['First $x$.', 'Second $y$.', 'Third.'], mode);
+  }
+});
+
+void test('batch notation corruption retries only the affected source paragraph', async () => {
+  let calls = 0;
+  const provider = batchProvider((text) => {
+    if (++calls > 1) return streamResponse(text);
+    const payload = JSON.parse(text);
+    payload.paragraphs[1].text = 'lost formula';
+    return streamResponse(JSON.stringify(payload));
+  });
+  assert.deepEqual((await provider.translate(batchRequest)).paragraphs, ['First $x$.', 'Second $y$.', 'Third.']);
+  assert.equal(calls, 2);
+});
+
+void test('batch connection and stalled-stream timeouts abort the batch then fall back', async () => {
+  for (const mode of ['connection', 'stream']) {
+    let calls = 0;
+    let batchSignal: AbortSignal | null | undefined;
+    let streamCancelled = false;
+    const provider = batchProvider((text, signal) => {
+      if (++calls > 1) return streamResponse(text);
+      batchSignal = signal;
+      if (mode === 'connection') return new Promise<Response>(() => {});
+      return new Response(new ReadableStream({ cancel() { streamCancelled = true; } }));
+    }, 20);
+    const result = await provider.translate(batchRequest);
+    assert.equal(calls, 4);
+    assert.equal(batchSignal?.aborted, true);
+    if (mode === 'stream') assert.equal(streamCancelled, true);
+    assert.deepEqual(result.paragraphs, ['First $x$.', 'Second $y$.', 'Third.']);
+  }
+});
+
+void test('cancellation stops batch connection, stream and fallback without partial publication', async () => {
+  for (const mode of ['connection', 'stream', 'fallback', 'before']) {
+    const controller = new AbortController();
+    let calls = 0;
+    let streamCancelled = false;
+    const snapshots: string[][] = [];
+    const provider = batchProvider((_text, signal) => {
+      calls++;
+      if (mode === 'fallback' && calls === 1) return streamResponse('invalid batch');
+      assert.equal(signal?.aborted, false);
+      setTimeout(() => controller.abort(), 5);
+      if (mode === 'stream') return new Response(new ReadableStream({ cancel() { streamCancelled = true; } }));
+      return new Promise<Response>(() => {});
+    });
+    if (mode === 'before') controller.abort();
+    await assert.rejects(provider.translate(batchRequest, { signal: controller.signal, onPartial: (parts) => snapshots.push(parts) }), { name: 'AbortError' });
+    assert.equal(calls, mode === 'before' ? 0 : mode === 'fallback' ? 2 : 1);
+    if (mode === 'stream') assert.equal(streamCancelled, true);
+    assert.deepEqual(snapshots, []);
+  }
 });

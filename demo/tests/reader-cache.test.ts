@@ -690,3 +690,32 @@ void test('protected scientific output round trips through cache; corrupt model 
   assert.equal(calls, 3);
   assert.deepEqual((await cache.list())[0].paragraphs, [request.text]);
 });
+
+void test('v6 cache remains listable while v7 batched translations use the unchanged versioned key format', async () => {
+  const store = createMemoryStore<CachedTranslation>();
+  const cache = createTranslationCache(store);
+  const request = { text: 'One.\n\nTwo.', sourceLanguage: 'auto', targetLanguage: 'zh', pageNumber: 1 };
+  const sourceHash = await sha256Hex(request.text);
+  const oldKey = `batch-legacy:1:${sourceHash}:zh:mock:demo:v6`;
+  await store.set(oldKey, { key: oldKey, fingerprint: 'batch-legacy', pageNumber: 1, sourceHash,
+    targetLanguage: 'zh', provider: 'mock', model: 'demo', promptVersion: 6, paragraphs: ['旧译文'], updatedAt: '2026-09-26' });
+  const input = { cache, request, fingerprint: 'batch-legacy', provider: createMockTranslationProvider() };
+  const result = await resolvePageTranslation(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.cacheEntry.promptVersion, 7);
+  assert.equal((await resolvePageTranslation(input)).status, 'cached');
+  assert.equal((await cache.list()).length, 2);
+  assert.deepEqual((await store.get(oldKey))?.paragraphs, ['旧译文']);
+});
+
+void test('cancellation after provider completion does not save a page cache', async () => {
+  const cache = createTranslationCache(createMemoryStore<CachedTranslation>());
+  const controller = new AbortController();
+  const provider = { id: 'mock', model: 'cancelled', async translate() {
+    controller.abort();
+    return { paragraphs: ['late'], provider: 'mock', model: 'cancelled' };
+  } };
+  await assert.rejects(resolvePageTranslation({ provider, cache, fingerprint: 'cancelled', signal: controller.signal,
+    request: { text: 'One.\n\nTwo.', sourceLanguage: 'auto', targetLanguage: 'zh', pageNumber: 1 } }), { name: 'AbortError' });
+  assert.deepEqual(await cache.list(), []);
+});

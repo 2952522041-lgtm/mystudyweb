@@ -338,6 +338,7 @@ export async function resolvePageTranslation(input: {
     signal,
     onPartial,
   });
+  signal?.throwIfAborted();
   const cacheEntry: CachedTranslation = {
     key: translationCacheKey({
       sourceHash,

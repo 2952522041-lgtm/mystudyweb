@@ -38,7 +38,7 @@ export class TranslationError extends Error {
   }
 }
 
-export const PROMPT_VERSION = 6;
+export const PROMPT_VERSION = 7;
 export const MAX_AUTO_RETRIES = 2;
 export const MAX_TRANSLATION_CHUNK_CHARACTERS = 3000;
 const MAX_TRUNCATION_SPLITS = 3;
@@ -203,6 +203,59 @@ export interface OpenAICompatibleConfig {
   /** Skips the model's built-in reasoning pass (GLM and similar models). */
   disableThinking?: boolean;
   fetchImpl?: typeof fetch;
+  /** Covers both connection and streaming; injectable for offline tests. */
+  requestTimeoutMs?: number;
+}
+
+interface BatchParagraph {
+  id: string;
+  protectedText: ReturnType<typeof protectScientificText>;
+}
+
+function batchPayload(batch: BatchParagraph[]): string {
+  return JSON.stringify({ paragraphs: batch.map(({ id, protectedText }) => ({ id, text: protectedText.text })) });
+}
+
+/** Bounded batches never split a source paragraph or mix pages. */
+function translationBatches(request: TranslationRequest): BatchParagraph[][] {
+  const batches: BatchParagraph[][] = [];
+  let batch: BatchParagraph[] = [];
+  for (const [index, source] of splitScientificParagraphs(request.text).entries()) {
+    const entry = { id: `page-${request.pageNumber}-paragraph-${index + 1}`, protectedText: protectScientificText(source) };
+    if (batch.length && batchPayload([...batch, entry]).length > MAX_TRANSLATION_CHUNK_CHARACTERS) {
+      batches.push(batch);
+      batch = [];
+    }
+    batch.push(entry);
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
+}
+
+const BATCH_SYSTEM_PROMPT = SYSTEM_PROMPT.replace(
+  '- The input is one source paragraph or a fragment of one. Keep its internal Markdown lists and line breaks.',
+  '- The input is JSON with paragraphs [{id, text}]. Return only JSON with the same schema and unchanged IDs. Translate each text independently, keeping its internal Markdown lists and line breaks. Never move content between IDs. Placeholder rules apply separately within each paragraph.',
+);
+
+/** Unknown/duplicate IDs are ambiguous; missing/invalid texts fall back individually. */
+function restoreBatch(content: string, batch: BatchParagraph[]): Map<string, string> {
+  const output = new Map<string, string>();
+  try {
+    const parsed = JSON.parse(stripCodeFences(content.trim())) as { paragraphs?: unknown };
+    if (!Array.isArray(parsed.paragraphs)) return output;
+    const expected = new Map(batch.map((entry) => [entry.id, entry]));
+    const seen = new Set<string>();
+    for (const entry of parsed.paragraphs) {
+      if (!entry || typeof entry.id !== 'string' || !expected.has(entry.id) || seen.has(entry.id)) return new Map();
+      seen.add(entry.id);
+      if (typeof entry.text !== 'string' || !entry.text.trim()) continue;
+      const source = expected.get(entry.id)!;
+      try {
+        output.set(entry.id, source.protectedText.restore(entry.text.trim(), source.protectedText.text));
+      } catch { /* Re-translate only this paragraph if its scientific markers changed. */ }
+    }
+  } catch { /* Non-JSON or truncated responses use the established single-paragraph path. */ }
+  return output;
 }
 
 /**
@@ -222,50 +275,72 @@ export function createOpenAICompatibleProvider(
       }
 
       const completedParagraphs: string[] = [];
-      // Translate in source order and retain ownership when an oversized
-      // paragraph needs several requests. Never infer alignment from output.
-      for (const source of splitScientificParagraphs(request.text)) {
-        const protectedText = protectScientificText(source);
-        const pending = splitTranslationChunks(protectedText.text).map((text) => ({ text, splitDepth: 0 }));
-        const fragments: string[] = [];
-        for (let index = 0; index < pending.length;) {
-          const chunk = pending[index];
-          let translated = '';
-          let split = false;
-          for (let repair = 0; repair < 2; repair++) {
-            const completion = await requestTranslationChunk(doFetch, config, request, chunk.text, options?.signal,
-              (content) => {
-                // A partial marker/formula must not reach the UI. Publish only
-                // snapshots that already contain the complete protected set.
-                try {
-                  const partial = protectedText.restore(parseParagraphList(content, chunk.text).join('\n\n'), chunk.text);
-                  options?.onPartial?.([...completedParagraphs, [...fragments, partial].join(' ')]);
-                } catch { /* Wait for the next complete stream snapshot. */ }
-              }, repair > 0);
-            if (completion.finishReason === 'length') {
-              const smaller = splitTranslationChunks(chunk.text, Math.max(400, Math.floor(chunk.text.length / 2)));
-              if (chunk.splitDepth >= MAX_TRUNCATION_SPLITS || smaller.length < 2) {
-                throw new TranslationError('invalid_input', '翻译输出达到上限，已停止并且不会缓存残缺译文。');
-              }
-              pending.splice(index, 1, ...smaller.map((text) => ({ text, splitDepth: chunk.splitDepth + 1 })));
-              split = true;
-              break;
-            }
-            if (!completion.content.trim()) throw new TranslationError('server', '翻译服务未返回译文内容。');
-            try {
-              translated = protectedText.restore(parseParagraphList(completion.content, chunk.text).join('\n\n'), chunk.text);
-              break;
-            } catch {
-              if (repair === 1) throw new TranslationError('invalid_output', describeTranslationError('invalid_output'));
-            }
+      let batchEnabled = true;
+      for (const batch of translationBatches(request)) {
+        options?.signal?.throwIfAborted();
+        let restored = new Map<string, string>();
+        if (batchEnabled && batch.length > 1) {
+          try {
+            const completion = await requestTranslationChunk(doFetch, config, request, batchPayload(batch), options?.signal, undefined, false, true);
+            if (completion.finishReason !== 'length') restored = restoreBatch(completion.content, batch);
+          } catch (error) {
+            options?.signal?.throwIfAborted();
+            if (error instanceof TranslationError && (error.code === 'auth' || error.code === 'quota')) throw error;
           }
-          if (split) continue;
-          fragments.push(translated);
-          index++;
+          // An unsupported batch format or outage should cost only one failed
+          // batch per page before reverting to the established single path.
+          if (!restored.size) batchEnabled = false;
         }
-        completedParagraphs.push(fragments.join(' '));
-        options?.onPartial?.([...completedParagraphs]);
+        for (const { id, protectedText } of batch) {
+          options?.signal?.throwIfAborted();
+          const hit = restored.get(id);
+          if (hit !== undefined) {
+            completedParagraphs.push(hit);
+            options?.onPartial?.([...completedParagraphs]);
+            continue;
+          }
+          const pending = splitTranslationChunks(protectedText.text).map((text) => ({ text, splitDepth: 0 }));
+          const fragments: string[] = [];
+          for (let index = 0; index < pending.length;) {
+            const chunk = pending[index];
+            let translated = '';
+            let split = false;
+            for (let repair = 0; repair < 2; repair++) {
+              const completion = await requestTranslationChunk(doFetch, config, request, chunk.text, options?.signal,
+                (content) => {
+                  // A partial marker/formula must not reach the UI. Publish only
+                  // snapshots that already contain the complete protected set.
+                  try {
+                    const partial = protectedText.restore(parseParagraphList(content, chunk.text).join('\n\n'), chunk.text);
+                    options?.onPartial?.([...completedParagraphs, [...fragments, partial].join(' ')]);
+                  } catch { /* Wait for the next complete stream snapshot. */ }
+                }, repair > 0);
+              if (completion.finishReason === 'length') {
+                const smaller = splitTranslationChunks(chunk.text, Math.max(400, Math.floor(chunk.text.length / 2)));
+                if (chunk.splitDepth >= MAX_TRUNCATION_SPLITS || smaller.length < 2) {
+                  throw new TranslationError('invalid_input', '翻译输出达到上限，已停止并且不会缓存残缺译文。');
+                }
+                pending.splice(index, 1, ...smaller.map((text) => ({ text, splitDepth: chunk.splitDepth + 1 })));
+                split = true;
+                break;
+              }
+              if (!completion.content.trim()) throw new TranslationError('server', '翻译服务未返回译文内容。');
+              try {
+                translated = protectedText.restore(parseParagraphList(completion.content, chunk.text).join('\n\n'), chunk.text);
+                break;
+              } catch {
+                if (repair === 1) throw new TranslationError('invalid_output', describeTranslationError('invalid_output'));
+              }
+            }
+            if (split) continue;
+            fragments.push(translated);
+            index++;
+          }
+          completedParagraphs.push(fragments.join(' '));
+          options?.onPartial?.([...completedParagraphs]);
+        }
       }
+      options?.signal?.throwIfAborted();
       return {
         paragraphs: completedParagraphs,
         provider: 'openai-compatible',
@@ -288,6 +363,42 @@ async function requestTranslationChunk(
   signal: AbortSignal | undefined,
   onPartial: ((content: string) => void) | undefined,
   repair = false,
+  batch = false,
+): Promise<CompletionResult> {
+  signal?.throwIfAborted();
+  const timeout = new AbortController();
+  const combined = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
+  const timer = setTimeout(() => timeout.abort(new DOMException('Translation timed out', 'TimeoutError')), config.requestTimeoutMs ?? 60_000);
+  let onAbort: () => void = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(combined.reason);
+    combined.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([
+      performTranslationChunk(doFetch, config, request, text, combined,
+        onPartial ? (content) => { if (!combined.aborted) onPartial(content); } : undefined, repair, batch),
+      aborted,
+    ]);
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error instanceof TranslationError) throw error;
+    throw new TranslationError('network', '网络不可用或请求超时。');
+  } finally {
+    clearTimeout(timer);
+    combined.removeEventListener('abort', onAbort);
+  }
+}
+
+async function performTranslationChunk(
+  doFetch: typeof fetch,
+  config: OpenAICompatibleConfig,
+  request: TranslationRequest,
+  text: string,
+  signal: AbortSignal | undefined,
+  onPartial: ((content: string) => void) | undefined,
+  repair = false,
+  batch = false,
 ): Promise<CompletionResult> {
   let response: Response;
   try {
@@ -307,7 +418,7 @@ async function requestTranslationChunk(
           max_tokens: recommendedMaxOutputTokens(text),
           ...(config.disableThinking ? { thinking: { type: 'disabled' } } : {}),
           messages: [
-            { role: 'system', content: SYSTEM_PROMPT + (repair ? '\nYour previous output lost or changed protected placeholders. Correct this: copy all YYKEEP…ZZ markers exactly once, in order.' : '') },
+            { role: 'system', content: (batch ? BATCH_SYSTEM_PROMPT : SYSTEM_PROMPT) + (repair ? '\nYour previous output lost or changed protected placeholders. Correct this: copy all YYKEEP…ZZ markers exactly once, in order.' : '') },
             {
               role: 'user',
               content: [
@@ -337,13 +448,14 @@ async function requestTranslationChunk(
       response.status,
     );
   }
-  return readStreamingCompletion(response, onPartial);
+  return readStreamingCompletion(response, onPartial, signal);
 }
 
 /** Reads an SSE chat-completions stream and retains its completion reason. */
 async function readStreamingCompletion(
   response: Response,
   onPartial?: (content: string) => void,
+  signal?: AbortSignal,
 ): Promise<CompletionResult> {
   const body = response.body;
   if (!body) {
@@ -352,56 +464,66 @@ async function readStreamingCompletion(
   }
 
   const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let content = '';
-  let finishReason: string | undefined;
-  let reported = '';
+  const cancel = () => { void reader.cancel(signal?.reason).catch(() => {}); };
+  signal?.addEventListener('abort', cancel, { once: true });
+  if (signal?.aborted) cancel();
+  try {
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let content = '';
+    let finishReason: string | undefined;
+    let reported = '';
 
-  const report = () => {
-    if (!onPartial || content === reported) return;
-    reported = content;
-    onPartial(content);
-  };
-  const consumeLine = (rawLine: string) => {
-    const line = rawLine.trim();
-    if (!line.startsWith('data:')) return;
-    const data = line.slice(5).trim();
-    if (data === '[DONE]' || data.length === 0) return;
-    try {
-      const chunk = JSON.parse(data) as {
-        choices?: Array<{
-          delta?: { content?: string };
-          finish_reason?: string | null;
-        }>;
-      };
-      const choice = chunk.choices?.[0];
-      content += choice?.delta?.content ?? '';
-      if (typeof choice?.finish_reason === 'string')
-        finishReason = choice.finish_reason;
-    } catch {
-      // Ignore malformed events; complete SSE events are newline delimited.
+    const report = () => {
+      if (!onPartial || content === reported) return;
+      reported = content;
+      onPartial(content);
+    };
+    const consumeLine = (rawLine: string) => {
+      const line = rawLine.trim();
+      if (!line.startsWith('data:')) return;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]' || data.length === 0) return;
+      try {
+        const chunk = JSON.parse(data) as {
+          choices?: Array<{
+            delta?: { content?: string };
+            finish_reason?: string | null;
+          }>;
+        };
+        const choice = chunk.choices?.[0];
+        content += choice?.delta?.content ?? '';
+        if (typeof choice?.finish_reason === 'string')
+          finishReason = choice.finish_reason;
+      } catch {
+        // Ignore malformed events; complete SSE events are newline delimited.
+      }
+    };
+
+    for (;;) {
+      signal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      signal?.throwIfAborted();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundary = buffer.indexOf('\n');
+      while (boundary !== -1) {
+        const line = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 1);
+        boundary = buffer.indexOf('\n');
+        consumeLine(line);
+      }
+      report();
     }
-  };
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let boundary = buffer.indexOf('\n');
-    while (boundary !== -1) {
-      const line = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 1);
-      boundary = buffer.indexOf('\n');
-      consumeLine(line);
-    }
+    buffer += decoder.decode();
+    if (buffer.trim().length > 0) consumeLine(buffer);
     report();
+    return { content, finishReason };
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+    reader.releaseLock();
   }
-  buffer += decoder.decode();
-  if (buffer.trim().length > 0) consumeLine(buffer);
-  report();
-  return { content, finishReason };
 }
 
 function extractChoice(payload: unknown): CompletionResult {
