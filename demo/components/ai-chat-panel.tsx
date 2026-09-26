@@ -35,6 +35,7 @@ import {
   createChatService,
   type ChatSettings,
   type ChatScope,
+  type PageConversation,
   pageConversationKey,
 } from '@/lib/chat-cache';
 import type { PDFDocumentProxy } from '@/lib/pdfjs';
@@ -46,6 +47,8 @@ interface PageChatState {
   loaded: boolean;
   messages: ChatMessage[];
   status: 'idle' | 'preparing' | 'searching' | 'generating' | 'error';
+  storageError?: 'load' | 'save' | 'delete';
+  storageBusy?: boolean;
   partial?: string;
   errorCode?: ChatErrorCode;
   errorMessage?: string;
@@ -114,6 +117,8 @@ export function AIChatPanel({
   const [input, setInput] = useState('');
   const [scope, setScope] = useState<ChatScope>('page');
   const conversationPage = scope === 'document' ? 0 : pageNumber;
+  const pendingSavesRef = useRef(new Map<string, PageConversation>());
+  const [loadRetry, setLoadRetry] = useState(0);
   const controllersRef = useRef(new Map<string, AbortController>());
   const handledSelectionRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -125,26 +130,33 @@ export function AIChatPanel({
     if (!fingerprint) return;
     let cancelled = false;
     const load = async () => {
-      const conversation = await service.load(fingerprint, conversationPage, scope);
-      if (cancelled) return;
-      const stateKey = chatStateKey(fingerprint, conversationPage, scope);
-      setStates((previous) => {
-        if (previous[stateKey]) return previous;
-        return {
+      try {
+        const conversation = await service.load(fingerprint, conversationPage, scope);
+        if (cancelled) return;
+        const stateKey = chatStateKey(fingerprint, conversationPage, scope);
+        setStates((previous) => {
+          if (previous[stateKey]?.loaded) return previous;
+          return {
+            ...previous,
+            [stateKey]: {
+              loaded: true,
+              messages: conversation?.messages ?? [],
+              status: 'idle',
+            },
+          };
+        });
+      } catch {
+        if (!cancelled) setStates((previous) => previous[key]?.loaded ? previous : ({
           ...previous,
-          [stateKey]: {
-            loaded: true,
-            messages: conversation?.messages ?? [],
-            status: 'idle',
-          },
-        };
-      });
+          [key]: { ...(previous[key] ?? emptyState()), storageError: 'load', storageBusy: false },
+        }));
+      }
     };
     void load();
     return () => {
       cancelled = true;
     };
-  }, [fingerprint, conversationPage, scope, service]);
+  }, [fingerprint, conversationPage, scope, service, key, loadRetry]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -175,7 +187,7 @@ export function AIChatPanel({
 
   const sendQuestion = async (rawQuestion: string, retry = false, allowWebSearch = true) => {
     const question = rawQuestion.trim();
-    if (!question || !pdfDoc || !fingerprint || !key || !state.loaded || controllersRef.current.has(key)) return;
+    if (!question || !pdfDoc || !fingerprint || !key || !state.loaded || state.storageError || state.storageBusy || controllersRef.current.has(key)) return;
     if (!configured) {
       updateState(key, (previous) => ({
         ...previous,
@@ -252,6 +264,7 @@ export function AIChatPanel({
             })),
         },
       );
+      controller.signal.throwIfAborted();
       const completedAt = new Date().toISOString();
       const assistantMessage: ChatMessage = {
         id: messageId('assistant'),
@@ -265,14 +278,23 @@ export function AIChatPanel({
         messages: completedMessages,
         status: 'idle',
       }));
-      await service.save({
+      const conversation: PageConversation = {
         fingerprint,
         pageNumber: conversationPage,
         ...(scope === 'document' ? { scope } : {}),
         messages: completedMessages,
         createdAt: state.messages[0]?.createdAt ?? now,
         updatedAt: completedAt,
-      });
+      };
+      pendingSavesRef.current.set(key, conversation);
+      updateState(key, (previous) => ({ ...previous, storageBusy: true }));
+      try {
+        await service.save(conversation);
+        pendingSavesRef.current.delete(key);
+        updateState(key, (previous) => ({ ...previous, storageBusy: false }));
+      } catch {
+        updateState(key, (previous) => ({ ...previous, storageError: 'save', storageBusy: false }));
+      }
     } catch (error) {
       if (controller.signal.aborted) {
         updateState(key, (previous) => ({
@@ -306,7 +328,7 @@ export function AIChatPanel({
   useEffect(() => {
     if (scope !== 'page' || !selectionQuestion || selectionQuestion.id === handledSelectionRef.current ||
         selectionQuestion.fingerprint !== fingerprint || selectionQuestion.pageNumber !== pageNumber ||
-        !state.loaded || controllersRef.current.has(key)) return;
+        !state.loaded || state.storageError || state.storageBusy || controllersRef.current.has(key)) return;
     handledSelectionRef.current = selectionQuestion.id;
     void sendQuestion(selectionExplanationQuestion(selectionQuestion.text, selectionQuestion.pageNumber), false, false);
     onSelectionQuestionHandled?.();
@@ -316,9 +338,31 @@ export function AIChatPanel({
 
   const clear = async () => {
     if (!fingerprint || !key) return;
-    controllersRef.current.get(key)?.abort();
-    await service.delete(fingerprint, conversationPage, scope);
-    updateState(key, () => ({ loaded: true, messages: [], status: 'idle' }));
+    if (controllersRef.current.has(key) || state.storageBusy) return;
+    updateState(key, (previous) => ({ ...previous, storageBusy: true }));
+    try {
+      await service.delete(fingerprint, conversationPage, scope);
+      pendingSavesRef.current.delete(key);
+      updateState(key, () => ({ loaded: true, messages: [], status: 'idle' }));
+    } catch {
+      updateState(key, (previous) => ({ ...previous, storageError: 'delete', storageBusy: false }));
+    }
+  };
+
+  const retryStorage = async () => {
+    if (state.storageBusy) return;
+    updateState(key, (previous) => ({ ...previous, storageBusy: true }));
+    if (state.storageError === 'load') { setLoadRetry((value) => value + 1); return; }
+    if (state.storageError === 'delete') { await clear(); return; }
+    const conversation = pendingSavesRef.current.get(key);
+    if (!conversation) return;
+    try {
+      await service.save(conversation);
+      pendingSavesRef.current.delete(key);
+      updateState(key, (previous) => ({ ...previous, storageError: undefined, storageBusy: false }));
+    } catch {
+      updateState(key, (previous) => ({ ...previous, storageError: 'save', storageBusy: false }));
+    }
   };
 
   const retryLast = () => {
@@ -370,12 +414,25 @@ export function AIChatPanel({
             size="icon-sm"
             aria-label={scope === 'document' ? '清空全文对话' : '清空本页对话'}
             onClick={() => void clear()}
-            disabled={state.messages.length === 0 && !generating}
+            disabled={!state.loaded || state.storageBusy || generating || state.messages.length === 0}
           >
             <Trash2 />
           </Button>
         </div>
       </div>
+
+      {state.storageError ? (
+        <div role="alert" className="border-b border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+          <p>{state.storageError === 'load'
+            ? '对话历史读取失败。请重试读取；恢复前不会发送问题或覆盖已有历史。'
+            : state.storageError === 'save'
+              ? '回答已生成，但对话保存失败。回答仍在本窗口，请勿重复提问；重新保存不会调用 AI。'
+              : '清空对话失败，当前记录已保留。可重试清空。'}</p>
+          <Button type="button" size="sm" variant="outline" disabled={state.storageBusy} onClick={() => void retryStorage()}>
+            {state.storageError === 'load' ? '重试读取' : state.storageError === 'save' ? '重新保存（不调用 AI）' : '重试清空'}
+          </Button>
+        </div>
+      ) : null}
 
       <div ref={scrollRef} className="ai-message-scroll">
         {!pdfDoc ? (
@@ -533,7 +590,7 @@ export function AIChatPanel({
               type="submit"
               size="icon-sm"
               aria-label="发送问题"
-              disabled={!pdfDoc || !state.loaded || !input.trim()}
+              disabled={!pdfDoc || !state.loaded || !!state.storageError || state.storageBusy || !input.trim()}
             >
               <Send />
             </Button>
