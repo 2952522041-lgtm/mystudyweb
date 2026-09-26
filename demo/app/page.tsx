@@ -1,5 +1,6 @@
 'use client';
 
+import { createPdfImportLifecycle } from '@/lib/pdf-import-lifecycle';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
@@ -601,6 +602,11 @@ function PdfReader({
   /** Called when a PDF is imported from this reader's own import dialog. */
   onStandaloneImport?: (file: File) => void;
 }) {
+  const importLifecycleRef = useRef(createPdfImportLifecycle<PDFDocumentProxy>());
+  useEffect(() => {
+    const lifecycle = importLifecycleRef.current;
+    return () => lifecycle.dispose();
+  }, []);
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [docMeta, setDocMeta] = useState<DocumentMeta | null>(null);
   const [pageSizes, setPageSizes] = useState<PageView[]>([]);
@@ -960,6 +966,7 @@ function PdfReader({
       requestedPage?: number,
       origin: 'home' | 'dialog' = 'home',
     ) => {
+      const job = importLifecycleRef.current.begin();
       // A standalone import can happen while the previous course context is
       // still clearing in the parent. Disable course restore/publication
       // immediately so an identical temporary PDF cannot write the course.
@@ -970,14 +977,19 @@ function PdfReader({
         const buffer = await file.arrayBuffer();
         const fingerprint = await computeFileFingerprint(buffer);
         const pdfjs = await loadPdfjs();
+        if (!job.isCurrent()) return;
         // getDocument may transfer the buffer to the worker, so hand it a copy.
-        const doc = await pdfjs.getDocument({
+        const loadingTask = pdfjs.getDocument({
           data: new Uint8Array(buffer.slice(0)),
-        }).promise;
+        });
+        if (!job.ownTask(loadingTask)) return;
+        const doc = await loadingTask.promise;
+        if (!job.resolved(doc)) return;
 
         const sizes: PageView[] = [];
         for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
           const pdfPage = await doc.getPage(pageNumber);
+          if (!job.isCurrent()) return;
           const viewport = pdfPage.getViewport({ scale: 1 });
           sizes.push({ width: viewport.width, height: viewport.height });
         }
@@ -991,8 +1003,10 @@ function PdfReader({
           pageNumber += 1
         ) {
           const pdfPage = await doc.getPage(pageNumber);
+          if (!job.isCurrent()) return;
           const viewport = pdfPage.getViewport({ scale: 1 });
           const content = await pdfPage.getTextContent();
+          if (!job.isCurrent()) return;
           if (
             pageHasText(
               itemsFromPdfJs(
@@ -1031,6 +1045,7 @@ function PdfReader({
             // opening the PDF; a later retry/reopen can recover the records.
           }
         }
+        if (!job.commit(doc)) return;
         positionedRef.current = false;
         setRenderedPages(new Set());
         setTranslationStates({});
@@ -1063,9 +1078,11 @@ function PdfReader({
         if (origin === 'dialog') onStandaloneImportRef.current?.(file);
         setImportOpen(false);
       } catch {
+        if (!job.isCurrent()) return;
         setImportError('无法解析该 PDF 文件，文件可能已损坏或已加密。');
       } finally {
-        setImporting(false);
+        if (job.isCurrent()) setImporting(false);
+        job.finish();
       }
     },
     [courseContext],

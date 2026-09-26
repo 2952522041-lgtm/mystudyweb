@@ -2,7 +2,7 @@ import type { PDFDocumentProxy, RenderTask, TextLayer } from 'pdfjs-dist';
 
 interface PdfjsModule {
   GlobalWorkerOptions: { workerSrc: string };
-  getDocument(src: { data: Uint8Array }): { promise: Promise<PDFDocumentProxy> };
+  getDocument(src: { data: Uint8Array }): { promise: Promise<PDFDocumentProxy>; destroy(): Promise<void> };
   TextLayer: typeof TextLayer;
 }
 
