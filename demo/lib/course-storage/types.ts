@@ -1,3 +1,4 @@
+import type { KnowledgeEvidence, SynthesisDiagnostic } from '../knowledge/hierarchical-synthesis.ts';
 import type { Glossary } from '../glossary.ts';
 export const COURSE_SCHEMA_VERSION = 1 as const;
 /** AI 生成的 DocumentDigest 使用 schemaVersion 3（显式 parentId）；本地规则生成的旧摘要仍为 1。 */
@@ -51,6 +52,8 @@ export interface ConceptRelation {
 export type DigestPromptVersion = 'local-structure-v1' | (string & {});
 
 export interface DocumentDigest {
+  evidence?: KnowledgeEvidence[];
+  diagnostics?: SynthesisDiagnostic[];
   glossaryFingerprint?: string;
   schemaVersion: 1 | 2 | 3;
   documentId: string;
@@ -118,6 +121,8 @@ export interface KnowledgeConflict {
  * 存储层接收后负责保留用户节点并推进 knowledge.version。
  */
 export interface AiCourseKnowledge {
+  evidence?: KnowledgeEvidence[];
+  diagnostics?: SynthesisDiagnostic[];
   theme: string;
   nodes: Array<{
     parentId?: string | null;
@@ -139,6 +144,8 @@ export interface AiCourseKnowledge {
 }
 
 export interface CourseKnowledge {
+  evidence?: KnowledgeEvidence[];
+  diagnostics?: SynthesisDiagnostic[];
   schemaVersion: 1 | 2 | 3;
   courseId: string;
   version: number;

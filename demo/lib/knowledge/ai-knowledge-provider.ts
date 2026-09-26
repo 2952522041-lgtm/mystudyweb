@@ -1,3 +1,4 @@
+import { synthesisSources, sourceEvidence, collectEvidence, uniqueEvidence, reduceWithinBudget, synthesisRecords, synthesisCacheKey, utf8Size, SYNTHESIS_BUDGET, HIERARCHICAL_PROMPT_VERSION, type SynthesisDiagnostic, type SynthesisLayer, type KnowledgeEvidence } from './hierarchical-synthesis.ts';
 import { hasExplicitChapterHierarchy, hierarchyIssues, inspectHierarchy, MINDMAP_MAX_CHILDREN, MINDMAP_MAX_DEPTH } from './mindmap-structure.ts';
 import { glossaryFingerprint, glossaryPrompt, type Glossary } from '../glossary.ts';
 import { conceptKey as normalizeConceptKey } from './concept-identity.ts';
@@ -31,8 +32,8 @@ import { buildPdfChunks, type PdfChunk } from './pdf-chunks.ts';
 
 export const KNOWLEDGE_PROVIDER_ID = 'openai-compatible-knowledge';
 /** 知识库提示词版本：修改提示词必须递增，缓存与课程成果都会记录它。 */
-export const KNOWLEDGE_DIGEST_PROMPT_VERSION = 'ai-digest-v4';
-export const KNOWLEDGE_COURSE_PROMPT_VERSION = 'ai-course-v3';
+export const KNOWLEDGE_DIGEST_PROMPT_VERSION = 'ai-digest-v5';
+export const KNOWLEDGE_COURSE_PROMPT_VERSION = 'ai-course-v4';
 /** 分块分析与综合共用的默认输出 token 上限；过小会触发 finish_reason=length 截断。 */
 export const KNOWLEDGE_MAX_OUTPUT_TOKENS = 8192;
 /**
@@ -78,6 +79,7 @@ export type KnowledgeErrorCode =
 export class KnowledgeError extends Error {
   code: KnowledgeErrorCode;
   status?: number;
+  diagnostics?: SynthesisDiagnostic[];
 
   constructor(code: KnowledgeErrorCode, message: string, status?: number) {
     super(message);
@@ -163,6 +165,7 @@ function isDocumentDigestLike(value: unknown): value is DocumentDigest {
 }
 
 export interface AnalyzeDocumentInput {
+  onDiagnostic?: (diagnostic: SynthesisDiagnostic) => void;
   glossary?: Glossary;
   fingerprint: string;
   fileName: string;
@@ -171,9 +174,11 @@ export interface AnalyzeDocumentInput {
   pages: string[];
   signal?: AbortSignal;
   bypassCache?: boolean;
+  /** Retry a failed regeneration: skip the old final digest, reuse completed layers. */
+  resume?: boolean;
   onStage?: (
     stage: KnowledgeStage,
-    detail: { chunkIndex?: number; chunkCount?: number },
+    detail: { chunkIndex?: number; chunkCount?: number; identity?: string },
   ) => void;
 }
 
@@ -182,6 +187,7 @@ export type {
 } from '../course-storage/types.ts';
 
 export interface SynthesizeCourseInput {
+  onDiagnostic?: (diagnostic: SynthesisDiagnostic) => void;
   glossary?: Glossary;
   courseId: string;
   courseName: string;
@@ -192,7 +198,7 @@ export interface SynthesizeCourseInput {
   signal?: AbortSignal;
   onStage?: (
     stage: KnowledgeStage,
-    detail?: { chunkIndex?: number; chunkCount?: number },
+    detail?: { chunkIndex?: number; chunkCount?: number; identity?: string },
   ) => void;
 }
 
@@ -269,6 +275,8 @@ async function completeJson(
   config: ChatCompletionConfig,
   input: {
     userPrompt: string;
+    layer?: SynthesisLayer;
+    report?: (diagnostic: SynthesisDiagnostic) => void;
     glossaryText?: string;
     maxTokens: number;
     signal?: AbortSignal;
@@ -282,6 +290,12 @@ async function completeJson(
   ];
   let lastFailure = '';
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (input.signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消；已完成层保留，未发布本次成果。');
+    const layer = input.layer ?? 'document';
+    const size = utf8Size(messages);
+    const limit = SYNTHESIS_BUDGET[layer];
+    input.report?.({ layer, action: size > limit ? 'rejected' : 'request', identity: input.contextLabel, inputBytes: size, limit, droppedItems: 0, droppedBytes: 0, detail: size > limit ? '含系统提示词、术语表、纠错信息的完整请求超限；未截断、未发送。' : `请求 ${attempt + 1}；完整消息 UTF-8 字节数。` });
+    if (size > limit) throw new KnowledgeError('context_overflow', `${input.contextLabel}输入 ${size} 字节超过 ${limit} 字节预算；未截断，请减少术语表或拆分单项后重试。`);
     let result: Awaited<ReturnType<typeof requestChatCompletion>>;
     try {
       result = await requestChatCompletion(config, {
@@ -291,9 +305,13 @@ async function completeJson(
         signal: input.signal,
       });
     } catch (error) {
-      throw asContextOverflowError(error, config, input.contextLabel);
+      const classified = asContextOverflowError(error, config, input.contextLabel);
+      if (classified instanceof KnowledgeError && classified.code === 'context_overflow') input.report?.({layer, action:'rejected', identity:input.contextLabel, inputBytes:size, limit, droppedItems:0, droppedBytes:0, detail:'供应商拒绝上下文；本地预算不是模型容量保证，输入完整保留。'});
+      throw classified;
     }
+    if (input.signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消；未保存迟到的结果。');
     if (result.finishReason === 'length') {
+      input.report?.({layer, action:'rejected', identity:input.contextLabel, inputBytes:size, outputBytes:utf8Size(result.content), limit, droppedItems:1, droppedBytes:utf8Size(result.content), detail:`模型输出达到 max_tokens=${input.maxTokens}；丢弃该层半成品，全部输入与已完成层保留。`});
       throw new KnowledgeError(
         'truncated',
         `${input.contextLabel}的 AI 输出达到本次请求的输出长度上限（max_tokens=${input.maxTokens}，模型 ${config.model}），属于输出被截断而不是输入上下文不足；为避免保存残缺内容已放弃本次结果。若该阶段反复截断，说明整份文档无法在一次输出内综合完，需要改为分批综合后再合并。`,
@@ -307,10 +325,11 @@ async function completeJson(
       if (error instanceof KnowledgeError && error.code !== 'invalid_output') throw error;
       lastFailure = error instanceof Error ? error.message : String(error);
     }
+    input.report?.({ layer: input.layer ?? 'document', action: 'rejected', identity: input.contextLabel, inputBytes: utf8Size(result.content), limit: SYNTHESIS_BUDGET[input.layer ?? 'document'], droppedItems: 1, droppedBytes: utf8Size(result.content), detail: `丢弃未通过校验的模型输出，保留全部输入；校验尝试 ${attempt + 1}：${lastFailure}` });
     if (attempt === 0) {
       messages.push({
         role: 'assistant',
-        content: result.content.slice(0, 4000),
+        content: '上次输出未通过校验（避免重复占用上下文，正文不回传）。',
       });
       messages.push({
         role: 'user',
@@ -564,6 +583,10 @@ function uniqueSources(sources: SourceReference[]): SourceReference[] {
   });
 }
 
+function retainOriginalSources(current: SourceReference[], original: SourceReference[]): SourceReference[] {
+  return uniqueSources([...current, ...original.filter(source => !current.some(existing => existing.documentId === source.documentId && existing.fileName === source.fileName && existing.pageStart <= source.pageStart && (existing.pageEnd ?? existing.pageStart) >= (source.pageEnd ?? source.pageStart)))]);
+}
+
 function buildDocumentDigest(
   payload: AiDigestPayload,
   meta: {
@@ -591,6 +614,7 @@ function buildDocumentDigest(
         ...existing.sources,
         ...concept.sources,
       ]);
+      if (concept.description.length > existing.description.length) existing.description = concept.description;
       continue;
     }
     usedLabels.add(key);
@@ -756,6 +780,7 @@ function courseSynthesisPrompt(input: {
   courseName: string;
   digests: DocumentDigest[];
   userNodeLabels: string[];
+  records?: unknown[];
 }): string {
   const documents = input.digests.map((digest) => ({
     documentId: digest.documentId,
@@ -781,7 +806,7 @@ function courseSynthesisPrompt(input: {
   return [
     `你在为一门课程构建总知识库。课程名称：${input.courseName}。`,
     '以下是课程中所有已纳入文档的结构化摘要（JSON 数组）：',
-    JSON.stringify(documents),
+    JSON.stringify(input.records ?? documents),
     '',
     input.userNodeLabels.length > 0
       ? `以下概念已由用户手工创建，属于用户节点，禁止重复输出：${input.userNodeLabels.join('、')}。`
@@ -822,7 +847,7 @@ function validateCoursePayload(
   const documentMeta = new Map<string, { fileName: string; maxPage: number }>();
   for (const digest of context.digests) {
     const fileName = digestFileName(digest);
-    const maxPage = Math.max(digest.sourcePages.length, 1);
+    const maxPage = Math.max(...digest.sourcePages, 1);
     documentMeta.set(digest.documentId, { fileName, maxPage });
   }
 
@@ -866,6 +891,12 @@ function validateCoursePayload(
         `课程概念“${conceptLabel}”缺少 sources 来源。`,
       );
     }
+    const existing = nodes.find(node => normalizeConceptKey(node.label) === normalizeConceptKey(conceptLabel));
+    if (existing) {
+      idMap.set(requireString(item.id, 'id', label), existing.id);
+      existing.sources = uniqueSources([...existing.sources, ...sourcesRaw.map(source => validateSource(source, conceptLabel))]);
+      continue;
+    }
     const id = `${context.courseId}-kn-${index + 1}`;
     idMap.set(requireString(item.id, 'id', label), id);
     nodes.push({
@@ -878,7 +909,8 @@ function validateCoursePayload(
 
   for (let index = 0; index < conceptsRaw.length; index++) {
     const parent = (conceptsRaw[index] as Record<string, unknown>).parentId;
-    nodes[index].parentId = parent === null ? null : typeof parent === 'string' ? idMap.get(parent) ?? parent : undefined;
+    const target = nodes.find(node => node.id === idMap.get(String((conceptsRaw[index] as Record<string, unknown>).id)));
+    if (target) target.parentId = parent === null ? null : typeof parent === 'string' ? idMap.get(parent) ?? parent : undefined;
   }
   const nodeIds = new Set(nodes.map((node) => node.id));
   const relations: ConceptRelation[] = [];
@@ -949,6 +981,7 @@ export function createKnowledgeProviderForSettings(
   settings: KnowledgeSettings,
   fetchImpl?: typeof fetch,
   cache?: KnowledgeDigestCache,
+  intermediateStore?: KVStore<unknown>,
 ): KnowledgeProvider {
   if (!knowledgeSettingsConfigured(settings)) {
     throw new KnowledgeError(
@@ -965,6 +998,56 @@ export function createKnowledgeProviderForSettings(
     fetchImpl,
   };
   const digestCache = cache ?? createKnowledgeDigestCache();
+  const layerCache = intermediateStore ?? createIndexedDBStore<unknown>('pdf-reader', 'kv');
+  const context = (input: AnalyzeDocumentInput | SynthesizeCourseInput) => {
+    const diagnostics: SynthesisDiagnostic[] = [];
+    const report = (diagnostic: SynthesisDiagnostic) => { diagnostics.push(diagnostic); input.onDiagnostic?.(diagnostic); };
+    const request = async (layer: SynthesisLayer, identity: string, userPrompt: string, glossaryText: string, validate: (raw: unknown) => void, intermediate = false, provenance?: SourceReference[]) => {
+      const prompt = userPrompt + (intermediate ? `\n这是分层中间归并。保留来源、概念身份和真实层级，压缩重复叙述。JSON 输出不得超过 ${SYNTHESIS_BUDGET.intermediate} UTF-8 字节；关键元素由应用独立保管，不必重复展开完整表格。` : '');
+      const check = (raw: unknown) => {
+        validate(raw);
+        if (provenance) {
+          (raw as Record<string, unknown>).provenance = provenance;
+          const outputSources = synthesisSources(raw, provenance.length === 1 ? provenance[0] : undefined);
+          for (const source of outputSources) if (!provenance.some(allowed => allowed.documentId === source.documentId && allowed.fileName === source.fileName && allowed.pageStart <= source.pageStart && (allowed.pageEnd ?? allowed.pageStart) >= (source.pageEnd ?? source.pageStart))) throw new KnowledgeError('invalid_output', '本层输出引用了本批输入未提供的文件或页码；请只使用本批来源。');
+        }
+        if (intermediate && utf8Size(raw) > SYNTHESIS_BUDGET.intermediate) throw new KnowledgeError('invalid_output', '中间归并输出超过 10000 字节，请压缩重复叙述与解释。');
+      };
+      if (input.signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
+      const key = await synthesisCacheKey({ layer, identity, provider: `${KNOWLEDGE_PROVIDER_ID}@${settings.baseUrl}`, model, promptVersion: `${KNOWLEDGE_DIGEST_PROMPT_VERSION}/${KNOWLEDGE_COURSE_PROMPT_VERSION}/${HIERARCHICAL_PROMPT_VERSION}`, input: { prompt, glossaryText } });
+      const unavailable = () => { input.onStage?.('cache-unavailable', {}); report({layer, action:'cache-unavailable', identity, inputBytes:0, limit:0, droppedItems:0, droppedBytes:0, detail:'中间缓存不可用；本次计算继续，跨重试复用不可保证。'}); };
+      if ('bypassCache' in input && input.bypassCache) {
+        try { await layerCache.delete(key); } catch { unavailable(); }
+      }
+      if (!('bypassCache' in input && input.bypassCache)) {
+        try {
+          const cached = await layerCache.get(key) as { schemaVersion?: number; raw?: unknown } | undefined;
+          if (cached?.schemaVersion === 1 && cached.raw) {
+            check(cached.raw);
+            if (input.signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
+            report({ layer, action:'cache-hit', identity, inputBytes:utf8Size(prompt), outputBytes:utf8Size(cached.raw), limit:SYNTHESIS_BUDGET[layer], droppedItems:0, droppedBytes:0, detail:'复用已通过校验的完整层；旧格式或损坏缓存视为未命中。' });
+            return cached.raw;
+          }
+        } catch (error) { if (input.signal?.aborted) throw error; unavailable(); }
+      }
+      try {
+        const raw = await completeJson(requestConfig, { userPrompt:prompt, glossaryText, maxTokens:maxOutputTokens, signal:input.signal, contextLabel:`${{chunk:'分块分析',document:'文档综合',course:'课程综合'}[layer]} ${identity}`, layer, report, validate:check });
+        if (input.signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
+        try { await layerCache.set(key, { schemaVersion:1, raw }); } catch { unavailable(); }
+        report({layer, action:'completed', identity, inputBytes:utf8Size(prompt), outputBytes:utf8Size(raw), limit:SYNTHESIS_BUDGET[layer], droppedItems:0, droppedBytes:0, detail:'完整层已通过校验。'});
+        return raw;
+      } catch (error) {
+        if (error instanceof Error) Object.assign(error, { diagnostics });
+        throw error;
+      }
+    };
+    const quality = (evidence: KnowledgeEvidence[], raw: unknown, layer: SynthesisLayer, identity: string) => {
+      const output = JSON.stringify(raw);
+      const missing = evidence.filter(item => !output.includes(JSON.stringify(item.text).slice(1,-1)));
+      if (missing.length) report({ layer, action:'quality-restored', identity, inputBytes: utf8Size(evidence), limit:0, droppedItems:0, droppedBytes:0, affected: missing.map(item => ({sources:item.sources,bytes:utf8Size(item.text),preview:item.text.slice(0,120)})), detail:`检测到 ${missing.length} 个关键元素未逐字保留，已从来源证据账本补回（${utf8Size(missing)} 字节）；未新增脑图分支。` });
+    };
+    return { diagnostics, report, request, quality };
+  };
 
   return {
     id: KNOWLEDGE_PROVIDER_ID,
@@ -973,6 +1056,8 @@ export function createKnowledgeProviderForSettings(
     coursePromptVersion: KNOWLEDGE_COURSE_PROMPT_VERSION,
 
     async analyzeDocument(input): Promise<DocumentDigest> {
+      const run = context(input);
+      if (input.signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
       const documentId = input.documentId || stableDocumentId(input.fingerprint);
       const pageCount = input.pages.length;
       if (pageCount === 0) {
@@ -982,27 +1067,32 @@ export function createKnowledgeProviderForSettings(
       const termFingerprint = await glossaryFingerprint(input.glossary);
       const cacheKey = knowledgeDigestCacheKey({
         glossaryFingerprint: termFingerprint,
-        fingerprint: input.fingerprint,
-        provider: KNOWLEDGE_PROVIDER_ID,
+        fingerprint: `${input.fingerprint}:${documentId}:${input.fileName}`,
+        provider: `${KNOWLEDGE_PROVIDER_ID}@${settings.baseUrl}`,
         model,
         promptVersion: KNOWLEDGE_DIGEST_PROMPT_VERSION,
         schemaVersion: DIGEST_SCHEMA_VERSION,
       });
-      if (!input.bypassCache) {
+      if (!input.bypassCache && !input.resume) {
         let cached: DocumentDigest | undefined;
         try { cached = await digestCache.lookup(cacheKey); }
         catch { input.onStage?.('cache-unavailable', {}); }
+        try {
         if (cached && isDocumentDigestLike(cached) && cached.documentId === documentId
           && cached.schemaVersion === DIGEST_SCHEMA_VERSION && cached.promptVersion === KNOWLEDGE_DIGEST_PROMPT_VERSION
           && cached.model === model && cached.provider === KNOWLEDGE_PROVIDER_ID
+          && cached.concepts.every(node => node && typeof node.id === 'string' && Array.isArray(node.sources))
           && hierarchyIssues(cached.concepts, hasExplicitChapterHierarchy(input.pages) ? 3 : 1).length === 0) {
+          if (input.signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
           input.onStage?.('cached', {});
           return cached;
         }
+        } catch (error) { if (input.signal?.aborted) throw error; /* Damaged old cache: recompute. */ }
       }
 
       const chunks = buildPdfChunks(input.pages);
       const chunkResults: unknown[] = [];
+      const sourceLedger = sourceEvidence(input.pages, documentId, input.fileName);
       for (const chunk of chunks) {
         if (input.signal?.aborted) {
           throw new KnowledgeError('aborted', '知识库分析已取消。');
@@ -1011,40 +1101,54 @@ export function createKnowledgeProviderForSettings(
           chunkIndex: chunk.index + 1,
           chunkCount: chunks.length,
         });
-        const data = await completeJson(requestConfig, {
-          glossaryText,
-          userPrompt: chunkAnalysisPrompt({
-            fileName: input.fileName,
-            documentId,
-            pageCount,
-            chunk,
-          }),
-          maxTokens: maxOutputTokens,
-          signal: input.signal,
-          contextLabel: `分块分析（第 ${chunk.pageStart}–${chunk.pageEnd} 页）`,
-        });
+        const data = await run.request('chunk', `${documentId}/chunk-${chunk.index}`, chunkAnalysisPrompt({ fileName: input.fileName, documentId, pageCount, chunk }), glossaryText, raw => {
+          const root = assertObject(raw, '分块分析');
+          if (!Array.isArray(root.sections) || !root.sections.length || !Array.isArray(root.concepts)) throw new KnowledgeError('invalid_output', '分块缺少 sections/concepts');
+          for (const section of root.sections) {
+            const entry = assertObject(section, '分块章节');
+            const range = assertValidPageRange(entry.pageStart, entry.pageEnd, pageCount, '分块章节');
+            if (range.pageStart < chunk.pageStart || range.pageEnd > chunk.pageEnd) throw new KnowledgeError('invalid_source_pages', '分块来源超出本次分块页码。');
+            requireString(entry.summary, 'summary', '分块章节');
+            if (entry.points !== undefined && !Array.isArray(entry.points)) throw new KnowledgeError('invalid_output', '分块 points 必须是数组。');
+            for (const point of Array.isArray(entry.points) ? entry.points : []) {
+              const item = assertObject(point, '分块要点');
+              requireString(item.text, 'text', '分块要点');
+              const pages = assertValidPageRange(item.pageStart, item.pageEnd, pageCount, '分块要点');
+              if (pages.pageStart < range.pageStart || pages.pageEnd > range.pageEnd) throw new KnowledgeError('invalid_source_pages', '分块要点来源超出章节页码。');
+            }
+          }
+          for (const concept of root.concepts) {
+            const item = assertObject(concept, '分块概念');
+            requireString(item.label, 'label', '分块概念');
+            requireString(item.description, 'description', '分块概念');
+            if (!Array.isArray(item.sources) || !item.sources.length) throw new KnowledgeError('invalid_output', '分块概念缺少来源。');
+            for (const source of item.sources) {
+              const entry = assertObject(source, '分块来源');
+              const pages = assertValidPageRange(entry.pageStart, entry.pageEnd, pageCount, '分块来源');
+              if (pages.pageStart < chunk.pageStart || pages.pageEnd > chunk.pageEnd) throw new KnowledgeError('invalid_source_pages', '分块概念来源超出本分块页码。');
+              entry.documentId = documentId; entry.fileName = input.fileName; entry.type = 'pdf';
+            }
+          }
+        }, false, [{documentId, fileName:input.fileName, pageStart:chunk.pageStart, pageEnd:chunk.pageEnd, type:'pdf'}]);
+        run.quality(sourceLedger.filter(item => item.sources.some(source => chunk.pages.includes(source.pageStart))), data, 'chunk', `${documentId}/chunk-${chunk.index}`);
         chunkResults.push(data);
       }
 
-      input.onStage?.('synthesize', { chunkCount: chunks.length });
-      const synthesisRaw = await completeJson(requestConfig, {
-        glossaryText,
-        userPrompt: digestSynthesisPrompt({
-          fileName: input.fileName,
-          documentId,
-          pageCount,
-          chunkResults,
-        }),
-        maxTokens: maxOutputTokens,
-        signal: input.signal,
-        contextLabel: '单文档综合',
-        validate: raw => {
-          const payload = validateDigestPayload(raw, { fileName: input.fileName, documentId, pageCount });
-          validateHierarchyPayload(raw, hasExplicitChapterHierarchy(input.pages) ? 3 : 1);
-          const candidate = buildDocumentDigest(payload, { documentId, fingerprint: input.fingerprint, fileName: input.fileName, pageCount, provider: KNOWLEDGE_PROVIDER_ID, model, now: '' });
+      const evidence = uniqueEvidence([...sourceLedger, ...chunkResults.flatMap(raw => collectEvidence(raw, { documentId, fileName:input.fileName, pageStart:1, pageEnd:pageCount, type:'pdf' }))]);
+      const records = utf8Size(chunkResults) <= SYNTHESIS_BUDGET.payload ? chunkResults : chunkResults.flatMap((raw, chunkIndex) => synthesisRecords(raw, { documentId, fileName:input.fileName, chunkIndex }));
+      const synthesisRaw = await reduceWithinBudget({ records, layer:'document', identity:documentId, report:run.report, reduce: async (batch, identity, intermediate) => {
+        input.onStage?.('synthesize', { chunkCount:chunks.length, identity });
+        const raw = await run.request('document', identity, digestSynthesisPrompt({ fileName:input.fileName, documentId, pageCount, chunkResults:batch }), glossaryText, raw => {
+          const payload = validateDigestPayload(raw, { fileName:input.fileName, documentId, pageCount });
+          ((raw as {concepts: DigestConcept[]}).concepts).forEach((node, index) => {node.sources = payload.concepts[index].sources;});
+          validateHierarchyPayload(raw, !intermediate && hasExplicitChapterHierarchy(input.pages) ? 3 : 1);
+          const candidate = buildDocumentDigest(payload, { documentId, fingerprint:input.fingerprint, fileName:input.fileName, pageCount, provider:KNOWLEDGE_PROVIDER_ID, model, now:'' });
           assertNormalizedHierarchy(candidate.concepts, raw);
-        },
-      });
+        }, intermediate, synthesisSources(batch, {documentId,fileName:input.fileName,pageStart:1,type:'pdf'}));
+        run.quality(batch.flatMap(value => collectEvidence(value, {documentId, fileName:input.fileName, pageStart:1, pageEnd:pageCount, type:'pdf'})), raw, 'document', identity);
+        return raw;
+      }}).catch(error => { if (error instanceof Error) Object.assign(error, {diagnostics:run.diagnostics}); throw error; });
+      run.quality(evidence, synthesisRaw, 'document', documentId);
 
       const payload = validateDigestPayload(synthesisRaw, {
         fileName: input.fileName,
@@ -1060,40 +1164,61 @@ export function createKnowledgeProviderForSettings(
         model,
         now: new Date().toISOString(),
       });
+      for (const node of digest.concepts) {
+        const original = chunkResults.flatMap(raw => (raw as {concepts: DigestConcept[]}).concepts).filter(item => normalizeConceptKey(item.label) === normalizeConceptKey(node.label));
+        node.sources = retainOriginalSources(node.sources, original.flatMap(item => item.sources.map(source => ({...source, documentId, fileName:input.fileName, type:'pdf' as const}))));
+      }
+      digest.evidence = evidence;
+      const digestText = JSON.stringify(digest.sections);
+      for (const [index, item] of evidence.entries()) {
+        if (digestText.includes(JSON.stringify(item.text).slice(1,-1))) continue;
+        for (const [sourceIndex, source] of item.sources.entries()) digest.sections.push({id:`${documentId}-evidence-${index}-${sourceIndex}`,title:'关键元素（来源原文保留）',summary:'综合校验补回的关键元素。',points:[{text:item.text,pageStart:source.pageStart,pageEnd:source.pageEnd ?? source.pageStart}],pageStart:source.pageStart,pageEnd:source.pageEnd ?? source.pageStart});
+      }
+      digest.diagnostics = run.diagnostics;
       digest.glossaryFingerprint = termFingerprint;
       if (input.signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
       try { await digestCache.save(cacheKey, digest); }
       catch { input.onStage?.('cache-unavailable', {}); }
+      if (input.signal?.aborted) throw new KnowledgeError('aborted', '生成已取消；已完成的完整文档缓存保留。');
       return digest;
     },
 
     async synthesizeCourseKnowledge(input): Promise<AiCourseKnowledge> {
+      if (input.signal?.aborted) throw new KnowledgeError('aborted', '课程综合已取消。');
       if (input.digests.length === 0) {
         throw new KnowledgeError('invalid_input', '课程中还没有可综合的文档摘要。');
       }
-      input.onStage?.('course-merge', {});
-      const raw = await completeJson(requestConfig, {
-        glossaryText: glossaryPrompt(input.glossary, JSON.stringify(input.digests)),
-        userPrompt: courseSynthesisPrompt({
-          courseName: input.courseName,
-          digests: input.digests,
-          userNodeLabels: input.userNodeLabels ?? [],
-        }),
-        maxTokens: maxOutputTokens,
-        signal: input.signal,
-        contextLabel: '课程综合',
-        validate: raw => {
-          const payload = validateCoursePayload(raw, { digests: input.digests, courseId: input.courseId });
-          validateHierarchyPayload(raw, input.digests.some(d => inspectHierarchy(d.concepts).maxDepth >= 3) ? 3 : 1);
+      const run = context(input);
+      const evidence = uniqueEvidence(input.digests.flatMap(digest => [...(digest.evidence ?? []), ...collectEvidence(digest, {documentId:digest.documentId, fileName:digestFileName(digest), pageStart:1, pageEnd:digest.sourcePages.length, type:'pdf'})]));
+      const glossaryText = glossaryPrompt(input.glossary, JSON.stringify(input.digests));
+      const documents = input.digests.map(digest => ({ documentId:digest.documentId, fileName:digestFileName(digest), title:digest.title, overview:digest.overview, sections:digest.sections.filter(section => !section.id.startsWith(`${digest.documentId}-evidence-`)), retainedEvidenceCount:digest.evidence?.length ?? 0, concepts:digest.concepts, relations:digest.relations }));
+      const records = utf8Size(documents) <= SYNTHESIS_BUDGET.payload ? documents : documents.flatMap(digest => synthesisRecords(digest, {documentId:digest.documentId, fileName:digest.fileName}));
+      const raw = await reduceWithinBudget({ records, layer:'course', identity:input.courseId, report:run.report, reduce:async (batch, identity, intermediate) => {
+        input.onStage?.('course-merge', {identity});
+        const result = await run.request('course', identity, courseSynthesisPrompt({ courseName:input.courseName, digests:[], records:batch, userNodeLabels:input.userNodeLabels ?? [] }), glossaryText, raw => {
+          const payload = validateCoursePayload(raw, {digests:input.digests, courseId:input.courseId});
+          for (const node of (raw as {concepts: DigestConcept[]}).concepts) node.sources = node.sources.map(source => ({...source, fileName:digestFileName(input.digests.find(digest => digest.documentId === source.documentId)!)}));
+          validateHierarchyPayload(raw, !intermediate && input.digests.some(d => inspectHierarchy(d.concepts).maxDepth >= 3) ? 3 : 1);
           assertNormalizedHierarchy(payload.nodes, raw);
-        },
-      });
+        }, intermediate, synthesisSources(batch));
+        const fallback = synthesisSources(batch)[0];
+        if (fallback) run.quality(batch.flatMap(value => collectEvidence(value, fallback)), result, 'course', identity);
+        return result;
+      }}).catch(error => { if (error instanceof Error) Object.assign(error, {diagnostics:run.diagnostics}); throw error; });
+      if (input.signal?.aborted) throw new KnowledgeError('aborted', '课程综合已取消；旧成果保留。');
+      run.quality(evidence, raw, 'course', input.courseId);
       const payload = validateCoursePayload(raw, {
         digests: input.digests,
         courseId: input.courseId,
       });
+      for (const node of payload.nodes) {
+        const original = input.digests.flatMap(digest => digest.concepts).filter(item => normalizeConceptKey(item.label) === normalizeConceptKey(node.label));
+        node.sources = retainOriginalSources(node.sources, original.flatMap(item => item.sources));
+      }
       return {
         ...payload,
+        evidence,
+        diagnostics:run.diagnostics,
         provider: KNOWLEDGE_PROVIDER_ID,
         model,
         promptVersion: KNOWLEDGE_COURSE_PROMPT_VERSION,

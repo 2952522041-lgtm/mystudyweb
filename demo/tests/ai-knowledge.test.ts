@@ -293,7 +293,10 @@ const GLM_4_6V_SETTINGS: KnowledgeSettings = {
 };
 
 function makeSecondDigest(): DocumentDigest {
+  const base = makeAiDigest();
   return makeAiDigest({
+    sections: base.sections.map(section => ({...section, pageEnd:3})),
+    concepts: base.concepts.map((concept,index) => ({...concept, sources:[{documentId:'doc-bbbbbbbbbbbbbbbb',fileName:'讲义2.pdf',pageStart:index+2,type:'pdf'}]})),
     documentId: 'doc-bbbbbbbbbbbbbbbb',
     fingerprint: 'bb11'.repeat(16),
     title: '讲义2',
@@ -510,7 +513,7 @@ void test('invalid JSON output triggers exactly one corrective retry', async () 
   }>;
   assert.equal(retryMessages.at(-1)?.role, 'user');
   assert.match(retryMessages.at(-1)?.content ?? '', /无法解析为 JSON/);
-  assert.match(retryMessages.at(-2)?.content ?? '', /抱歉/);
+  assert.match(retryMessages.at(-2)?.content ?? '', /上次输出未通过校验/);
 });
 
 void test('finish_reason=length results are rejected and never cached', async () => {
@@ -851,7 +854,7 @@ void test('single-PDF summary and mindmap come from the mocked AI response', asy
   });
 
   assert.equal(digest.schemaVersion, 3);
-  assert.equal(digest.promptVersion, 'ai-digest-v4');
+  assert.equal(digest.promptVersion, 'ai-digest-v5');
   assert.ok(digest.overview.length > 80, 'overview should be a real synthesis');
   assert.equal(digest.sourcePages, digest.sourcePages); // sanity
   assert.deepEqual(digest.sourcePages, [1, 2, 3]);
@@ -916,7 +919,7 @@ void test('course knowledge is synthesized across multiple documents by AI', asy
   assert.match(prompt, /doc-bbbbbbbbbbbbbbbb/);
   assert.match(prompt, /我的疑问/);
 
-  assert.equal(aiKnowledge.promptVersion, 'ai-course-v3');
+  assert.equal(aiKnowledge.promptVersion, 'ai-course-v4');
   assert.equal(aiKnowledge.provider, 'openai-compatible-knowledge');
 
   let knowledge = emptyCourseKnowledge('course-1', '线性代数', '2026-08-31T00:00:00.000Z');
@@ -1485,7 +1488,7 @@ void test('unavailable IndexedDB cache does not discard successful AI work', asy
   const { provider } = makeProvider([chunkAnalysisReply(), digestReply()], broken);
   const digest = await provider.analyzeDocument({fingerprint:FINGERPRINT,documentId:DOCUMENT_ID,fileName:FILE_NAME,pages:PAGES,onStage:(stage) => stages.push(stage)});
   assert.equal(digest.title, '线性代数讲义');
-  assert.equal(stages.filter((stage) => stage === 'cache-unavailable').length, 2);
+  assert.equal(stages.filter((stage) => stage === 'cache-unavailable').length, 6);
 });
 
 void test('duplicate document concepts remap every relation and retain scientific signs', async () => {

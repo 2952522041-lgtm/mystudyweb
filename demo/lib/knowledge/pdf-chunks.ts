@@ -60,7 +60,7 @@ export function splitPageIntoSegments(
     });
     remaining = remaining.slice(cut).trim();
     if (remaining.length === 0) break;
-    if (part > 200) break;
+
   }
   for (const segment of segments) segment.partCount = segments.length;
   return segments.filter((segment) => segment.text.length > 0);
@@ -78,12 +78,13 @@ export function buildPdfChunks(
 ): PdfChunk[] {
   const maxChunkChars = options?.maxChunkChars ?? PDF_CHUNK_MAX_CHARS;
   const segments = pages.flatMap((text, index) =>
-    splitPageIntoSegments(index + 1, text),
+    splitPageIntoSegments(index + 1, text, Math.min(PDF_PAGE_MAX_CHARS, maxChunkChars)),
   );
 
   const chunks: PdfChunk[] = [];
   let current: PageSegment[] = [];
   let currentChars = 0;
+  let taggedChars = 0;
 
   const flush = () => {
     if (current.length === 0) return;
@@ -98,14 +99,16 @@ export function buildPdfChunks(
     });
     current = [];
     currentChars = 0;
+    taggedChars = 0;
   };
 
   for (const segment of segments) {
-    if (current.length > 0 && currentChars + segment.text.length > maxChunkChars) {
+    if (current.length > 0 && taggedChars + pageTag(segment).length + 1 > maxChunkChars) {
       flush();
     }
     current.push(segment);
     currentChars += segment.text.length;
+    taggedChars += pageTag(segment).length + 1;
     if (currentChars >= maxChunkChars) flush();
   }
   flush();

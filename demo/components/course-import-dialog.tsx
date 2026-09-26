@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import type { SynthesisDiagnostic } from '@/lib/knowledge/hierarchical-synthesis';
 import {
   BrainCircuit,
   FileText,
@@ -76,14 +77,18 @@ export function CourseImportDialog({
     file: File,
     options: ImportOptions,
     onProgress: (message: string, percent: number) => void,
+    signal?: AbortSignal,
+    onDiagnostic?: (diagnostic: SynthesisDiagnostic) => void,
   ) => Promise<string | void>;
 }) {
+  const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [options, setOptions] = useState(DEFAULT_OPTIONS);
   const [progress, setProgress] = useState(0);
   const [progressMessage, setProgressMessage] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<SynthesisDiagnostic[]>([]);
   const [processing, setProcessing] = useState(false);
 
   const updateOption = (key: keyof ImportOptions, checked: boolean) =>
@@ -92,14 +97,17 @@ export function CourseImportDialog({
   const submit = async () => {
     if (!file) return;
     setProcessing(true);
+    setDiagnostics([]);
     setError(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
     setProgress(3);
     setProgressMessage('准备复制到课程文件夹');
     try {
       const completionMessage = await onImport(file, options, (message, percent) => {
         setProgressMessage(message);
         setProgress(percent);
-      });
+      }, controller.signal, diagnostic => setDiagnostics(previous => [...previous, diagnostic]));
       setProgress(100);
       setProgressMessage(completionMessage ?? '处理完成，成果已保存到本地');
       setTimeout(() => {
@@ -114,6 +122,7 @@ export function CourseImportDialog({
         importError instanceof Error ? importError.message : '导入失败。',
       );
     } finally {
+      abortRef.current = null;
       setProcessing(false);
     }
   };
@@ -248,13 +257,14 @@ export function CourseImportDialog({
           </p>
         ) : null}
 
+        {diagnostics.length ? <details className="max-h-48 overflow-auto text-xs"><summary>分层生成诊断（{diagnostics.length}）</summary><pre className="whitespace-pre-wrap">{JSON.stringify(diagnostics, null, 2)}</pre></details> : null}
         <DialogFooter>
           <Button
             variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={processing}
+            onClick={() => processing ? abortRef.current?.abort() : onOpenChange(false)}
+            disabled={processing && progress >= 90}
           >
-            取消
+            {processing ? '取消生成' : '取消'}
           </Button>
           <Button onClick={() => void submit()} disabled={!file || processing}>
             {processing ? (

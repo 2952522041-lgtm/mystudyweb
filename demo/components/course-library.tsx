@@ -24,6 +24,8 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 
+import { knowledgeStageMessage } from '@/lib/knowledge/synthesis-progress';
+import type { SynthesisDiagnostic } from '@/lib/knowledge/hierarchical-synthesis';
 import { CourseGlossary } from '@/components/course-glossary';
 import { EMPTY_GLOSSARY, glossaryFingerprint, type Glossary } from '@/lib/glossary';
 import { CourseImportDialog } from '@/components/course-import-dialog';
@@ -163,6 +165,11 @@ export function CourseLibrary({
   const [courseName, setCourseName] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [generationAbort, setGenerationAbort] = useState<AbortController | null>(null);
+  const [generationCourseId, setGenerationCourseId] = useState<string | null>(null);
+  const [retryGeneration, setRetryGeneration] = useState<(() => void) | null>(null);
+  const [generationDiagnostics, setGenerationDiagnostics] = useState<SynthesisDiagnostic[]>([]);
+  const onDiagnostic = (diagnostic: SynthesisDiagnostic) => setGenerationDiagnostics(previous => [...previous, diagnostic]);
   const [error, setError] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<
     | { kind: 'course'; entry: CourseEntry }
@@ -586,10 +593,15 @@ export function CourseLibrary({
     file: File,
     options: ImportOptions,
     onProgress: (message: string, percent: number) => void,
+    signal?: AbortSignal,
+    onImportDiagnostic?: (diagnostic: SynthesisDiagnostic) => void,
   ) => {
     if (!active?.bundle) throw new Error('请先连接课程文件夹。');
     setError(null);
     setMessage(null);
+    setGenerationDiagnostics([]);
+    setGenerationCourseId(activeId);
+    const reportDiagnostic = (diagnostic: SynthesisDiagnostic) => { onDiagnostic(diagnostic); onImportDiagnostic?.(diagnostic); };
     onProgress('正在检查 PDF 内容是否已存在', 3);
     const fingerprint = await sha256Hex(await file.arrayBuffer());
     // 读取当前清单，避免课程在其他窗口更新后仍按旧界面状态启动 AI。
@@ -614,6 +626,7 @@ export function CourseLibrary({
     onProgress('正在提取 PDF 文字', 6);
     const recognizePage = makeOcrRecognizer(chatSettings);
     const extracted = await extractPdfPages(file, {
+      signal,
       onProgress: (page, count, stage) => {
         onProgress(
           stage === 'ocr'
@@ -626,27 +639,13 @@ export function CourseLibrary({
     });
 
     const digest = await provider.analyzeDocument({
+      signal, onDiagnostic: reportDiagnostic,
       glossary,
       fingerprint: extracted.fingerprint,
       fileName: file.name,
       documentId: stableDocumentId(extracted.fingerprint),
       pages: extracted.pages,
-      onStage: (stage, detail) => {
-        if (
-          stage === 'chunk-analysis' &&
-          detail?.chunkIndex &&
-          detail?.chunkCount
-        ) {
-          onProgress(
-            `AI 正在分块分析（${detail.chunkIndex} / ${detail.chunkCount}）`,
-            22 + Math.round((detail.chunkIndex / detail.chunkCount) * 40),
-          );
-        } else if (stage === 'synthesize') {
-          onProgress('AI 正在综合整份文档摘要', 66);
-        } else if (stage === 'cached') {
-          onProgress('命中本机缓存，复用上次的 AI 分析结果', 66);
-        }
-      },
+      onStage: (stage, detail) => onProgress(knowledgeStageMessage(stage, detail), stage === 'chunk-analysis' ? 40 : 66),
     });
 
     let aiKnowledge: AiCourseKnowledge | undefined;
@@ -660,6 +659,8 @@ export function CourseLibrary({
         digest,
       ];
       aiKnowledge = await provider.synthesizeCourseKnowledge({
+        signal, onDiagnostic: reportDiagnostic,
+        onStage: (stage, detail) => onProgress(knowledgeStageMessage(stage, detail), 78),
         glossary,
         courseId: bundle.manifest.id,
         courseName: bundle.manifest.name,
@@ -670,6 +671,7 @@ export function CourseLibrary({
       });
     }
 
+    if (signal?.aborted) throw new Error('生成已取消；已完成层缓存保留，课程旧成果未变。');
     onProgress('正在保存课程成果', 90);
     const result = await active.storage.importDocument(
       file,
@@ -697,10 +699,15 @@ export function CourseLibrary({
     );
   };
 
-  const regenerateDocument = async (document: DocumentRecord) => {
+  const regenerateDocument = async (document: DocumentRecord, retry = false) => {
     if (!active?.bundle) return;
     setBusy(true);
     setError(null);
+    setRetryGeneration(null);
+    setGenerationDiagnostics([]);
+    setGenerationCourseId(activeId);
+    const controller = new AbortController();
+    setGenerationAbort(controller);
     try {
       const glossary = await active.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
       const provider = createKnowledgeProviderForSettings(
@@ -711,6 +718,7 @@ export function CourseLibrary({
       const file = await active.storage.openPdf(document.id);
       const recognizePage = makeOcrRecognizer(chatSettings);
       const extracted = await extractPdfPages(file, {
+        signal: controller.signal,
         onProgress: (page, count, stage) => {
           setMessage(
             stage === 'ocr'
@@ -720,28 +728,20 @@ export function CourseLibrary({
         },
         recognizePage,
       });
-      // 重新生成必须重新调用 AI：绕过缓存。
+      // 主动重新生成绕过缓存；失败/取消后的重试复用已完成层。
       const digest = await provider.analyzeDocument({
+        signal: controller.signal, onDiagnostic,
         glossary,
         fingerprint: extracted.fingerprint,
         fileName: file.name,
         documentId: stableDocumentId(extracted.fingerprint),
         pages: extracted.pages,
-        bypassCache: true,
-        onStage: (stage, detail) => {
-          if (
-            stage === 'chunk-analysis' &&
-            detail?.chunkIndex &&
-            detail?.chunkCount
-          ) {
-            setMessage(
-              `AI 正在分块分析（${detail.chunkIndex} / ${detail.chunkCount}）`,
-            );
-          } else if (stage === 'synthesize') {
-            setMessage('AI 正在综合整份文档摘要…');
-          }
-        },
+        bypassCache: !retry,
+        resume: retry,
+        onStage: (stage, detail) => setMessage(knowledgeStageMessage(stage, detail)),
       });
+      if (controller.signal.aborted) throw new Error('生成已取消；旧成果保留，已完成层可在重试时复用。');
+      setGenerationAbort(null);
       const next = await active.storage.updateDocumentArtifacts(
         document.id,
         active.bundle.manifest.revision,
@@ -751,7 +751,9 @@ export function CourseLibrary({
       setMessage('已用 AI 重新生成这份 PDF 的总结和脑图。');
     } catch (mutationError) {
       setError(describeKnowledgeError(mutationError));
+      setRetryGeneration(() => () => void regenerateDocument(document, true));
     } finally {
+      setGenerationAbort(null);
       setBusy(false);
     }
   };
@@ -760,6 +762,11 @@ export function CourseLibrary({
     if (!active?.bundle) return;
     setBusy(true);
     setError(null);
+    setRetryGeneration(null);
+    setGenerationDiagnostics([]);
+    setGenerationCourseId(activeId);
+    const controller = new AbortController();
+    setGenerationAbort(controller);
     try {
       const bundle = active.bundle;
       const glossary = await active.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
@@ -775,6 +782,8 @@ export function CourseLibrary({
         )
         .map((item) => bundle.digests[item.id]);
       const aiKnowledge = await provider.synthesizeCourseKnowledge({
+        signal: controller.signal, onDiagnostic,
+        onStage: (stage, detail) => setMessage(knowledgeStageMessage(stage, detail)),
         glossary,
         courseId: bundle.manifest.id,
         courseName: bundle.manifest.name,
@@ -783,6 +792,8 @@ export function CourseLibrary({
           .filter((node) => node.ownership === 'user')
           .map((node) => node.label),
       });
+      if (controller.signal.aborted) throw new Error('生成已取消；旧成果保留，已完成层可在重试时复用。');
+      setGenerationAbort(null);
       const next = await active.storage.mergeDocument(
         document.id,
         bundle.manifest.revision,
@@ -792,7 +803,9 @@ export function CourseLibrary({
       setMessage('这份 PDF 已并入 AI 综合的课程总结和脑图。');
     } catch (mutationError) {
       setError(describeKnowledgeError(mutationError));
+      setRetryGeneration(() => () => void mergeDocumentWithAi(document));
     } finally {
+      setGenerationAbort(null);
       setBusy(false);
     }
   };
@@ -852,6 +865,8 @@ export function CourseLibrary({
           );
           setMessage('AI 正在基于剩余资料重新综合课程总总结与总脑图…');
           aiKnowledge = await provider.synthesizeCourseKnowledge({
+            onDiagnostic,
+            onStage: (stage, detail) => setMessage(knowledgeStageMessage(stage, detail)),
             glossary,
             courseId: bundle.manifest.id,
             courseName: bundle.manifest.name,
@@ -1320,6 +1335,15 @@ export function CourseLibrary({
                                 </div>
                               </KnowledgeSection>
                             ))}
+                          {bundle.knowledge.evidence?.length ? <KnowledgeSection title="关键元素（来源原文保留）">
+                            {bundle.knowledge.evidence.map((item, index) => <div key={index}>
+                              <KnowledgeMarkdown>{item.text}</KnowledgeMarkdown>
+                              {item.sources.map((source, sourceIndex) => <Button key={sourceIndex} variant="outline" size="xs" onClick={() => {
+                                const document = sourceDocuments.get(source.documentId);
+                                if (document) void openDocument(document, source.pageStart);
+                              }}>{source.fileName} · 第 {source.pageStart} 页</Button>)}
+                            </div>)}
+                          </KnowledgeSection> : null}
                           {bundle.knowledge.conflicts.map((conflict) => <KnowledgeSection key={conflict.id} title={`资料冲突：${bundle.knowledge.nodes.find((node) => node.id === conflict.nodeId)?.label ?? conflict.nodeId}`}>
                             {conflict.descriptions.map((description, index) => <KnowledgeMarkdown key={index}>{description}</KnowledgeMarkdown>)}
                             {conflict.sources.map((source, index) => <Button key={index} variant="outline" size="xs" onClick={() => {
@@ -1765,6 +1789,9 @@ export function CourseLibrary({
         </DialogContent>
       </Dialog>
 
+      {generationAbort && busy ? <Button onClick={() => generationAbort?.abort()} className="fixed right-6 bottom-6 z-50">取消生成</Button> : null}
+      {retryGeneration && generationCourseId === activeId && !busy ? <Button onClick={retryGeneration} className="fixed right-6 bottom-6 z-50">重试生成（保留旧成果）</Button> : null}
+      {generationDiagnostics.length > 0 && generationCourseId === activeId ? <details className="fixed bottom-6 left-6 z-40 max-h-60 max-w-xl overflow-auto rounded border bg-white p-2 text-xs"><summary>分层生成诊断（{generationDiagnostics.length}）</summary><pre className="whitespace-pre-wrap">{JSON.stringify(generationDiagnostics, null, 2)}</pre></details> : null}
       <CourseImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}

@@ -99,7 +99,7 @@ for (const [name,mutate,pattern] of invalidCases) void test(`invalid hierarchy i
   const input = await extractLecture();
   const raw = lectureReply(input.documentId,true);
   mutate(raw);
-  const {provider,store,requests} = mockProvider([{},raw,raw]);
+  const {provider,store,requests} = mockProvider([lectureReply(input.documentId,true),raw,raw]);
   await assert.rejects(provider.analyzeDocument(input), (error: unknown) => {
     const message = describeKnowledgeError(error);
     assert.match(message,pattern);

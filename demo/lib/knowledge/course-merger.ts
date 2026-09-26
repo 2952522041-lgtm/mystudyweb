@@ -228,6 +228,8 @@ export function applyAiCourseKnowledge(
       sources: uniqueSources(conflict.sources),
     })),
     unresolvedQuestions: ai.unresolvedQuestions,
+    evidence: ai.evidence,
+    diagnostics: ai.diagnostics,
     provider: ai.provider,
     model: ai.model,
     promptVersion: ai.promptVersion,
@@ -256,6 +258,7 @@ export function removeDocumentContribution(
   const ids = new Set(nodes.map((node) => node.id));
   return {
     ...current,
+    evidence: current.evidence?.map(item => ({ ...item, sources: item.sources.filter(source => source.documentId !== documentId) })).filter(item => item.sources.length),
     version: current.version + 1,
     nodes: nodes.map(node => node.parentId && !ids.has(node.parentId) ? { ...node, parentId: null } : node),
     relations: current.relations.filter(

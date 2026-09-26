@@ -68,6 +68,7 @@ export function renderCourseSummary(
       return `## ${node.label}\n\n${node.description}\n\n来源：${sources}`;
     })
     .join('\n\n');
+  const evidence = knowledge.evidence?.length ? `\n## 关键元素（来源原文保留）\n\n${knowledge.evidence.map(item => `${item.text}\n\n来源：${item.sources.map(formatSource).join('；')}`).join('\n\n')}` : '';
   const generation = knowledge.promptVersion
     ? ` · AI 综合（模型 ${knowledge.model ?? '未知'}）`
     : '';
@@ -85,7 +86,7 @@ export function renderCourseSummary(
   const questions = knowledge.unresolvedQuestions?.length
     ? `\n## 待解决问题\n\n${knowledge.unresolvedQuestions.map((question) => `- ${question}`).join('\n')}\n`
     : '';
-  return `# ${manifest.name}课程总结\n\n> 版本 ${knowledge.version} · 汇总 ${manifest.documents.filter((item) => item.includedInCourse).length} 份 PDF · ${knowledge.updatedAt}${generation}\n\n${concepts || '尚未纳入课程资料。'}\n${conflicts}${questions}`;
+  return `# ${manifest.name}课程总结\n\n> 版本 ${knowledge.version} · 汇总 ${manifest.documents.filter((item) => item.includedInCourse).length} 份 PDF · ${knowledge.updatedAt}${generation}\n\n${concepts || '尚未纳入课程资料。'}\n${conflicts}${questions}${evidence}`;
 }
 
 interface SvgNodeBox {

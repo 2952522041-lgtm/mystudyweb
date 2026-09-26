@@ -22,6 +22,7 @@ const mockSources: Record<string, string> = {
       async load() { return structuredClone(window.fixture.bundle); }
       async importDocument(file, digest, options, revision) {
         const f = window.fixture; f.calls.save++;
+        if (f.pauseCommit) await new Promise(resolve => { f.finishCommit = resolve; });
         if (revision !== f.bundle.manifest.revision) throw new Error('stale revision');
         const document = f.record(digest.fingerprint, file.name);
         f.bundle.manifest.documents.push(document);
@@ -39,6 +40,15 @@ const mockSources: Record<string, string> = {
       return {
         async analyzeDocument(input) {
           f.calls.analyze++;
+          if (f.blockAnalysis) {
+            input.onStage?.('chunk-analysis',{chunkIndex:1,chunkCount:3});
+            await new Promise((resolve) => { f.nextLayer = resolve; });
+            input.onStage?.('synthesize',{identity:'lecture/round-0/batch-0'});
+            await new Promise((resolve) => { f.nextLayer = resolve; });
+            input.onStage?.('course-merge',{identity:'course/final'});
+            await new Promise((resolve) => input.signal.addEventListener('abort',resolve,{once:true}));
+            throw new Error('生成已取消；旧成果保留，已完成层可复用');
+          }
           if (f.hierarchyFailure) throw new Error(f.hierarchyFailure);
           return {documentId: input.documentId, fingerprint: input.fingerprint, sourcePages: [1]};
         },
@@ -202,6 +212,24 @@ window.runImportRegression = async () => {
   await waitFor('visible structure error', () => [...document.querySelectorAll('[role=alert]')].some(node => node.textContent.includes('最大深度 1 < 3')));
   check(button('重试导入'), 'structure failure must offer retry');
   check(JSON.stringify(f.bundle) === beforeFailure && f.calls.save === 1, 'structure failure mutated existing course');
+  f.hierarchyFailure = null;
+  f.blockAnalysis = true;
+  button('重试导入').click();
+  await waitFor('chunk progress', () => text().includes('分块层：'));
+  f.nextLayer();
+  await waitFor('document progress', () => text().includes('文档层：'));
+  f.nextLayer();
+  await waitFor('course progress', () => text().includes('课程层：'));
+  button('取消生成').click();
+  await waitFor('cancelled', () => text().includes('生成已取消') && button('重试导入'));
+  check(JSON.stringify(f.bundle) === beforeFailure && f.calls.save === 1, 'cancel changed old course');
+  f.blockAnalysis = false;
+  f.pauseCommit = true;
+  button('重试导入').click();
+  await waitFor('retry saved', () => f.calls.save === 2);
+  await waitFor('commit cannot be cancelled halfway', () => button('取消生成')?.disabled);
+  f.finishCommit();
+  await waitFor('retry closed', () => !document.querySelector('input[accept="application/pdf,.pdf"]'));
   return f.calls;
 };
 `;
@@ -249,7 +277,7 @@ void test('course import skips identical and renamed PDFs before extraction/AI, 
       child.on('error', (error) => { clearTimeout(timer); reject(error); });
       child.on('close', (code) => { clearTimeout(timer); if (code === 0) resolve(logs); else reject(new Error(logs)); });
     });
-    assert.match(output, /IMPORT_OK .*"analyze":2,"synthesize":1,"extract":2,"save":1/);
+    assert.match(output, /IMPORT_OK .*"analyze":4,"synthesize":2,"extract":4,"save":2/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });
