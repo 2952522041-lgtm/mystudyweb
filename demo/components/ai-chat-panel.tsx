@@ -13,10 +13,7 @@ import {
   Square,
   Trash2,
 } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import rehypeKatex from 'rehype-katex';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
+import { MarkdownOutput } from '@/components/markdown-output';
 
 import { Bubble, BubbleContent } from '@/components/ui/bubble';
 import { Button } from '@/components/ui/button';
@@ -73,24 +70,6 @@ function chatStateKey(fingerprint: string, pageNumber: number, scope: ChatScope)
 
 function messageId(role: 'user' | 'assistant'): string {
   return `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function MarkdownAnswer({ children, onNavigate }: { children: string; onNavigate?: (page: number) => void }) {
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex]}
-      components={{
-        a: ({ children: linkChildren, ...props }) => {
-          const match = props.href?.match(/^#page=(\d+)$/);
-          if (match && onNavigate) return <button type="button" className="text-violet-700 underline" onClick={() => onNavigate(Number(match[1]))}>{linkChildren}</button>;
-          return <a {...props} target="_blank" rel="noreferrer noopener">{linkChildren}</a>;
-        },
-      }}
-    >
-      {children}
-    </ReactMarkdown>
-  );
 }
 
 export function AIChatPanel({
@@ -490,7 +469,7 @@ export function AIChatPanel({
                       }
                     >
                       {message.role === 'assistant' ? (
-                        <MarkdownAnswer onNavigate={onNavigate}>{message.content}</MarkdownAnswer>
+                        <MarkdownOutput onNavigate={onNavigate}>{message.content}</MarkdownOutput>
                       ) : (
                         message.content
                       )}
@@ -506,7 +485,7 @@ export function AIChatPanel({
                   <Bubble variant="ghost">
                     <BubbleContent className="ai-markdown">
                       {state.partial ? (
-                        <MarkdownAnswer>{state.partial}</MarkdownAnswer>
+                        <MarkdownOutput>{state.partial}</MarkdownOutput>
                       ) : (
                         <p className="flex items-center gap-2 text-xs text-violet-700">
                           <LoaderCircle className="size-3.5 animate-spin" />

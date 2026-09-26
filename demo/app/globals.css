@@ -388,7 +388,17 @@
   }
 
   .ai-markdown {
+    overflow-wrap: anywhere;
+    min-width: 0;
     @apply max-w-full text-sm leading-7 text-slate-700;
+  }
+
+  .math-fallback {
+    @apply rounded bg-amber-50 px-1 text-xs text-amber-800;
+  }
+
+  .translation-paragraph:focus-within {
+    outline: 2px solid #d97706;
   }
 
   .ai-markdown > :first-child {
@@ -447,6 +457,7 @@
   }
 
   .ai-markdown .katex-display {
+    max-width: 100%;
     @apply overflow-x-auto overflow-y-hidden py-1;
   }
 }

@@ -43,7 +43,7 @@ async function waitFor(label,predicate) {
   throw new Error('Timeout: '+label+' '+document.querySelector('main')?.textContent.slice(-900));
 }
 const check = (value,message) => {if(!value) throw new Error(message)};
-const target = (index) => document.querySelector('.translation-copy [data-paragraph-index="'+index+'"] button');
+const target = (index) => document.querySelector('.translation-copy [data-paragraph-index="'+index+'"]');
 const source = (page,index) => document.querySelector('.pdf-text-layer[data-page-number="'+page+'"] [data-source-paragraphs~="'+index+'"]');
 const active = () => [...document.querySelectorAll('.paragraph-source-active')];
 window.runReaderRegression = async () => {
@@ -66,7 +66,7 @@ window.runReaderRegression = async () => {
   source(1,0).click();
   await waitFor('source to target', () => target(0)?.dataset.active === 'true');
   check(target(0).getBoundingClientRect().top >= right.getBoundingClientRect().top-1, 'source did not reveal target');
-  target(1).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+  target(1).querySelector('button').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
   await waitFor('keyboard activation', () => target(1).dataset.active === 'true');
   const beforeZoom = source(1,1);
   document.querySelector('[aria-label="放大"]').click();
