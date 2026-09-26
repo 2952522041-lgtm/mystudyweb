@@ -52,16 +52,22 @@ export function statusToBadge(status: TranslationStatus): TranslationBadge {
 /**
  * Count distinct pages that already have a translation (complete or cached),
  * ignoring entries outside 1..pageCount. A page counts once even if several
- * target languages have a state for it.
+ * target languages have a state for it. When a language is supplied, only
+ * that language contributes (matching the thumbnail badges).
  */
 export function countTranslated(
   translationStates: Record<string, TranslationStateLike>,
   pageCount: number,
+  targetLanguage?: string,
 ): { done: number; total: number } {
   const translatedPages = new Set<number>();
   for (const [key, state] of Object.entries(translationStates)) {
     if (!state || !TRANSLATED_STATUSES.has(state.status)) continue;
-    const pageNumber = Number.parseInt(key.split(':')[0] ?? '', 10);
+    const separator = key.indexOf(':');
+    if (separator < 1) continue;
+    if (targetLanguage !== undefined && key.slice(separator + 1) !== targetLanguage) continue;
+    const pageNumber = Number(key.slice(0, separator));
+    if (!Number.isInteger(pageNumber)) continue;
     if (pageNumber >= 1 && pageNumber <= pageCount) {
       translatedPages.add(pageNumber);
     }

@@ -1373,8 +1373,9 @@ function PdfReader({
   const translationProgress = countTranslated(
     translationStates,
     docMeta?.pageCount ?? 0,
+    targetLanguage,
   );
-  const translationProgressLabel = `已翻译 ${translationProgress.done}/${translationProgress.total}`;
+  const translationProgressLabel = `已翻译 ${translationProgress.done} / 总页数 ${translationProgress.total}`;
   const statusBarItems = statusBarParts({
     page,
     pageCount: docMeta?.pageCount ?? 0,

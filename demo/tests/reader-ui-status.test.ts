@@ -103,7 +103,7 @@ void test('thumbnail list feeds the per-page translation state into the badge', 
 void test('right panel header shows the translated-pages progress', () => {
   assert.match(
     pageSource,
-    /countTranslated\(\s*translationStates,\s*docMeta\?\.pageCount \?\? 0,?\s*\)/,
+    /countTranslated\(\s*translationStates,\s*docMeta\?\.pageCount \?\? 0,\s*targetLanguage,?\s*\)/,
   );
   assert.match(pageSource, /translationProgressLabel = `已翻译 \$\{/);
   assert.match(
@@ -194,4 +194,19 @@ void test('top toolbar keeps its controls but drops facts duplicated by the stat
   assert.doesNotMatch(pageSource, /docMeta\?\.pageCount \?\? '—'/);
   assert.doesNotMatch(pageSource, /第 \{page\} 页正在阅读/);
   assert.doesNotMatch(pageSource, /status-chip/);
+});
+
+void test('progress follows the selected language and rejects partial page numbers', () => {
+  const states: Record<string, { status: TranslationStatus }> = {
+    '1:简体中文': { status: 'complete' },
+    '2:日本語': { status: 'cached' },
+    '3:简体中文': { status: 'error' },
+    '4x:简体中文': { status: 'complete' },
+    '4.5:简体中文': { status: 'complete' },
+    '5': { status: 'complete' },
+  };
+  assert.deepEqual(countTranslated(states, 6, '简体中文'), { done: 1, total: 6 });
+  assert.deepEqual(countTranslated(states, 6, '日本語'), { done: 1, total: 6 });
+  assert.deepEqual(countTranslated(states, 6, '한국어'), { done: 0, total: 6 });
+  assert.deepEqual(countTranslated(states, 0, '简体中文'), { done: 0, total: 0 });
 });
