@@ -47,14 +47,21 @@ window.runReaderRegression = async () => {
   check(Math.abs(target.getBoundingClientRect().top-stage.getBoundingClientRect().top)<3, 'estimated jump mispositioned');
   window.releaseSizes();
   await sleep(700);
-  check(Math.abs(target.getBoundingClientRect().top-stage.getBoundingClientRect().top)<3, 'background dimensions moved the target');
+  check(Math.abs(target.getBoundingClientRect().top-stage.getBoundingClientRect().top)<3, 'background dimensions moved the target: ' + JSON.stringify({top:target.getBoundingClientRect().top,stage:stage.getBoundingClientRect().top,scroll:stage.scrollTop, width:target.clientWidth, heights:[...document.querySelectorAll('.pdf-page')].slice(0,15).map((p)=>p.clientHeight)}));
   check(document.querySelector('[data-page="15"].pdf-page-current'), 'current-page tracking drifted');
   check(document.querySelectorAll('.pdf-page canvas').length < 12, 'virtualization rendered every page');
-  return {jump:15};
+  const visible = (element) => {const rect=element.getBoundingClientRect();return rect.height>0 && rect.top>=0 && rect.bottom<=innerHeight+1;};
+  check(visible(document.querySelector('[aria-label="阅读器状态栏"]')), 'short window clipped the status bar');
+  check(visible(document.querySelector('[aria-label="下一页"]')), 'short window clipped page controls');
+  [...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent.includes('AI 答疑')).click();
+  await sleep(80);
+  check(visible(document.querySelector('[aria-label="AI 答疑输入"]')), 'short window clipped the AI composer');
+  check(visible(document.querySelector('[aria-label="发送问题"]')), 'short window clipped send controls');
+  return {jump:15, shortWindow:true};
 };
 `;
 
-void test('reader paints progressively and preserves a jump while delayed dimensions settle', {
+void test('reader preserves progressive jumps and keeps controls visible in a 420px window', {
   skip: process.platform === 'linux' && !process.env.DISPLAY && !existsSync('/usr/bin/xvfb-run')
     ? 'Requires a display or Xvfb for Chromium interaction tests' : false,
 }, async () => {
@@ -81,7 +88,7 @@ void test('reader paints progressively and preserves a jump while delayed dimens
     const {app, BrowserWindow} = require('electron');
     app.disableHardwareAcceleration();
     app.whenReady().then(async () => {
-      const win = new BrowserWindow({width: 1200, height: 900, show: true,
+      const win = new BrowserWindow({width: 1000, height: 420, show: true,
         webPreferences: {sandbox: true, contextIsolation: true, nodeIntegration: false}});
       try {
         await win.loadURL(${JSON.stringify(url)});
@@ -104,7 +111,7 @@ void test('reader paints progressively and preserves a jump while delayed dimens
       child.on('error', (error) => { clearTimeout(timer); reject(error); });
       child.on('close', (code) => { clearTimeout(timer); if (code === 0) resolve(logs); else reject(new Error(logs)); });
     });
-    assert.match(output, /READER_OK .*"jump":15/);
+    assert.match(output, /READER_OK .*"jump":15,"shortWindow":true/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });

@@ -1571,7 +1571,7 @@ function PdfReader({
 
   return (
     <TooltipProvider>
-      <main ref={readerRootRef} className="flex h-screen min-h-[680px] flex-col overflow-hidden bg-background text-foreground">
+      <main ref={readerRootRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
         <header className="app-toolbar">
           <div className="flex min-w-0 items-center gap-3">
             <Button
@@ -2149,7 +2149,7 @@ function DesktopHome() {
       </div>
       {view === 'courses' ? (
         <TooltipProvider>
-          <main className="flex h-screen min-h-[680px] flex-col overflow-hidden bg-[#f5f7fa]">
+          <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-[#f5f7fa]">
             <header className="flex h-15 shrink-0 items-center justify-between border-b border-white/10 bg-[#243a59] px-5 text-white">
               <div className="flex items-center gap-3">
                 <span className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-400 to-indigo-500 shadow-sm">

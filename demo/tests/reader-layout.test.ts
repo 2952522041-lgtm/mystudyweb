@@ -80,3 +80,9 @@ void test('scanned pages use cached visual OCR before entering translation', () 
   assert.match(pageSource, /status: 'recognizing'/);
   assert.match(settingsSource, /扫描或手写页面[\s\S]*OCR/);
 });
+
+void test('reader and course shell adapt to viewport height instead of imposing 680 pixels', () => {
+  assert.doesNotMatch(pageSource, /min-h-\[680px\]/);
+  assert.match(pageSource, /ref=\{readerRootRef\} className="flex h-dvh min-h-0 flex-col/);
+  assert.match(styles, /\.status-bar[\s\S]*?shrink-0/);
+});
