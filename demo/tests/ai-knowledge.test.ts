@@ -918,8 +918,11 @@ void test('course knowledge is synthesized across multiple documents by AI', asy
   assert.match(prompt, /doc-aaaaaaaaaaaaaaaa/);
   assert.match(prompt, /doc-bbbbbbbbbbbbbbbb/);
   assert.match(prompt, /我的疑问/);
+  assert.match(prompt, /24–36 个节点/);
+  assert.match(prompt, /所有分支和叶子合计硬上限 60 个/);
+  assert.match(prompt, /单篇完整摘要、公式与原始来源由应用独立保留/);
 
-  assert.equal(aiKnowledge.promptVersion, 'ai-course-v9');
+  assert.equal(aiKnowledge.promptVersion, 'ai-course-v10');
   assert.equal(aiKnowledge.provider, 'openai-compatible-knowledge');
 
   let knowledge = emptyCourseKnowledge('course-1', '线性代数', '2026-08-31T00:00:00.000Z');
@@ -1534,7 +1537,7 @@ void test('oversized course output is rejected instead of retaining dangling rel
   const raw = JSON.parse(courseReply()) as {concepts: Array<Record<string, unknown>>};
   raw.concepts = Array.from({length:61}, (_,index) => ({...raw.concepts[0],id:`k${index+1}`,label:`概念 ${index}`}));
   const { provider } = makeProvider([JSON.stringify(raw)]);
-  await assert.rejects(provider.synthesizeCourseKnowledge({courseId:'c',courseName:'科学',digests:[makeAiDigest(),makeAiDigest({documentId:'doc-bbbbbbbbbbbb',sourcePages:[1,2,3]})]}), /超过 60/);
+  await assert.rejects(provider.synthesizeCourseKnowledge({courseId:'c',courseName:'科学',digests:[makeAiDigest(),makeAiDigest({documentId:'doc-bbbbbbbbbbbb',sourcePages:[1,2,3]})]}), /实际 61 个，超过 60/);
 });
 
 void test('glossary reaches chunk, document and course prompts and invalidates digest cache', async () => {

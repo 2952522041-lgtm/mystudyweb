@@ -39,7 +39,7 @@ import { buildPdfChunks, splitPdfChunk, type PdfChunk } from './pdf-chunks.ts';
 export const KNOWLEDGE_PROVIDER_ID = 'openai-compatible-knowledge';
 /** 内容/语义要求变更时递增；兼容的格式澄清不废弃已通过校验的完整摘要。 */
 export const KNOWLEDGE_DIGEST_PROMPT_VERSION = 'ai-digest-v11';
-export const KNOWLEDGE_COURSE_PROMPT_VERSION = 'ai-course-v9';
+export const KNOWLEDGE_COURSE_PROMPT_VERSION = 'ai-course-v10';
 // Chunk extraction is unchanged: retain completed chunks from previous imports.
 const CHUNK_CACHE_PROMPT_VERSION = 'ai-digest-v6/ai-course-v5/hierarchical-v2';
 /** 分块分析与综合共用的默认输出 token 上限；过小会触发 finish_reason=length 截断。 */
@@ -1057,7 +1057,8 @@ function courseSynthesisPrompt(input: {
     '包含关系方向固定为 from=父节点id、to=子节点id，必须满足 concepts 中子节点.parentId === 父节点id；不要把方向写反。',
     '要求：',
     '- 跨文档去重同一概念；每个概念合并它在所有文档中的来源文件与页码。统一术语与译名，优先沿用输入中最早文档的名称；同义词在解释中注明，不合并仅符号相似的不同概念。',
-    '- concepts 最多 60 个；按主题→一级分支→二级分支→要点组织，单层子节点硬上限 9；不为凑数生成概念。与单 PDF 总结保持一致，不同条件下的结论应明确区分。',
+    '- 课程总脑图是跨文档主题索引，不是全部单篇概念的拼接。材料充分时以 24–36 个节点为目标，材料少时更少；所有分支和叶子合计硬上限 60 个，不得先生成 60 个要点再另加分支。输出前核对 concepts 数组总长度。',
+    '- 按主题→一级分支→二级分支→要点组织，单层子节点硬上限 9；相关概念按原文主题合并，在 description 中保留各概念名称、关键区别、条件和结论，不删除事实或合并不同数学符号。单篇完整摘要、公式与原始来源由应用独立保留；课程总图不重复展开全文。',
     '- relations 描述概念之间真实的关系（联系、补充、依赖、冲突等），形成有层次的结构，不要把所有概念都连向同一个节点。',
     '- conflicts 只在文档之间确实存在观点或结论分歧时输出，并给出双方来源。',
     '- 所有 documentId、fileName、页码必须来自输入的摘要，禁止编造。',
@@ -1129,7 +1130,7 @@ function validateCoursePayload(
     return { documentId, fileName: meta.fileName, ...pages, type: 'pdf' as const };
   };
 
-  if (conceptsRaw.length > 60) throw new KnowledgeError('invalid_output', '课程概念超过 60 个，请按主题归纳后重试；未保存截断结果。');
+  if (conceptsRaw.length > 60) throw new KnowledgeError('invalid_output', `课程概念实际 ${conceptsRaw.length} 个，超过 60 个（包含全部分支和叶子）。请按已有主题归纳为约 24–36 个节点，在 description 中保留各项区别、条件和来源，不得截断数组或遗漏事实；未保存本次结果。`);
   const nodes: AiCourseKnowledge['nodes'] = [];
   const idMap = new Map<string, string>();
   for (let index = 0; index < conceptsRaw.length; index += 1) {
