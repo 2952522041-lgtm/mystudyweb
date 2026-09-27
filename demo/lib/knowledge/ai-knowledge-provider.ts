@@ -1525,16 +1525,20 @@ export function createKnowledgeProviderForSettings(
         : documents.flatMap(digest => synthesisRecords(digest, {documentId:digest.documentId}, sourceFileNames));
       const raw = await reduceWithinBudget({ records, layer:'course', identity:input.courseId, report:run.report, signal:input.signal, shouldSplit: isRecoverableSizeError, reduce:async (batch, identity, intermediate, signal) => {
         input.onStage?.('course-merge', {identity});
-        const result = await run.request('course', identity, intermediate ? intermediateSynthesisPrompt('course',batch, undefined, sourceDocuments)
-          : courseSynthesisPrompt({ courseName:input.courseName, digests:[], records:batch, userNodeLabels:input.userNodeLabels ?? [], sourceDocuments }), glossaryPrompt(input.glossary, JSON.stringify(batch)), raw => {
+        const allowedSources = synthesisSources(batch, undefined, sourceFileNames);
+        const batchDocumentIds = new Set(allowedSources.map(source => source.documentId));
+        // Unrelated new documents must not invalidate an unchanged batch cache.
+        const batchSourceDocuments = sourceDocuments.filter(source => batchDocumentIds.has(source.documentId));
+        const result = await run.request('course', identity, intermediate ? intermediateSynthesisPrompt('course',batch, undefined, batchSourceDocuments)
+          : courseSynthesisPrompt({ courseName:input.courseName, digests:[], records:batch, userNodeLabels:input.userNodeLabels ?? [], sourceDocuments:batchSourceDocuments }), glossaryPrompt(input.glossary, JSON.stringify(batch)), raw => {
           const payload = validateCoursePayload(raw, {digests:input.digests, courseId:input.courseId});
           for (const node of (raw as {concepts: DigestConcept[]}).concepts) node.sources = node.sources.map(source => ({...source, fileName:digestFileName(input.digests.find(digest => digest.documentId === source.documentId)!)}));
           if (!intermediate) {
             validateHierarchyPayload(raw, input.digests.some(d => inspectHierarchy(d.concepts).maxDepth >= 3) ? 3 : 1);
             assertNormalizedHierarchy(payload.nodes, raw);
           }
-        }, intermediate, synthesisSources(batch, undefined, sourceFileNames), signal, utf8Size(batch));
-        const fallback = synthesisSources(batch, undefined, sourceFileNames)[0];
+        }, intermediate, allowedSources, signal, utf8Size(batch));
+        const fallback = allowedSources[0];
         if (fallback) run.quality(batch.flatMap(value => collectEvidence(value, fallback, sourceFileNames)), result, 'course', identity);
         return result;
       }}).catch(error => { if (error instanceof Error) Object.assign(error, {diagnostics:run.diagnostics}); throw error; });

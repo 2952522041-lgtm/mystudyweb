@@ -8,7 +8,7 @@ import {
 } from '../lib/knowledge/ai-knowledge-provider.ts';
 import { createMemoryStore } from '../lib/reader-cache.ts';
 import type { DocumentDigest } from '../lib/course-storage/types.ts';
-import { SYNTHESIS_BUDGET, utf8Size } from '../lib/knowledge/hierarchical-synthesis.ts';
+import { SYNTHESIS_BUDGET, synthesisSources, utf8Size } from '../lib/knowledge/hierarchical-synthesis.ts';
 import { legacyLongDigest, settings } from './fixtures/hierarchical-synthesis.ts';
 
 function streamResponse(value: unknown): Response {
@@ -164,6 +164,16 @@ void test('large courses accept intermediate JSON without hierarchy or batch-glo
   assert.equal(m.finalCount, 1);
   assert.ok(result.nodes.some((node) => node.parentId), 'final hierarchy should retain nested nodes');
   assert.ok(m.requests.some((prompt) => prompt.includes('当前只是中间压缩')));
+  const mappings = m.requests.filter(prompt => prompt.includes('当前只是中间压缩')).map(prompt => {
+    const records = JSON.parse(prompt.split('\n')[2]!);
+    const line = prompt.split('\n').find(value => value.startsWith('文档身份映射'))!;
+    const mapping = JSON.parse(line.slice(line.indexOf('：') + 1)) as Array<{documentId:string;fileName:string}>;
+    const names = Object.fromEntries(courseDigests().map(digest => [digest.documentId, `${digest.documentId}.pdf`]));
+    const ids = new Set(synthesisSources(records, undefined, names).map(source => source.documentId));
+    assert.deepEqual(new Set(mapping.map(source => source.documentId)), ids, 'mapping must only contain this batch sources');
+    return mapping;
+  });
+  assert.ok(mappings.some(mapping => mapping.length < 3), 'unrelated documents must not bloat or invalidate a batch prompt');
 });
 
 void test('long restored source metadata is compacted without intermediate retries and remains fully sourced', async () => {

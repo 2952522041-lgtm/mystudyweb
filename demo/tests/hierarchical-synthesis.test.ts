@@ -404,6 +404,61 @@ void test('schema splitting carries document identity and progress labels name a
   assert.match(knowledgeStageMessage('course-merge'), /课程层/);
 });
 
+void test('relation-only records carry exact unique endpoint provenance without guessing', () => {
+  const digest = {
+    ...reply('doc'),
+    documentId: 'doc',
+    concepts: [
+      { ...reply('doc').concepts[0], id: 'from', sources: [source('doc', 1), source('doc', 3)] },
+      { ...reply('doc').concepts[0], id: 'to', sources: [source('doc', 7)] },
+      { ...reply('doc').concepts[0], id: 'duplicate', sources: [source('doc', 9)] },
+      { ...reply('doc').concepts[0], id: 'duplicate', sources: [source('doc', 11)] },
+    ],
+    relations: [
+      { from: 'from', to: 'to', label: '依赖' },
+      { from: 'missing', to: 'to', label: '关联' },
+      { from: 'duplicate', to: 'to', label: '关联' },
+      { from: 'missing', to: 'also-missing', label: '关联' },
+    ],
+  };
+  const before = structuredClone(digest);
+  const records = synthesisRecords(digest, { documentId: 'doc', fileName: 'doc.pdf' });
+  const relationRecords = records.filter((record) =>
+    Boolean(record && typeof record === 'object' && 'relation' in record),
+  );
+  const ranges = (record: unknown) => synthesisSources(record).map((item) => [
+    item.documentId,
+    item.fileName,
+    item.pageStart,
+    item.pageEnd,
+  ]);
+  assert.deepEqual(ranges(relationRecords[0]), [
+    ['doc', 'doc.pdf', 1, 1],
+    ['doc', 'doc.pdf', 3, 3],
+    ['doc', 'doc.pdf', 7, 7],
+  ]);
+  assert.deepEqual(ranges(relationRecords[1]), [['doc', 'doc.pdf', 7, 7]]);
+  assert.deepEqual(ranges(relationRecords[2]), [['doc', 'doc.pdf', 7, 7]]);
+  assert.deepEqual(ranges(relationRecords[3]), []);
+  assert.deepEqual(digest, before);
+
+  const sourceFileNames = { doc: 'doc.pdf' };
+  const compactRecords = synthesisRecords(digest, { documentId: 'doc' }, sourceFileNames);
+  const compactRelation = compactRecords.find((record) =>
+    Boolean(record && typeof record === 'object' && 'relation' in record
+      && (record as { relation: { from?: string } }).relation.from === 'from'),
+  ) as { relation: unknown; provenance?: Array<Record<string, unknown>> };
+  assert.deepEqual(synthesisSources(compactRelation, undefined, sourceFileNames).map((item) => [
+    item.documentId,
+    item.fileName,
+    item.pageStart,
+    item.pageEnd,
+  ]), ranges(relationRecords[0]));
+  assert.ok(compactRelation.provenance?.every((item) =>
+    !Object.hasOwn(item, 'fileName') && !Object.hasOwn(item, 'type'),
+  ));
+});
+
 void test('long lecture plus multiple course documents completes through all layers with bounded calls', async () => {
   const m = mock({ verbose: true });
   const digest = await m.provider.analyzeDocument(input());

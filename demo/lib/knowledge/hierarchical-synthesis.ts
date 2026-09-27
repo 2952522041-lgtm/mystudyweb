@@ -91,8 +91,30 @@ export function synthesisRecords(
   }
   for (const concept of Array.isArray(concepts) ? concepts : [])
     records.push({ ...identity, concept });
-  for (const relation of Array.isArray(relations) ? relations : [])
-    records.push({ ...identity, relation });
+  const conceptById = new Map<string, Record<string, unknown> | null>();
+  for (const concept of Array.isArray(concepts) ? concepts : []) {
+    if (!concept || typeof concept !== 'object' || Array.isArray(concept)) continue;
+    const item = concept as Record<string, unknown>;
+    if (typeof item.id !== 'string') continue;
+    conceptById.set(item.id, conceptById.has(item.id) ? null : item);
+  }
+  for (const relation of Array.isArray(relations) ? relations : []) {
+    let relationSources: SourceReference[] = [];
+    if (relation && typeof relation === 'object' && !Array.isArray(relation)) {
+      const item = relation as Record<string, unknown>;
+      const endpointConcepts = [item.from, item.to]
+        .filter((endpoint): endpoint is string => typeof endpoint === 'string')
+        .map((endpoint) => conceptById.get(endpoint))
+        .filter((concept): concept is Record<string, unknown> => Boolean(concept));
+      relationSources = synthesisSources(endpointConcepts, undefined, sourceFileNames);
+    }
+    const provenance = relationSources.length
+      ? relationSources.map((source) => sourceFileNames
+        ? (({ fileName: _fileName, type: _type, ...compactSource }) => compactSource)(source)
+        : source)
+      : undefined;
+    records.push({ ...identity, relation, ...(provenance ? { provenance } : {}) });
+  }
   return records;
 }
 
