@@ -4,7 +4,140 @@ import {
   createKnowledgeProviderForSettings,
   createKnowledgeDigestCache,
 } from '../lib/knowledge/ai-knowledge-provider.ts';
-import { createMemoryStore } from '../lib/reader-cache.ts';
+import { createMemoryStore, type KVStore } from '../lib/reader-cache.ts';
+import type { DocumentDigest } from '../lib/course-storage/types.ts';
+import { synthesisSources } from '../lib/knowledge/hierarchical-synthesis.ts';
+import { legacyLongDigest, reply, source } from './fixtures/hierarchical-synthesis.ts';
+
+type GenerationMode = 'fast' | 'deep';
+
+function streamJson(value: unknown): Response {
+  return new Response(
+    `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(value) }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
+    { headers: { 'content-type': 'text/event-stream' } },
+  );
+}
+
+function documentPayload() {
+  const documentSource = {
+    documentId: 'doc-mode',
+    fileName: 'mode.pdf',
+    pageStart: 1,
+    pageEnd: 1,
+    type: 'pdf' as const,
+  };
+  return {
+    title: 'Functions',
+    overview: 'A function maps arguments to a return value.',
+    hierarchy: {
+      mode: 'flat',
+      reason: 'Single definition with no chapter hierarchy.',
+    },
+    sections: [{
+      title: 'Functions',
+      summary: 'A function returns a value.',
+      pageStart: 1,
+      pageEnd: 1,
+    }],
+    concepts: [{
+      id: 'function',
+      parentId: null,
+      label: 'Function',
+      description: 'Maps arguments to a return value.',
+      sources: [documentSource],
+    }],
+    relations: [],
+    unresolvedQuestions: [],
+  };
+}
+
+function modeSettings(
+  baseUrl: string,
+  model: string,
+  generationMode?: GenerationMode,
+): { baseUrl: string; model: string; apiKey: string; generationMode?: GenerationMode } {
+  return {
+    baseUrl,
+    model,
+    apiKey: 'test-key',
+    ...(generationMode ? { generationMode } : {}),
+  };
+}
+
+async function captureDocumentRequests(options: {
+  baseUrl?: string;
+  model?: string;
+  generationMode?: GenerationMode;
+  fetchResponse?: (call: number) => unknown;
+  digestStore?: KVStore<DocumentDigest>;
+  layerStore?: KVStore<unknown>;
+} = {}) {
+  const requests: Record<string, unknown>[] = [];
+  let call = 0;
+  const payload = documentPayload();
+  const provider = createKnowledgeProviderForSettings(
+    modeSettings(
+      options.baseUrl ?? 'https://open.bigmodel.cn/api/paas/v4',
+      options.model ?? 'glm-4.6v',
+      options.generationMode,
+    ),
+    async (_url, init) => {
+      requests.push(JSON.parse(typeof init?.body === 'string' ? init.body : '{}'));
+      const value = options.fetchResponse?.(call++) ?? payload;
+      return streamJson(value);
+    },
+    createKnowledgeDigestCache(options.digestStore ?? createMemoryStore<DocumentDigest>()),
+    options.layerStore ?? createMemoryStore(),
+  );
+  await provider.analyzeDocument({
+    documentId: 'doc-mode',
+    fingerprint: 'mode-fingerprint',
+    fileName: 'mode.pdf',
+    pages: ['A function maps arguments to a return value.'],
+  });
+  return requests;
+}
+
+function promptRecords(prompt: string): unknown[] {
+  const line = prompt.split('\n')[2];
+  if (!line) return [];
+  return JSON.parse(line) as unknown[];
+}
+
+function promptSourceMap(prompt: string): Record<string, string> {
+  const line = prompt.split('\n').find((value) => value.startsWith('文档身份映射'));
+  if (!line) return {};
+  const entries = JSON.parse(line.slice(line.indexOf('：') + 1)) as Array<{ documentId: string; fileName: string }>;
+  return Object.fromEntries(entries.map((entry) => [entry.documentId, entry.fileName]));
+}
+
+async function captureCourseRequests(generationMode?: GenerationMode, layerStore?: KVStore<unknown>) {
+  const requests: Record<string, unknown>[] = [];
+  const provider = createKnowledgeProviderForSettings(
+    modeSettings('https://open.bigmodel.cn/api/paas/v4', 'glm-4.6v', generationMode),
+    async (_url, init) => {
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as Record<string, unknown>;
+      requests.push(body);
+      const prompt = userPrompt(body);
+      const sources = synthesisSources(promptRecords(prompt), undefined, promptSourceMap(prompt));
+      const output = reply('lecture', sources[0]?.pageStart ?? 1);
+      output.concepts[0]!.sources = (sources.length ? sources : [source('lecture', 1)]).map((item) => ({
+        ...item,
+        pageEnd: item.pageEnd ?? item.pageStart,
+        type: 'pdf' as const,
+      }));
+      return streamJson(output);
+    },
+    createKnowledgeDigestCache(createMemoryStore()),
+    layerStore ?? createMemoryStore(),
+  );
+  await provider.synthesizeCourseKnowledge({
+    courseId: 'mode-course',
+    courseName: 'Mode course',
+    digests: [legacyLongDigest('lecture')],
+  });
+  return requests;
+}
 
 function userPrompt(request: Record<string, unknown>): string {
   const messages = request.messages;
@@ -72,7 +205,7 @@ for (const [baseUrl, model, disabled] of [
       unresolvedQuestions: [],
     };
     const provider = createKnowledgeProviderForSettings(
-      { baseUrl, model, apiKey: 'test-key' },
+      { baseUrl, model, apiKey: 'test-key', generationMode: 'deep' },
       async (_url, init) => {
         requests.push(
           JSON.parse(typeof init?.body === 'string' ? init.body : '{}'),
@@ -117,7 +250,7 @@ void test('intermediate course compression is direct while final synthesis retai
   const {legacyLongDigest,reply} = await import('./fixtures/hierarchical-synthesis.ts');
   const {synthesisSources} = await import('../lib/knowledge/hierarchical-synthesis.ts');
   const requests: Array<{thinking?:unknown;intermediate:boolean;prompt:string}> = [];
-  const provider=createKnowledgeProviderForSettings({baseUrl:'https://open.bigmodel.cn/api/paas/v4',model:'glm-4.6v',apiKey:'test-key'},async(_url,init)=>{
+  const provider=createKnowledgeProviderForSettings({baseUrl:'https://open.bigmodel.cn/api/paas/v4',model:'glm-4.6v',apiKey:'test-key',generationMode:'deep'},async(_url,init)=>{
     const body=JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
     const prompt=body.messages[1].content as string;
     const records=JSON.parse(prompt.split('\n')[2]);
@@ -136,6 +269,145 @@ void test('intermediate course compression is direct while final synthesis retai
   assert.ok(finalPrompt);
   assertSingleRelationLabelInstruction(finalPrompt.prompt);
   for(const request of requests)assert.deepEqual(request.thinking,request.intermediate?{type:'disabled'}:undefined);
+});
+
+void test('fast, deep, default, and non-GLM reasoning policies cover every synthesis layer', async () => {
+  for (const generationMode of [undefined, 'fast'] as const) {
+    const requests = await captureDocumentRequests({ generationMode });
+    assert.deepEqual(
+      requests.map((request) => request.thinking),
+      [{ type: 'disabled' }, { type: 'disabled' }],
+      `${generationMode ?? 'default'} official GLM fast mode should disable chunk and document thinking`,
+    );
+    const courseRequests = await captureCourseRequests(generationMode);
+    const intermediate = courseRequests.filter((request) => userPrompt(request).includes('当前只是中间压缩'));
+    const final = courseRequests.filter((request) => !userPrompt(request).includes('当前只是中间压缩'));
+    assert.ok(intermediate.length > 0, 'course fixture should exercise intermediate synthesis');
+    assert.ok(final.length > 0, 'course fixture should exercise final synthesis');
+    assert.ok(courseRequests.every((request) => request.thinking && (request.thinking as { type?: string }).type === 'disabled'));
+  }
+
+  const deepDocument = await captureDocumentRequests({ generationMode: 'deep' });
+  assert.deepEqual(deepDocument.map((request) => request.thinking), [{ type: 'disabled' }, undefined]);
+  const deepCourse = await captureCourseRequests('deep');
+  assert.ok(deepCourse.some((request) => userPrompt(request).includes('当前只是中间压缩')));
+  assert.ok(deepCourse.some((request) => !userPrompt(request).includes('当前只是中间压缩')));
+  assert.ok(deepCourse.filter((request) => userPrompt(request).includes('当前只是中间压缩')).every((request) =>
+    (request.thinking as { type?: string } | undefined)?.type === 'disabled',
+  ));
+  assert.ok(deepCourse.filter((request) => !userPrompt(request).includes('当前只是中间压缩')).every((request) => request.thinking === undefined));
+
+  const otherProviderSettings: Array<[string, string]> = [
+    ['https://proxy.example/v1', 'glm-4.6v'],
+    ['https://open.bigmodel.cn/api/paas/v4', 'glm-5'],
+  ];
+  for (const [baseUrl, model] of otherProviderSettings) {
+    for (const generationMode of [undefined, 'fast', 'deep'] as const) {
+      const requests = await captureDocumentRequests({ baseUrl, model, generationMode });
+      assert.ok(requests.every((request) => request.thinking === undefined), `${baseUrl} ${model} must not receive vendor thinking options`);
+    }
+  }
+});
+
+void test('fast structural repair keeps the default reasoning mode', async () => {
+  const valid = documentPayload();
+  const invalid = {
+    ...valid,
+    concepts: [
+      ...valid.concepts,
+      { ...valid.concepts[0], id: 'second', label: 'Second concept' },
+    ],
+    relations: [{ from: 'function', to: 'second', label: '含混|关联' }],
+  };
+  const repair = {
+    hierarchy: valid.hierarchy,
+    assignments: [
+      { id: 'function', parentId: null },
+      { id: 'second', parentId: null },
+    ],
+    branches: [],
+  };
+  const requests = await captureDocumentRequests({
+    fetchResponse: (call) => call === 0 ? valid : call === 1 ? invalid : repair,
+  });
+  assert.equal(requests.length, 3, 'chunk, rejected document draft, and structure-only repair should be requested');
+  assert.deepEqual(requests.map((request) => request.thinking), [
+    { type: 'disabled' },
+    { type: 'disabled' },
+    undefined,
+  ]);
+});
+
+void test('generation mode isolates final caches while sharing chunks and intermediates', async () => {
+  const deepDigestStore = createMemoryStore<DocumentDigest>();
+  const deepRequests = await captureDocumentRequests({
+    generationMode: 'deep',
+    digestStore: deepDigestStore,
+    layerStore: createMemoryStore<unknown>(),
+  });
+  assert.equal(deepRequests.length, 2);
+
+  const fastFromDeepDigest = await captureDocumentRequests({
+    generationMode: 'fast',
+    digestStore: deepDigestStore,
+    layerStore: createMemoryStore<unknown>(),
+  });
+  assert.equal(fastFromDeepDigest.length, 0, 'fast may reuse a validated deep document digest');
+
+  const fastDigestStore = createMemoryStore<DocumentDigest>();
+  const fastRequests = await captureDocumentRequests({
+    generationMode: 'fast',
+    digestStore: fastDigestStore,
+    layerStore: createMemoryStore<unknown>(),
+  });
+  assert.equal(fastRequests.length, 2);
+  const deepFromFastDigest = await captureDocumentRequests({
+    generationMode: 'deep',
+    digestStore: fastDigestStore,
+    layerStore: createMemoryStore<unknown>(),
+  });
+  assert.equal(deepFromFastDigest.length, 2, 'deep must not reuse a fast document digest');
+
+  const deepLayerStore = createMemoryStore<unknown>();
+  await captureDocumentRequests({
+    generationMode: 'deep',
+    digestStore: createMemoryStore<DocumentDigest>(),
+    layerStore: deepLayerStore,
+  });
+  const fastFromDeepLayer = await captureDocumentRequests({
+    generationMode: 'fast',
+    digestStore: createMemoryStore<DocumentDigest>(),
+    layerStore: deepLayerStore,
+  });
+  assert.equal(fastFromDeepLayer.length, 1, 'fast final layer remains mode-isolated');
+  assert.ok(fastFromDeepLayer.every((request) => !userPrompt(request).includes('分析以下 PDF 分块')),
+    'fast should still reuse the deep chunk layer');
+
+  const fastLayerStore = createMemoryStore<unknown>();
+  await captureDocumentRequests({
+    generationMode: 'fast',
+    digestStore: createMemoryStore<DocumentDigest>(),
+    layerStore: fastLayerStore,
+  });
+  const deepFromFastLayer = await captureDocumentRequests({
+    generationMode: 'deep',
+    digestStore: createMemoryStore<DocumentDigest>(),
+    layerStore: fastLayerStore,
+  });
+  assert.equal(deepFromFastLayer.length, 1, 'deep must not reuse a fast final layer');
+  assert.ok(deepFromFastLayer.every((request) => !userPrompt(request).includes('分析以下 PDF 分块')),
+    'chunk layers remain shared in both directions');
+
+  const deepCourseLayer = createMemoryStore<unknown>();
+  const deepCourse = await captureCourseRequests('deep', deepCourseLayer);
+  const fastCourseFromDeep = await captureCourseRequests('fast', deepCourseLayer);
+  assert.ok(deepCourse.some((request) => userPrompt(request).includes('当前只是中间压缩')));
+  assert.equal(
+    fastCourseFromDeep.filter((request) => userPrompt(request).includes('当前只是中间压缩')).length,
+    0,
+    'intermediate layers remain shared',
+  );
+  assert.equal(fastCourseFromDeep.length, 1, 'fast final course layer remains mode-isolated');
 });
 
 void test('invalid relation labels retain their value and valid endpoints in the rejection', async () => {

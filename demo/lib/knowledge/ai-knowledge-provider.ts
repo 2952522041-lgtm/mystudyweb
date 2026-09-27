@@ -294,6 +294,7 @@ async function completeJson(
     glossaryText?: string;
     maxTokens: number;
     intermediate?: boolean;
+    fastSynthesis?: boolean;
     signal?: AbortSignal;
     contextLabel: string;
     validate?: (raw: unknown) => void;
@@ -322,11 +323,11 @@ async function completeJson(
             ...(new URL(config.baseUrl).hostname === 'open.bigmodel.cn'
               ? { responseFormat: 'json_object' as const } : {}),
             // GLM's automatic thinking adds latency to extraction work.
-            // Keep reasoning for synthesis/structural repair and don't send
+            // Keep reasoning for opted-in deep synthesis/structural repair and don't send
             // vendor extensions to other compatible providers.
             ...(normalizeKnowledgeModel(config.model) === 'glm-4.6v'
               && new URL(config.baseUrl).hostname === 'open.bigmodel.cn'
-              && (layer === 'chunk' || input.intermediate) && !hierarchyDraft
+              && (layer === 'chunk' || input.intermediate || input.fastSynthesis) && !hierarchyDraft
               ? { thinking: 'disabled' as const } : {}),
           });
           break;
@@ -1249,6 +1250,9 @@ export function createKnowledgeProviderForSettings(
     );
   }
   const model = settings.model.trim();
+  const fastSynthesis = settings.generationMode !== 'deep'
+    && normalizeKnowledgeModel(model) === 'glm-4.6v'
+    && new URL(settings.baseUrl).hostname === 'open.bigmodel.cn';
   const maxOutputTokens = knowledgeMaxOutputTokens(model);
   const requestConfig: ChatCompletionConfig = {
     baseUrl: settings.baseUrl,
@@ -1286,7 +1290,7 @@ export function createKnowledgeProviderForSettings(
         if (intermediate && !intermediateOutputFitsBudget({contentBytes, fullBytes:utf8Size(raw), inputBytes:intermediateInputBytes})) throw new KnowledgeError('invalid_output', '中间归并未满足预算：目标 10000 字节，完整结果须在 24000 字节内；超过目标时完整结果须小于本批输入；整轮不缩小或超过轮次上限时停止。这是中间索引，不是最终总结：文档 sections 只保留一条简短主题索引，points 使用 []；原始全部要点、公式和表格由应用独立证据账本保留，最终会补回。concepts 保留不同概念及真实来源，但不要在 overview、summary、points 和 description 中重复展开同一内容。压缩重复解释，不要复制大段原文。');
       };
       if (signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
-      const key = await synthesisCacheKey({ layer, identity, provider: `${KNOWLEDGE_PROVIDER_ID}@${settings.baseUrl}`, model, promptVersion: layer === 'chunk' ? CHUNK_CACHE_PROMPT_VERSION : `${KNOWLEDGE_DIGEST_PROMPT_VERSION}/${KNOWLEDGE_COURSE_PROMPT_VERSION}/${HIERARCHICAL_PROMPT_VERSION}`, input: { prompt, glossaryText } });
+      const key = await synthesisCacheKey({ layer, identity, provider: `${KNOWLEDGE_PROVIDER_ID}@${settings.baseUrl}`, model, promptVersion: layer === 'chunk' ? CHUNK_CACHE_PROMPT_VERSION : `${KNOWLEDGE_DIGEST_PROMPT_VERSION}/${KNOWLEDGE_COURSE_PROMPT_VERSION}/${HIERARCHICAL_PROMPT_VERSION}`, input: { prompt, glossaryText, ...(fastSynthesis && layer !== 'chunk' && !intermediate ? {generationMode:'fast'} : {}) } });
       if (signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
       const unavailable = () => { input.onStage?.('cache-unavailable', {}); report({layer, action:'cache-unavailable', identity, inputBytes:0, limit:0, droppedItems:0, droppedBytes:0, detail:'中间缓存不可用；本次计算继续，跨重试复用不可保证。'}); };
       if ('bypassCache' in input && input.bypassCache) {
@@ -1310,7 +1314,7 @@ export function createKnowledgeProviderForSettings(
         } catch (error) { if (signal?.aborted) throw error; unavailable(); }
       }
       try {
-        const raw = await completeJson(requestConfig, { userPrompt:prompt, glossaryText, maxTokens:maxOutputTokens, intermediate, signal, contextLabel:`${{chunk:'分块分析',document:'文档综合',course:'课程综合'}[layer]} ${identity}`, layer, report, validate:check });
+        const raw = await completeJson(requestConfig, { userPrompt:prompt, glossaryText, maxTokens:maxOutputTokens, intermediate, fastSynthesis, signal, contextLabel:`${{chunk:'分块分析',document:'文档综合',course:'课程综合'}[layer]} ${identity}`, layer, report, validate:check });
         if (signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
         try { await layerCache.set(key, { schemaVersion:1, raw }); } catch { unavailable(); }
         if (signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
@@ -1344,17 +1348,23 @@ export function createKnowledgeProviderForSettings(
         throw new KnowledgeError('invalid_input', '这份 PDF 没有可分析的页面。');
       }
       const termFingerprint = await glossaryFingerprint(input.glossary);
-      const cacheKey = knowledgeDigestCacheKey({
+      const digestKey = (fast: boolean) => knowledgeDigestCacheKey({
         glossaryFingerprint: termFingerprint,
         fingerprint: `${input.fingerprint}:${documentId}:${input.fileName}`,
-        provider: `${KNOWLEDGE_PROVIDER_ID}@${settings.baseUrl}`,
+        provider: `${KNOWLEDGE_PROVIDER_ID}@${settings.baseUrl}${fast ? '#fast' : ''}`,
         model,
         promptVersion: KNOWLEDGE_DIGEST_PROMPT_VERSION,
         schemaVersion: DIGEST_SCHEMA_VERSION,
       });
+      const cacheKey = digestKey(fastSynthesis);
       if (!input.bypassCache && !input.resume) {
         let cached: DocumentDigest | undefined;
-        try { cached = await digestCache.lookup(cacheKey); }
+        try {
+          cached = await digestCache.lookup(cacheKey);
+          // Previously validated deep results are suitable for fast mode, but
+          // fast results must never satisfy a later explicit deep request.
+          if (!cached && fastSynthesis) cached = await digestCache.lookup(digestKey(false));
+        }
         catch { input.onStage?.('cache-unavailable', {}); }
         try {
         if (cached && isDocumentDigestLike(cached) && cached.documentId === documentId

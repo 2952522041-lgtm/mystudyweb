@@ -20,7 +20,7 @@ import {TranslationBody} from '@/app/page';
 import {DEFAULT_SETTINGS} from '@/lib/reader-cache';
 import {DEFAULT_CHAT_SETTINGS} from '@/lib/chat-cache';
 import {DEFAULT_KNOWLEDGE_SETTINGS} from '@/lib/knowledge-settings';
-let saved = 0, imports = 0, retries = 0, openedSettings = 0;
+let saved = 0, imports = 0, retries = 0, openedSettings = 0, savedKnowledgeMode = '';
 function App() {
   const [mode, setMode] = useState('settings');
   window.openImport = () => setMode('import');
@@ -34,7 +34,9 @@ function App() {
   return mode === 'settings' ? <ReaderSettingsDialog initialTab="translation"
     translationSettings={{...DEFAULT_SETTINGS,providerMode:'openai-compatible',apiKey:'test',baseUrl:'https://mock.test/v1/chat/completions'}}
     chatSettings={DEFAULT_CHAT_SETTINGS} knowledgeSettings={DEFAULT_KNOWLEDGE_SETTINGS}
-    onClose={() => setMode('closed')} onSave={() => {saved++;setMode('closed')}} />
+    onClose={() => setMode('closed')} onSave={(_translation, _chat, knowledge) => {
+      saved++; savedKnowledgeMode = knowledge.generationMode ?? ''; setMode('closed');
+    }} />
     : <CourseImportDialog open={mode === 'import'} onOpenChange={(open) => !open && setMode('closed')}
       onImport={async (file,options,progress) => {
         imports++; progress('模拟分析中',30);
@@ -57,7 +59,16 @@ window.runStorageRegression = async () => {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'https://mock.test/v1');
   input.dispatchEvent(new Event('input',{bubbles:true}));
   await waitFor('stale error removed',()=>!document.querySelector('[role="alert"]'));
+  button('知识库 AI').click();
+  await waitFor('knowledge generation mode',()=>document.getElementById('knowledge-generation-mode'));
+  const knowledgeKey = document.getElementById('knowledge-api-key');
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(knowledgeKey,'knowledge-test');
+  knowledgeKey.dispatchEvent(new Event('input',{bubbles:true}));
+  const generationMode = document.getElementById('knowledge-generation-mode');
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(generationMode,'deep');
+  generationMode.dispatchEvent(new Event('change',{bubbles:true}));
   button('保存设置').click(); await waitFor('settings saved',()=>saved===1);
+  check(savedKnowledgeMode === 'deep', 'knowledge generation mode was not saved');
   window.openImport(); await waitFor('import dialog',()=>document.querySelector('input[type="file"]'));
   check(document.body.textContent.includes('导入仍需知识库 AI'), 'AI requirement hidden');
   const data = new DataTransfer();data.items.add(new File(['mock'],'fixture.pdf',{type:'application/pdf'}));

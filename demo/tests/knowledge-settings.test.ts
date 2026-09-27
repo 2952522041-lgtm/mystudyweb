@@ -25,6 +25,7 @@ const configured: KnowledgeSettings = {
   baseUrl: 'https://kb.example.com/v1',
   apiKey: 'kb-key',
   model: 'knowledge-model-x',
+  generationMode: 'fast',
 };
 
 void test('validation requires http(s) url, api key, and model', () => {
@@ -64,7 +65,19 @@ void test('load migrates from saved AI chat settings for existing users', () => 
     baseUrl: 'https://chat.example.com/v1',
     apiKey: 'chat-key',
     model: 'vision-model',
+    generationMode: 'fast',
   });
+});
+
+void test('old independent settings default to fast generation mode', () => {
+  const storage = memoryStorage({
+    'pdf-reader-knowledge-settings': JSON.stringify({
+      baseUrl: configured.baseUrl,
+      apiKey: configured.apiKey,
+      model: configured.model,
+    }),
+  });
+  assert.deepEqual(loadKnowledgeSettings(storage), configured);
 });
 
 void test('saved knowledge settings win over the chat migration fallback', () => {
@@ -91,13 +104,26 @@ void test('corrupt knowledge settings fall back to chat settings instead of cras
     baseUrl: 'https://chat.example.com/v1',
     apiKey: 'chat-key',
     model: 'vision-model',
+    generationMode: 'fast',
   });
 });
 
 void test('save then load round-trips through storage', () => {
   const storage = memoryStorage();
-  saveKnowledgeSettings(configured, storage);
-  assert.deepEqual(loadKnowledgeSettings(storage), configured);
+  const deepSettings: KnowledgeSettings = {
+    ...configured,
+    generationMode: 'deep',
+  };
+  saveKnowledgeSettings(deepSettings, storage);
+  assert.deepEqual(loadKnowledgeSettings(storage), deepSettings);
+});
+
+void test('validation rejects unknown generation modes', () => {
+  const invalidSettings = {
+    ...configured,
+    generationMode: 'balanced',
+  } as unknown as KnowledgeSettings;
+  assert.match(validateKnowledgeSettings(invalidSettings) ?? '', /生成模式/);
 });
 
 void test('partial stored settings merge over defaults', () => {
@@ -107,4 +133,5 @@ void test('partial stored settings merge over defaults', () => {
   const loaded = loadKnowledgeSettings(storage);
   assert.equal(loaded.model, 'custom-model');
   assert.equal(loaded.baseUrl, DEFAULT_KNOWLEDGE_SETTINGS.baseUrl);
+  assert.equal(loaded.generationMode, 'fast');
 });

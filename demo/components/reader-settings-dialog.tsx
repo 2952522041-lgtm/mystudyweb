@@ -29,6 +29,7 @@ import {
 import { validateChatSettings, type ChatSettings } from '@/lib/chat-cache';
 import {
   validateKnowledgeSettings,
+  type KnowledgeGenerationMode,
   type KnowledgeSettings,
 } from '@/lib/knowledge-settings';
 
@@ -56,7 +57,10 @@ export function ReaderSettingsDialog({
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [translationDraft, setTranslationDraft] = useState(translationSettings);
   const [chatDraft, setChatDraft] = useState(chatSettings);
-  const [knowledgeDraft, setKnowledgeDraft] = useState(knowledgeSettings);
+  const [knowledgeDraft, setKnowledgeDraft] = useState<KnowledgeSettings>({
+    ...knowledgeSettings,
+    generationMode: knowledgeSettings.generationMode ?? 'fast',
+  });
   const [error, setError] = useState<string | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
@@ -403,6 +407,31 @@ export function ReaderSettingsDialog({
                 }
                 placeholder="知识库生成用的模型名称"
               />
+            </div>
+            <div className="space-y-1.5">
+              <label
+                htmlFor="knowledge-generation-mode"
+                className="text-xs font-medium text-slate-700"
+              >
+                生成模式
+              </label>
+              <NativeSelect
+                id="knowledge-generation-mode"
+                value={knowledgeDraft.generationMode ?? 'fast'}
+                onChange={(event) =>
+                  setKnowledgeDraft((previous) => ({
+                    ...previous,
+                    generationMode: event.target
+                      .value as KnowledgeGenerationMode,
+                  }))
+                }
+              >
+                <NativeSelectOption value="fast">快速整理</NativeSelectOption>
+                <NativeSelectOption value="deep">深入推理</NativeSelectOption>
+              </NativeSelect>
+              <p className="text-[11px] leading-5 text-slate-500">
+                仅对当前支持的 GLM-4.6V 官方接口生效。快速整理会关闭普通摘要和课程整理的额外思考，同时保留内容、来源和结构校验；其他模型不会发送私有参数。复杂结构修复仍可深入推理。
+              </p>
             </div>
             <p className="text-[11px] leading-5 text-slate-500">
               知识库配置只保存在本机，不会与翻译、答疑配置共享，也不会写入课程目录。首次升级前已配置过

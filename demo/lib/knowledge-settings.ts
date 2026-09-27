@@ -5,16 +5,21 @@ import { loadChatSettings } from './chat-cache.ts';
  * 知识库 AI 的独立设置：单 PDF 总结/脑图与课程综合都使用这套接口，
  * 与页面翻译、AI 答疑互不串用。生成是纯文字任务，因此不需要视觉确认。
  */
+export type KnowledgeGenerationMode = 'fast' | 'deep';
+
 export interface KnowledgeSettings {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** Optional for compatibility with settings saved before generation modes existed. */
+  generationMode?: KnowledgeGenerationMode;
 }
 
 export const DEFAULT_KNOWLEDGE_SETTINGS: KnowledgeSettings = {
   baseUrl: 'https://api.openai.com/v1',
   apiKey: '',
   model: 'gpt-4.1-mini',
+  generationMode: 'fast',
 };
 
 const KNOWLEDGE_SETTINGS_STORAGE_KEY = 'pdf-reader-knowledge-settings';
@@ -22,6 +27,13 @@ const KNOWLEDGE_SETTINGS_STORAGE_KEY = 'pdf-reader-knowledge-settings';
 export function validateKnowledgeSettings(
   settings: KnowledgeSettings,
 ): string | null {
+  if (
+    settings.generationMode !== undefined &&
+    settings.generationMode !== 'fast' &&
+    settings.generationMode !== 'deep'
+  ) {
+    return '生成模式必须是 fast 或 deep。';
+  }
   const addressError = validateServiceBaseUrl(settings.baseUrl);
   if (addressError) return addressError;
   if (settings.apiKey.trim().length === 0) {
@@ -62,6 +74,7 @@ export function loadKnowledgeSettings(
     baseUrl: chat.baseUrl,
     apiKey: chat.apiKey,
     model: chat.model,
+    generationMode: 'fast',
   };
 }
 
