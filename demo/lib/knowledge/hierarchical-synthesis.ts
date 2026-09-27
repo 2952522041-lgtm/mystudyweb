@@ -1,5 +1,6 @@
 import { sha256Hex } from '../course-storage/file-utils.ts';
 import type { SourceReference } from '../course-storage/types.ts';
+import { mapWithConcurrency } from '../async-pool.ts';
 
 /** UTF-8 bytes are a conservative, tokenizer-independent input measure, not a model context claim. */
 export const SYNTHESIS_BUDGET = {
@@ -88,18 +89,31 @@ export async function reduceWithinBudget(options: {
   records: unknown[];
   layer: 'document' | 'course';
   identity: string;
+  signal?: AbortSignal;
   report: (diagnostic: SynthesisDiagnostic) => void;
   shouldSplit?: (error: unknown) => boolean;
   reduce: (
     records: unknown[],
     identity: string,
     intermediate: boolean,
+    signal?: AbortSignal,
   ) => Promise<unknown>;
 }): Promise<unknown> {
-  const reduceSafely = async (records: unknown[], identity: string, intermediate: boolean, depth = 0): Promise<unknown> => {
-    try { return await options.reduce(records, identity, intermediate); }
+  const reduceSafely = async (
+    records: unknown[],
+    identity: string,
+    intermediate: boolean,
+    signal: AbortSignal | undefined = options.signal,
+    depth = 0,
+  ): Promise<unknown> => {
+    if (signal?.aborted) throw signal.reason ?? new Error('分层综合已取消。');
+    try {
+      const result = await options.reduce(records, identity, intermediate, signal);
+      if (signal?.aborted) throw signal.reason ?? new Error('分层综合已取消。');
+      return result;
+    }
     catch (error) {
-      if (!options.shouldSplit?.(error) || depth >= 5 || utf8Size(records) < 1500) throw error;
+      if (signal?.aborted || !options.shouldSplit?.(error) || depth >= 5 || utf8Size(records) < 1500) throw error;
       let limit = Math.floor(utf8Size(records) / 2);
       // A previously complete digest is separable at section/concept boundaries.
       const units = records.flatMap(record => {
@@ -123,15 +137,16 @@ export async function reduceWithinBudget(options: {
         droppedItems: 0, droppedBytes: 0, detail: `服务商上下文不足，自动缩小为 ${batches.length} 批综合；全部结构项保留。` });
       const next: unknown[] = [];
       for (const [index, part] of batches.entries())
-        next.push(await reduceSafely(part, `${identity}/smaller-${index}`, true, depth + 1));
+        next.push(await reduceSafely(part, `${identity}/smaller-${index}`, true, signal, depth + 1));
       if (utf8Size(next) >= utf8Size(records)) throw error;
-      return reduceSafely(next, `${identity}/merged`, intermediate, depth + 1);
+      return reduceSafely(next, `${identity}/merged`, intermediate, signal, depth + 1);
     }
   };
   let records = options.records;
   for (let round = 0; round <= SYNTHESIS_BUDGET.rounds; round++) {
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error('分层综合已取消。');
     if (utf8Size(records) <= SYNTHESIS_BUDGET.payload)
-      return reduceSafely(records, `${options.identity}/final`, false);
+      return reduceSafely(records, `${options.identity}/final`, false, options.signal);
     const batches: unknown[][] = [];
     let batch: unknown[] = [];
     for (const record of records) {
@@ -169,15 +184,17 @@ export async function reduceWithinBudget(options: {
     });
     if (round === SYNTHESIS_BUDGET.rounds)
       throw new Error('分层综合达到 8 轮上限；已完成层可复用，未发布成果。');
-    const next: unknown[] = [];
-    for (let index = 0; index < batches.length; index++)
-      next.push(
-        await reduceSafely(
-          batches[index],
-          `${options.identity}/round-${round}/batch-${index}`,
-          true,
-        ),
-      );
+    const next = await mapWithConcurrency(
+      batches,
+      2,
+      (part, index, signal) => reduceSafely(
+        part,
+        `${options.identity}/round-${round}/batch-${index}`,
+        true,
+        signal,
+      ),
+      { signal: options.signal },
+    );
     if (utf8Size(next) >= utf8Size(records)) {
       options.report({
         layer: options.layer,

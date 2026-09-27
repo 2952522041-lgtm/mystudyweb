@@ -25,6 +25,8 @@ export interface ChatCompletionInput {
   messages: ChatApiMessage[];
   temperature?: number;
   maxTokens?: number;
+  thinking?: 'disabled';
+  responseFormat?: 'json_object';
   signal?: AbortSignal;
   onPartial?: (content: string) => void;
 }
@@ -59,6 +61,10 @@ export async function requestChatCompletion(
           temperature: input.temperature ?? 0.2,
           max_tokens: input.maxTokens ?? 4096,
           messages: input.messages,
+          ...(input.responseFormat ? { response_format: { type: input.responseFormat } } : {}),
+          ...(input.thinking === 'disabled'
+            ? { thinking: { type: 'disabled' } }
+            : {}),
         }),
       },
     );

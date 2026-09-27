@@ -95,11 +95,24 @@ const invalidCases: Array<[string,(raw: ReturnType<typeof lectureReply>) => void
   ['false flat claim', raw => {raw.hierarchy.mode='flat';}, /不能声明 flat/],
   ['duplicate ID', raw => {raw.concepts[3].id='c3';}, /id 重复/],
 ];
-for (const [name,mutate,pattern] of invalidCases) void test(`invalid hierarchy is retried with a targeted message and never saved: ${name}`, async () => {
+for (const [name,mutate,pattern] of invalidCases) void test(`hierarchy recovery preserves facts or rejects unsafe output: ${name}`, async () => {
   const input = await extractLecture();
   const raw = lectureReply(input.documentId,true);
   mutate(raw);
   const {provider,store,requests} = mockProvider([lectureReply(input.documentId,true),raw,raw]);
+  if (name === 'too many children on one branch' || name === 'too deep') {
+    const digest = await provider.analyzeDocument(input);
+    assert.equal(requests.length, 2, 'safe ancestor promotion must avoid another AI request');
+    assert.equal(digest.concepts.length, raw.concepts.length);
+    assert.deepEqual(digest.concepts.map(node => node.description), raw.concepts.map(node => node.description));
+    assert.deepEqual(digest.concepts.map(node => node.sources.map(source => source.pageStart)), raw.concepts.map(node => node.sources.map(source => source.pageStart)));
+    const shape = inspectHierarchy(digest.concepts);
+    assert.equal(shape.maxDepth, 3);
+    assert.ok(shape.maxChildren <= 9);
+    assert.ok(digest.relations.some(relation => relation.label === '组成'));
+    assert.ok(digest.diagnostics?.some(diagnostic => diagnostic.action === 'quality-restored' && diagnostic.detail.includes('已有祖先')));
+    return;
+  }
   await assert.rejects(provider.analyzeDocument(input), (error: unknown) => {
     const message = describeKnowledgeError(error);
     assert.match(message,pattern);
@@ -227,4 +240,50 @@ void test('structure-only repair cannot discard existing concepts', async () => 
   const { provider, store } = mockProvider([draft, draft, repair]);
   await assert.rejects(provider.analyzeDocument(input), /遗漏已有节点/);
   assert.equal((await store.keys()).length, 0);
+});
+
+void test('repairs duplicate labels with compact identity mappings while retaining their distinct evidence', async () => {
+  const input = await extractLecture();
+  const draft = lectureReply(input.documentId, true);
+  draft.concepts[3].label = draft.concepts[2].label;
+  const originalLabel = draft.concepts[2].label;
+  const repair = {
+    hierarchy: draft.hierarchy,
+    assignments: draft.concepts.map((node, index) => ({id:node.id,parentId:node.parentId,
+      ...(index === 2 || index === 3 ? {label:`${originalLabel}（${index === 2 ? '定义' : '应用'}）`} : {})})),
+    branches: [{id:'source-branch',parentId:null,label:'材料中的章主题',description:'由已有章概念提供依据',sourceIds:[draft.concepts[0].id]}],
+  };
+  const {provider,requests} = mockProvider([lectureReply(input.documentId, true), draft, repair]);
+  const digest = await provider.analyzeDocument(input);
+  assert.match(requests[2].messages[1].content, /仅修复以下脑图结构/);
+  assert.match(requests[2].messages[1].content, /已有节点只需返回/);
+  assert.equal(digest.concepts.length, draft.concepts.length + 1);
+  assert.deepEqual(digest.concepts.at(-1)?.sources, digest.concepts[0].sources);
+  for (const index of [2,3]) {
+    const node = digest.concepts[index];
+    assert.equal(node.description, draft.concepts[index].description);
+    assert.equal(node.sources[0].pageStart, draft.concepts[index].sources[0].pageStart);
+    assert.ok(node.label.startsWith(originalLabel));
+  }
+  assert.notEqual(digest.concepts[2].label, digest.concepts[3].label);
+  assert.equal(inspectHierarchy(digest.concepts).maxDepth, 3);
+});
+
+void test('branch scaffolds derive sources from assigned original subtrees and preserve their hierarchy', async () => {
+  const input=await extractLecture();
+  const draft=lectureReply(input.documentId,true);
+  draft.concepts = draft.concepts.map(node => ({...node,parentId:['c3','c7'].includes(node.id)?node.parentId:null}));
+  // Root capacity failure cannot be fixed by moving nodes to unrelated parents.
+  draft.concepts.push(...Array.from({length:8},(_,index)=>({...draft.concepts[0],id:`extra${index}`,label:`材料主题${index}`,parentId:null})));
+  const branches=[{id:'group-a',parentId:null,label:'电路基础',description:'',sourceIds:[]},
+    {id:'group-b',parentId:null,label:'其他材料主题',description:'',sourceIds:[]}];
+  const assignments=[...branches.map(({id,parentId,label})=>({id,parentId,label})),...draft.concepts.map(node=>({id:node.id,
+    parentId: node.id.startsWith('extra') ? 'group-b' : 'group-a'}))];
+  const {provider,requests}=mockProvider([lectureReply(input.documentId,true),draft,{hierarchy:draft.hierarchy,assignments,branches}]);
+  const digest=await provider.analyzeDocument(input);
+  assert.equal(requests.length,3);
+  assert.equal(digest.concepts.length,draft.concepts.length+2);
+  assert.ok(digest.concepts.every(node=>node.sources.length));
+  assert.ok(digest.concepts.some(node=>node.label==='电路基础（主题）'));
+  assert.deepEqual(digest.concepts.slice(0,draft.concepts.length).map(node=>node.description),draft.concepts.map(node=>node.description));
 });

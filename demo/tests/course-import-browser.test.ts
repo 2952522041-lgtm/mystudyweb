@@ -50,6 +50,10 @@ const mockSources: Record<string, string> = {
             throw new Error('生成已取消；旧成果保留，已完成层可复用');
           }
           if (f.hierarchyFailure) throw new Error(f.hierarchyFailure);
+          if (f.asyncFailure) {
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            throw new Error(f.asyncFailure);
+          }
           return {documentId: input.documentId, fingerprint: input.fingerprint, sourcePages: [1]};
         },
         async synthesizeCourseKnowledge() { f.calls.synthesize++; return {}; }
@@ -73,9 +77,14 @@ const mockDependencies: import('esbuild').Plugin = {
   name: 'course-import-mocks',
   setup(builder) {
     builder.onResolve({ filter: /^@\/lib\// }, (args) =>
-      args.path in mockSources ? { path: args.path, namespace: 'mock' } : undefined);
+      args.path in mockSources
+        ? { path: args.path, namespace: 'mock' }
+        : undefined,
+    );
     builder.onLoad({ filter: /.*/, namespace: 'mock' }, (args) => ({
-      contents: mockSources[args.path], loader: 'js', resolveDir: root,
+      contents: mockSources[args.path],
+      loader: 'js',
+      resolveDir: root,
     }));
   },
 };
@@ -230,31 +239,110 @@ window.runImportRegression = async () => {
   await waitFor('commit cannot be cancelled halfway', () => button('取消生成')?.disabled);
   f.finishCommit();
   await waitFor('retry closed', () => !document.querySelector('input[accept="application/pdf,.pdf"]'));
+  check(f.calls.analyze === 4 && f.calls.synthesize === 2 && f.calls.extract === 4 && f.calls.save === 2,
+    'existing import/cancel assertions changed before async failure regression: ' + JSON.stringify(f.calls));
+
+  f.pauseCommit = false;
+  const asyncFailurePrefix = '知识库 AI 请求超时：';
+  f.asyncFailure = asyncFailurePrefix + '服务端诊断信息。'.repeat(120);
+  button('导入 PDF').click();
+  await waitFor('async failure dialog', () => document.querySelector('input[accept="application/pdf,.pdf"]'));
+  const asyncInput = document.querySelector('input[accept="application/pdf,.pdf"]');
+  const asyncFile = new DataTransfer();
+  asyncFile.items.add(new File(['async failure bytes'], 'async-failure.pdf', {type:'application/pdf'}));
+  asyncInput.files = asyncFile.files; asyncInput.dispatchEvent(new Event('change',{bubbles:true}));
+  await waitFor('async failure submit', () => button('导入并处理') && !button('导入并处理').disabled);
+  button('导入并处理').click();
+  await waitFor('async failure visible', () => text().includes(f.asyncFailure) && button('重试导入'));
+  check(text().includes('处理已停止，请查看具体错误后重试'), 'failure status must direct users to the concrete error');
+  const asyncError = [...document.querySelectorAll('[role=alert]')]
+    .find((node) => node.textContent.includes(f.asyncFailure));
+  const retryButton = button('重试导入');
+  check(asyncError && retryButton, 'async failure must render its concrete error and retry action');
+  const viewport = {width: window.innerWidth, height: window.innerHeight};
+  check(asyncError.textContent.trim().startsWith(asyncFailurePrefix), 'long async failure must keep its concrete opening visible');
+  check(asyncError.scrollTop === 0 && asyncError.scrollHeight > asyncError.clientHeight,
+    'long async failure must scroll inside its bounded error area');
+  check(asyncError.clientHeight <= viewport.height * 0.2 + 2,
+    'long async failure must not grow past its viewport allowance');
+  const errorRect = asyncError.getBoundingClientRect();
+  const retryRect = retryButton.getBoundingClientRect();
+  const visible = (rect) => rect.top >= 0 && rect.left >= 0
+    && rect.bottom <= viewport.height && rect.right <= viewport.width;
+  check(visible(errorRect), 'async error is outside viewport: ' + JSON.stringify({viewport, rect: errorRect.toJSON()}));
+  check(visible(retryRect), 'retry button is outside viewport: ' + JSON.stringify({viewport, rect: retryRect.toJSON()}));
+  f.asyncFailure = null;
+  retryButton.click();
+  await waitFor('async retry closed', () => !document.querySelector('input[accept="application/pdf,.pdf"]'));
+  check(f.calls.save === 3, 'retry after async failure did not complete the import');
   return f.calls;
 };
 `;
 
-void test('course import skips identical and renamed PDFs before extraction/AI, but accepts different content with the same name', {
-  skip: process.platform === 'linux' && !process.env.DISPLAY && !existsSync('/usr/bin/xvfb-run')
-    ? 'Requires a display or Xvfb for Chromium interaction tests' : false,
-}, async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'yeyu-course-import-'));
-  const bundle = await build({ stdin: { contents: entry, loader: 'tsx', resolveDir: root },
-    alias: { '@': root }, bundle: true, format: 'iife', platform: 'browser', target: 'es2022', write: false, logLevel: 'silent', plugins: [mockDependencies] });
-  const server = http.createServer((_request, response) => {
-    response.setHeader('content-type', 'text/html');
-    response.end(`<html><body><div id="root"></div><script>${bundle.outputFiles[0].text}</script></body></html>`);
-  });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== 'string');
-  const url = `http://127.0.0.1:${address.port}`;
-  const main = path.join(directory, 'main.cjs');
-  await writeFile(main, `
+void test(
+  'course import skips identical and renamed PDFs before extraction/AI, but accepts different content with the same name',
+  {
+    skip:
+      process.platform === 'linux' &&
+      !process.env.DISPLAY &&
+      !existsSync('/usr/bin/xvfb-run')
+        ? 'Requires a display or Xvfb for Chromium interaction tests'
+        : false,
+  },
+  async () => {
+    const directory = await mkdtemp(
+      path.join(os.tmpdir(), 'yeyu-course-import-'),
+    );
+    const bundle = await build({
+      stdin: { contents: entry, loader: 'tsx', resolveDir: root },
+      alias: { '@': root },
+      bundle: true,
+      format: 'iife',
+      platform: 'browser',
+      target: 'es2022',
+      write: false,
+      logLevel: 'silent',
+      plugins: [mockDependencies],
+    });
+    const server = http.createServer((_request, response) => {
+      response.setHeader('content-type', 'text/html');
+      response.end(
+        `<html><head><style>
+          * { box-sizing: border-box; }
+          body { margin: 0; }
+          [data-slot="dialog-content"] {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            display: flex; flex-direction: column; width: calc(100% - 2rem); max-width: 580px;
+            max-height: 90vh; gap: 16px; overflow: hidden; padding: 16px; background: white;
+          }
+          [data-slot="dialog-content"] > .shrink-0 { flex-shrink: 0; }
+          [data-slot="dialog-content"] > .min-h-0.flex-1.overflow-y-auto {
+            min-height: 0; flex: 1 1 auto; overflow-y: auto;
+          }
+          [data-slot="dialog-content"] [role="alert"][class~="max-h-[20vh]"][class~="overflow-y-auto"] {
+            max-height: 20vh; overflow-y: auto;
+          }
+          [data-slot="dialog-footer"] {
+            display: flex; flex-shrink: 0; justify-content: flex-end; gap: 8px;
+            margin: 0 -16px -16px; padding: 16px; border-top: 1px solid #ddd;
+          }
+        </style></head><body><div id="root"></div><script>${bundle.outputFiles[0].text}</script></body></html>`,
+      );
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const url = `http://127.0.0.1:${address.port}`;
+    const main = path.join(directory, 'main.cjs');
+    await writeFile(
+      main,
+      `
     const {app, BrowserWindow} = require('electron');
     app.disableHardwareAcceleration();
     app.whenReady().then(async () => {
-      const win = new BrowserWindow({width: 1200, height: 900, show: true,
+      const win = new BrowserWindow({width: 640, height: 480, show: true,
         webPreferences: {sandbox: true, contextIsolation: true, nodeIntegration: false}});
       try {
         await win.loadURL(${JSON.stringify(url)});
@@ -262,24 +350,54 @@ void test('course import skips identical and renamed PDFs before extraction/AI, 
         console.log('IMPORT_OK ' + JSON.stringify(result)); win.destroy(); app.exit(0);
       } catch (error) { console.error(error); win.destroy(); app.exit(1); }
     });
-  `);
-  try {
-    const electron = require('electron') as string;
-    const useXvfb = process.platform === 'linux' && !process.env.DISPLAY;
-    const args = ['--no-sandbox', '--disable-gpu', `--user-data-dir=${directory}/profile`, main];
-    const output = await new Promise<string>((resolve, reject) => {
-      const child = spawn(useXvfb ? 'xvfb-run' : electron, useXvfb ? ['-a', electron, ...args] : args,
-        { env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
-      let logs = '';
-      child.stdout.on('data', (data: Buffer) => { logs += data; });
-      child.stderr.on('data', (data: Buffer) => { logs += data; });
-      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(logs)); }, 30000);
-      child.on('error', (error) => { clearTimeout(timer); reject(error); });
-      child.on('close', (code) => { clearTimeout(timer); if (code === 0) resolve(logs); else reject(new Error(logs)); });
-    });
-    assert.match(output, /IMPORT_OK .*"analyze":4,"synthesize":2,"extract":4,"save":2/);
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await rm(directory, { recursive: true, force: true });
-  }
-});
+  `,
+    );
+    try {
+      const electron = require('electron') as string;
+      const useXvfb = process.platform === 'linux' && !process.env.DISPLAY;
+      const args = [
+        '--no-sandbox',
+        '--disable-gpu',
+        `--user-data-dir=${directory}/profile`,
+        main,
+      ];
+      const output = await new Promise<string>((resolve, reject) => {
+        const child = spawn(
+          useXvfb ? 'xvfb-run' : electron,
+          useXvfb ? ['-a', electron, ...args] : args,
+          {
+            env: { ...process.env, ELECTRON_RUN_AS_NODE: '' },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        );
+        let logs = '';
+        child.stdout.on('data', (data: Buffer) => {
+          logs += data;
+        });
+        child.stderr.on('data', (data: Buffer) => {
+          logs += data;
+        });
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          reject(new Error(logs));
+        }, 30000);
+        child.on('error', (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.on('close', (code) => {
+          clearTimeout(timer);
+          if (code === 0) resolve(logs);
+          else reject(new Error(logs));
+        });
+      });
+      assert.match(
+        output,
+        /IMPORT_OK .*"analyze":6,"synthesize":3,"extract":6,"save":3/,
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

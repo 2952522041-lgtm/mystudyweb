@@ -854,7 +854,7 @@ void test('single-PDF summary and mindmap come from the mocked AI response', asy
   });
 
   assert.equal(digest.schemaVersion, 3);
-  assert.equal(digest.promptVersion, 'ai-digest-v6');
+  assert.equal(digest.promptVersion, 'ai-digest-v7');
   assert.ok(digest.overview.length > 80, 'overview should be a real synthesis');
   assert.equal(digest.sourcePages, digest.sourcePages); // sanity
   assert.deepEqual(digest.sourcePages, [1, 2, 3]);
@@ -919,7 +919,7 @@ void test('course knowledge is synthesized across multiple documents by AI', asy
   assert.match(prompt, /doc-bbbbbbbbbbbbbbbb/);
   assert.match(prompt, /我的疑问/);
 
-  assert.equal(aiKnowledge.promptVersion, 'ai-course-v5');
+  assert.equal(aiKnowledge.promptVersion, 'ai-course-v6');
   assert.equal(aiKnowledge.provider, 'openai-compatible-knowledge');
 
   let knowledge = emptyCourseKnowledge('course-1', '线性代数', '2026-08-31T00:00:00.000Z');
@@ -1471,11 +1471,11 @@ $$E = mc^2 + \frac{p^2}{2m}$$
   assert.match(prompts, /GFM tables/);
 });
 
-void test('out-of-section point sources are rejected before cache writes', async () => {
+void test('out-of-document point sources are rejected before cache writes', async () => {
   const { provider, store } = makeProvider([chunkAnalysisReply(), digestReply({sections:[{
-    title:'能量',summary:'条件',pageStart:1,pageEnd:1,points:[{text:'结论',pageStart:2,pageEnd:2}],
+    title:'能量',summary:'条件',pageStart:1,pageEnd:1,points:[{text:'结论',pageStart:99,pageEnd:99}],
   }]})]);
-  await assert.rejects(provider.analyzeDocument({fingerprint:FINGERPRINT,documentId:DOCUMENT_ID,fileName:FILE_NAME,pages:PAGES}), /要点来源超出/);
+  await assert.rejects(provider.analyzeDocument({fingerprint:FINGERPRINT,documentId:DOCUMENT_ID,fileName:FILE_NAME,pages:PAGES}), /超出 PDF 实际页码/);
   assert.equal((await store.keys()).length, 0);
 });
 

@@ -65,18 +65,20 @@ function mock(
     if (requests.length === options.abortAt) options.controller?.abort();
     const text = request.messages[1].content as string;
     const chunk = text.includes('分析以下 PDF 分块');
-    const intermediate = text.includes('这是分层中间归并');
-    const layer = chunk ? 'chunk' : text.includes('你在为一门课程') ? 'course' : 'document';
+    const intermediate = text.includes('当前只是中间压缩') || text.includes('这是分层中间归并');
+    const course = text.includes('归并课程') || text.includes('你在为一门课程');
+    const layer = chunk ? 'chunk' : course ? 'course' : 'document';
     if (options.maxOutputTokens && request.max_tokens > options.maxOutputTokens)
       return Response.json({ error: { message: 'max_tokens must be less than the context window' } }, { status: 400 });
     if (options.maxInputBytes?.[layer] && utf8Size(request.messages) > options.maxInputBytes[layer]!)
       return options.overflowStatus === 413 ? new Response('Request Entity Too Large', { status: 413 })
         : Response.json({ error: { message: 'input is too long for this model' } }, { status: options.overflowStatus ?? 400 });
-    const documentId = /documentId[：]([^；，]+)/.exec(text)?.[1] ?? 'lecture';
-    const documentRecords =
-      !chunk && !text.includes('你在为一门课程')
-        ? JSON.parse(text.split('\n')[1])
-        : [];
+    const documentId = /documentId[：]([^；，]+)/.exec(text)?.[1]
+      ?? /"documentId":"([^"]+)"/.exec(text)?.[1]
+      ?? 'lecture';
+    const documentRecords = !chunk
+      ? JSON.parse(text.split('\n')[course || intermediate ? 2 : 1])
+      : [];
     const page = chunk
       ? Number(/<page number="(\d+)"/.exec(text)?.[1] ?? 1)
       : (synthesisSources(documentRecords, source(documentId))[0]?.pageStart ??
@@ -89,9 +91,10 @@ function mock(
           { text: table, pageStart: page, pageEnd: page },
         ],
       });
-    if (text.includes('你在为一门课程')) {
+    if (course) {
       const records = JSON.parse(text.split('\n')[2]);
-      result.concepts[0].sources = synthesisSources(records).map((s) => ({
+      const sources = synthesisSources(records);
+      result.concepts[0].sources = (sources.length ? sources : [source(documentId, page)]).map((s) => ({
         ...s,
         pageEnd: s.pageEnd ?? s.pageStart,
         type: 'pdf' as const,
@@ -419,7 +422,7 @@ void test('long lecture plus multiple course documents completes through all lay
   const levels = m.requests.map((r, index) => ({
     layer: r.messages[1].content.includes('分析以下 PDF 分块')
       ? 'chunk'
-      : r.messages[1].content.includes('你在为一门课程')
+      : r.messages[1].content.includes('归并课程') || r.messages[1].content.includes('你在为一门课程')
         ? 'course'
         : 'document',
     input: utf8Size(r.messages),
