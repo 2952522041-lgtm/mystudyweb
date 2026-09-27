@@ -192,7 +192,8 @@ window.runImportRegression = async () => {
   check(f.opened.glossary.entries[0].target === '线动量', 'reader did not receive current glossary');
   check(f.opened.glossaryFingerprint.length === 64, 'reader glossary fingerprint missing');
   button('课程术语表').click();
-  await waitFor('glossary reload', () => document.querySelector('input[aria-label="源词 1"]'));
+  await waitFor('glossary reload', () => document.querySelector('input[aria-label="源词 1"]')
+    && button('删除第 1 条') && !button('删除第 1 条').closest('fieldset').disabled);
 
   button('删除第 1 条').click();
   await waitFor('deleted row', () => !document.querySelector('input[aria-label="源词 1"]'));

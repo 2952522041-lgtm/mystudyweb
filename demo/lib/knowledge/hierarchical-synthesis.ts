@@ -8,6 +8,9 @@ export const SYNTHESIS_BUDGET = {
   document: 64000,
   course: 64000,
   payload: 24000,
+  // Final synthesis has no subsequent reduction target. Allow two compacted
+  // batches to join while the provider still enforces the full message limit.
+  finalPayload: 36000,
   intermediate: 10000,
   rounds: 8,
 } as const;
@@ -145,7 +148,7 @@ export async function reduceWithinBudget(options: {
   let records = options.records;
   for (let round = 0; round <= SYNTHESIS_BUDGET.rounds; round++) {
     if (options.signal?.aborted) throw options.signal.reason ?? new Error('分层综合已取消。');
-    if (utf8Size(records) <= SYNTHESIS_BUDGET.payload)
+    if (utf8Size(records) <= SYNTHESIS_BUDGET.finalPayload)
       return reduceSafely(records, `${options.identity}/final`, false, options.signal);
     const batches: unknown[][] = [];
     let batch: unknown[] = [];

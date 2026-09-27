@@ -357,7 +357,8 @@ void test('complete prompts including oversized user metadata are bounded before
 
 void test('non-shrinking reductions stop explicitly rather than looping or silently slicing', async () => {
   const events: SynthesisDiagnostic[] = [];
-  const records = [{ text: 'a'.repeat(15000) }, { text: 'b'.repeat(15000) }];
+  const records = [{ text: 'a'.repeat(19000) }, { text: 'b'.repeat(19000) }];
+  assert.ok(utf8Size(records) > SYNTHESIS_BUDGET.finalPayload);
   await assert.rejects(
     reduceWithinBudget({
       records,

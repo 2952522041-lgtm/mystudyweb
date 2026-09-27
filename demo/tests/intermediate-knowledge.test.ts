@@ -232,3 +232,50 @@ void test('final course hierarchy still rejects orphan and cyclic parent relatio
     assert.equal(m.finalCount, 2, `${kind} should receive one structural repair retry`);
   }
 });
+
+void test('the first course intermediate prompt regroups flat digest records and keeps the source ledger', async () => {
+  const digests = courseDigests();
+  const ledger = digests.map((digest, index) => ({
+    text: `关键证据 ${digest.documentId}`,
+    source: {
+      documentId: digest.documentId,
+      fileName: `${digest.documentId}.pdf`,
+      pageStart: index + 1,
+      pageEnd: index + 1,
+      type: 'pdf' as const,
+    },
+  }));
+  for (const [index, digest] of digests.entries()) {
+    const item = ledger[index]!;
+    digest.evidence = [{ text: item.text, sources: [item.source] }];
+  }
+
+  const m = createProvider();
+  const result = await m.provider.synthesizeCourseKnowledge(courseInput(digests));
+  const firstIntermediate = m.requests.find((prompt) =>
+    prompt.includes('当前只是中间压缩') || prompt.includes('这是分层中间归并'),
+  );
+  assert.ok(firstIntermediate, 'long course should send a course intermediate request');
+  assert.match(firstIntermediate, /输入来自已完成的文档摘要或中间包/);
+  assert.match(firstIntermediate, /description 中保留各概念的名称、关键区别、条件(?:和|与)结论/);
+  assert.match(firstIntermediate, /原始单篇概念和关键元素由应用(?:独立保存|另存)/);
+  assert.match(firstIntermediate, /课程中间包省略 title、overview、sections/);
+  assert.doesNotMatch(firstIntermediate, /只合并重复解释，不删除不同概念/);
+  assert.doesNotMatch(firstIntermediate, /不要求全局根、三层深度或每个分支的孩子数量/);
+
+  assert.equal(m.finalCount, 1);
+  for (const item of ledger) {
+    const evidence = result.evidence?.find((candidate) => candidate.text === item.text);
+    assert.ok(evidence, `source ledger evidence ${item.text} must survive compact intermediate output`);
+    assert.ok(evidence.sources.some((source) =>
+      source.documentId === item.source.documentId
+      && source.fileName === item.source.fileName
+      && source.pageStart === item.source.pageStart
+      && source.pageEnd === item.source.pageEnd,
+    ));
+  }
+  assert.deepEqual(
+    new Set(result.nodes.flatMap((node) => node.sources.map((source) => source.documentId))),
+    new Set(['alpha', 'beta', 'gamma']),
+  );
+});

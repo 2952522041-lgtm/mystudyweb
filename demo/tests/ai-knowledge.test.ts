@@ -854,7 +854,7 @@ void test('single-PDF summary and mindmap come from the mocked AI response', asy
   });
 
   assert.equal(digest.schemaVersion, 3);
-  assert.equal(digest.promptVersion, 'ai-digest-v7');
+  assert.equal(digest.promptVersion, 'ai-digest-v11');
   assert.ok(digest.overview.length > 80, 'overview should be a real synthesis');
   assert.equal(digest.sourcePages, digest.sourcePages); // sanity
   assert.deepEqual(digest.sourcePages, [1, 2, 3]);
@@ -919,7 +919,7 @@ void test('course knowledge is synthesized across multiple documents by AI', asy
   assert.match(prompt, /doc-bbbbbbbbbbbbbbbb/);
   assert.match(prompt, /我的疑问/);
 
-  assert.equal(aiKnowledge.promptVersion, 'ai-course-v6');
+  assert.equal(aiKnowledge.promptVersion, 'ai-course-v8');
   assert.equal(aiKnowledge.provider, 'openai-compatible-knowledge');
 
   let knowledge = emptyCourseKnowledge('course-1', '线性代数', '2026-08-31T00:00:00.000Z');
