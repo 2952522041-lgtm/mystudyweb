@@ -16,7 +16,7 @@ import {
   type SynthesisDiagnostic,
 } from '../lib/knowledge/hierarchical-synthesis.ts';
 import { MemoryCourseStorage } from '../lib/course-storage/memory-course-storage.ts';
-import { buildPdfChunks } from '../lib/knowledge/pdf-chunks.ts';
+import { buildPdfChunks, splitPdfChunk } from '../lib/knowledge/pdf-chunks.ts';
 import {
   applyAiCourseKnowledge,
   emptyCourseKnowledge,
@@ -45,6 +45,9 @@ function mock(
     controller?: AbortController;
     verbose?: boolean;
     omitScience?: boolean;
+    maxInputBytes?: Partial<Record<'chunk' | 'document' | 'course', number>>;
+    maxOutputTokens?: number;
+    overflowStatus?: number;
   } = {},
 ) {
   const requests: Array<{
@@ -63,6 +66,12 @@ function mock(
     const text = request.messages[1].content as string;
     const chunk = text.includes('分析以下 PDF 分块');
     const intermediate = text.includes('这是分层中间归并');
+    const layer = chunk ? 'chunk' : text.includes('你在为一门课程') ? 'course' : 'document';
+    if (options.maxOutputTokens && request.max_tokens > options.maxOutputTokens)
+      return Response.json({ error: { message: 'max_tokens must be less than the context window' } }, { status: 400 });
+    if (options.maxInputBytes?.[layer] && utf8Size(request.messages) > options.maxInputBytes[layer]!)
+      return options.overflowStatus === 413 ? new Response('Request Entity Too Large', { status: 413 })
+        : Response.json({ error: { message: 'input is too long for this model' } }, { status: options.overflowStatus ?? 400 });
     const documentId = /documentId[：]([^；，]+)/.exec(text)?.[1] ?? 'lecture';
     const documentRecords =
       !chunk && !text.includes('你在为一门课程')
@@ -532,4 +541,94 @@ void test('provenance survives every cached layer and keeps source gaps', async 
     );
   }
   assert.equal(synthesisSources([source('a', 1), source('a', 3)]).length, 2);
+});
+
+
+void test('long Chinese pages recover from provider input limits without losing pages or source text', async () => {
+  const pages = Array.from({ length: 3 }, (_, page) => `第${page + 1}页：` + '正文内容😀。'.repeat(1200));
+  for (const overflowStatus of [400, 413, 422]) {
+    const m = mock({ maxInputBytes: { chunk: 15000 }, overflowStatus });
+    const events: SynthesisDiagnostic[] = [];
+    const digest = await m.provider.analyzeDocument({ ...input(pages), onDiagnostic: d => events.push(d) });
+    const successfulChunks = m.requests.filter(request => request.messages[1].content.includes('分析以下 PDF 分块')
+      && utf8Size(request.messages) <= 15000);
+    const byPage = new Map<number, string>();
+    for (const request of successfulChunks) {
+      for (const match of request.messages[1].content.matchAll(/<page number="(\d+)"[^>]*>\n([\s\S]*?)\n<\/page>/g))
+        byPage.set(Number(match[1]), (byPage.get(Number(match[1])) ?? '') + match[2]);
+    }
+    assert.deepEqual([...byPage.values()], pages);
+    assert.deepEqual(digest.sourcePages, [1, 2, 3]);
+    assert.ok(events.some(event => event.layer === 'chunk' && event.action === 'split'));
+    assert.ok(events.every(event => event.droppedBytes === 0));
+    assert.ok(m.requests.length < 40, 'recovery must have a bounded number of calls');
+  }
+});
+
+void test('document and course synthesis automatically reduce further when the provider has a smaller context', async () => {
+  const m = mock({ verbose: true, maxInputBytes: { document: 17000, course: 17000 } });
+  const digest = await m.provider.analyzeDocument(input());
+  assert.ok(digest.diagnostics?.some(event => event.layer === 'document' && /服务商上下文不足/.test(event.detail)));
+  const ai = await m.provider.synthesizeCourseKnowledge({ courseId: 'c', courseName: '课程', digests: [legacyLongDigest('a'), legacyLongDigest('b')] });
+  assert.ok(ai.diagnostics?.some(event => event.layer === 'course' && /服务商上下文不足/.test(event.detail)));
+  assert.deepEqual(ai.nodes[0].sources.map(source => source.documentId), ['a', 'b']);
+  assert.ok(ai.diagnostics?.every(event => event.droppedBytes === 0));
+});
+
+void test('output reservations shrink on context conflict while retaining the complete input', async () => {
+  const m = mock({ maxOutputTokens: 2048 });
+  const digest = await m.provider.analyzeDocument(input(paperPages));
+  assert.ok(digest.concepts.length);
+  const requests = m.requests as Array<{ max_tokens: number; messages: unknown[] }>;
+  assert.deepEqual(requests.slice(0, 3).map(request => request.max_tokens), [8192, 4096, 2048]);
+  assert.deepEqual(requests[0].messages, requests[2].messages);
+});
+
+void test('adaptive splitting preserves supplementary Unicode characters and page numbers', () => {
+  const text = '甲'.repeat(1001) + '😀𠮷'.repeat(1000);
+  const original = buildPdfChunks(['', text])[0];
+  const smaller = splitPdfChunk(original);
+  assert.ok(smaller.length > 1);
+  assert.equal(smaller.flatMap(chunk => chunk.segments!.map(segment => segment.text)).join(''), text);
+  assert.ok(smaller.every(chunk => chunk.pages.every(page => page === 2)));
+  assert.ok(smaller.every(chunk => chunk.segments!.every(segment => segment.text.isWellFormed())));
+});
+
+void test('adaptive reduction stops on unrelated errors and aborts without trying remaining batches', async () => {
+  for (const code of ['auth', 'aborted']) {
+    let calls = 0;
+    const failure = Object.assign(new Error(code), { code });
+    await assert.rejects(reduceWithinBudget({
+      records: [{ text: 'a'.repeat(5000) }, { text: 'b'.repeat(5000) }], layer: 'document', identity: 'd',
+      report() {}, shouldSplit: error => (error as { code: string }).code === 'context_overflow',
+      reduce: async () => { calls++; throw failure; },
+    }), error => error === failure);
+    assert.equal(calls, 1);
+  }
+});
+
+void test('cancelled adaptive chunk recovery retains checkpoints and retry reuses completed smaller chunks', async () => {
+  const m = mock({ maxInputBytes: { chunk: 15000 } });
+  const pages = ['正文内容。'.repeat(2000)];
+  const controller = new AbortController();
+  await assert.rejects(m.provider.analyzeDocument({
+    ...input(pages), signal: controller.signal,
+    onDiagnostic: event => {
+      if (event.layer === 'chunk' && event.action === 'completed') controller.abort();
+    },
+  }));
+  assert.equal((await m.digests.keys()).length, 0);
+  assert.equal((await m.store.keys()).length, 1);
+  const events: SynthesisDiagnostic[] = [];
+  await m.provider.analyzeDocument({ ...input(pages), onDiagnostic: event => events.push(event) });
+  assert.ok(events.some(event => event.action === 'cache-hit' && event.identity.includes('/part-')));
+  assert.equal((await m.digests.keys()).length, 1);
+});
+
+void test('permanent provider context rejection stops bounded recovery and never caches partial output', async () => {
+  const m = mock({ maxInputBytes: { chunk: 1 } });
+  await assert.rejects(m.provider.analyzeDocument(input(['长文内容。'.repeat(2400)])), /输入内容超出/);
+  assert.ok(m.requests.length > 1 && m.requests.length <= 6);
+  assert.equal((await m.digests.keys()).length, 0);
+  assert.equal((await m.store.keys()).length, 0);
 });

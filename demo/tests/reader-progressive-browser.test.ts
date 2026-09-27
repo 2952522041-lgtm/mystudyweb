@@ -82,7 +82,20 @@ window.runReaderRegression = async () => {
     return composer && visible(composer);
   });
   check(visible(document.querySelector('[aria-label="AI 答疑输入"]')), 'short window clipped the AI composer');
-  check(visible(document.querySelector('[aria-label="发送问题"]')), 'short window clipped send controls');
+  const send = document.querySelector('[aria-label="发送问题"]');
+  const insidePanel = (element) => {
+    const rect = element.getBoundingClientRect();
+    const panel = element.closest('.ai-chat-panel').getBoundingClientRect();
+    return visible(element) && rect.top >= panel.top && rect.bottom <= panel.bottom + 1;
+  };
+  check(insidePanel(send), 'short window clipped send controls');
+  const composer = document.querySelector('[aria-label="AI 答疑输入"]');
+  const longQuestion = '请解释这段很长的材料。\\n'.repeat(200);
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(composer, longQuestion);
+  composer.dispatchEvent(new Event('input', {bubbles:true}));
+  await waitFor('long question committed', () => !send.disabled && composer.scrollHeight > composer.clientHeight);
+  check(composer.value === longQuestion, 'long question was truncated');
+  check(insidePanel(composer) && insidePanel(send), 'long question clipped composer or send controls');
   return {jump:15, shortWindow:true};
 };
 `;

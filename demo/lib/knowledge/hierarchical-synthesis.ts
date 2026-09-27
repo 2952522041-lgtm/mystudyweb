@@ -10,7 +10,7 @@ export const SYNTHESIS_BUDGET = {
   intermediate: 10000,
   rounds: 8,
 } as const;
-export const HIERARCHICAL_PROMPT_VERSION = 'hierarchical-v1';
+export const HIERARCHICAL_PROMPT_VERSION = 'hierarchical-v2';
 export type SynthesisLayer = 'chunk' | 'document' | 'course';
 export interface SynthesisDiagnostic {
   layer: SynthesisLayer;
@@ -63,7 +63,14 @@ export function synthesisRecords(
     return [{ ...identity, value }];
   const object = value as Record<string, unknown>;
   const { sections, concepts, relations, ...header } = object;
-  const records: unknown[] = [{ ...identity, ...header }];
+  // The header can become a standalone batch after adaptive splitting. Carry the
+  // actual document ranges so it never loses provenance when separated from sections.
+  const documentId = identity.documentId ?? object.documentId;
+  const fileName = identity.fileName ?? object.fileName;
+  const provenance = synthesisSources(object, typeof documentId === 'string' && typeof fileName === 'string'
+    ? { documentId, fileName, pageStart: 1, type: 'pdf' } : undefined);
+  const records: unknown[] = [{ ...identity, ...header,
+    ...(provenance.length ? { provenance } : {}) }];
   for (const section of Array.isArray(sections) ? sections : []) {
     const { points, ...fields } = section as Record<string, unknown>;
     records.push({ ...identity, section: fields });
@@ -82,16 +89,49 @@ export async function reduceWithinBudget(options: {
   layer: 'document' | 'course';
   identity: string;
   report: (diagnostic: SynthesisDiagnostic) => void;
+  shouldSplit?: (error: unknown) => boolean;
   reduce: (
     records: unknown[],
     identity: string,
     intermediate: boolean,
   ) => Promise<unknown>;
 }): Promise<unknown> {
+  const reduceSafely = async (records: unknown[], identity: string, intermediate: boolean, depth = 0): Promise<unknown> => {
+    try { return await options.reduce(records, identity, intermediate); }
+    catch (error) {
+      if (!options.shouldSplit?.(error) || depth >= 5 || utf8Size(records) < 1500) throw error;
+      let limit = Math.floor(utf8Size(records) / 2);
+      // A previously complete digest is separable at section/concept boundaries.
+      const units = records.flatMap(record => {
+        if (utf8Size([record]) <= limit || !record || typeof record !== 'object'
+          || !['sections', 'concepts', 'relations'].some(key => Array.isArray((record as Record<string, unknown>)[key]))) return [record];
+        const metadata = record && typeof record === 'object'
+          ? Object.fromEntries(Object.entries(record).filter(([key]) => ['documentId', 'fileName', 'chunkIndex', 'provenance'].includes(key))) : {};
+        return synthesisRecords(record, metadata);
+      });
+      if (units.length < 2) throw error;
+      limit = Math.max(limit, ...units.map(unit => utf8Size([unit])));
+      const batches: unknown[][] = [];
+      let batch: unknown[] = [];
+      for (const unit of units) {
+        if (batch.length && utf8Size([...batch, unit]) > limit) { batches.push(batch); batch = []; }
+        batch.push(unit);
+      }
+      if (batch.length) batches.push(batch);
+      if (batches.length < 2) throw error;
+      options.report({ layer: options.layer, action: 'split', identity, inputBytes: utf8Size(records), limit,
+        droppedItems: 0, droppedBytes: 0, detail: `服务商上下文不足，自动缩小为 ${batches.length} 批综合；全部结构项保留。` });
+      const next: unknown[] = [];
+      for (const [index, part] of batches.entries())
+        next.push(await reduceSafely(part, `${identity}/smaller-${index}`, true, depth + 1));
+      if (utf8Size(next) >= utf8Size(records)) throw error;
+      return reduceSafely(next, `${identity}/merged`, intermediate, depth + 1);
+    }
+  };
   let records = options.records;
   for (let round = 0; round <= SYNTHESIS_BUDGET.rounds; round++) {
     if (utf8Size(records) <= SYNTHESIS_BUDGET.payload)
-      return options.reduce(records, `${options.identity}/final`, false);
+      return reduceSafely(records, `${options.identity}/final`, false);
     const batches: unknown[][] = [];
     let batch: unknown[] = [];
     for (const record of records) {
@@ -132,7 +172,7 @@ export async function reduceWithinBudget(options: {
     const next: unknown[] = [];
     for (let index = 0; index < batches.length; index++)
       next.push(
-        await options.reduce(
+        await reduceSafely(
           batches[index],
           `${options.identity}/round-${round}/batch-${index}`,
           true,

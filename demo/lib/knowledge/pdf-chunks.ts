@@ -19,6 +19,7 @@ export interface PageSegment {
 
 export interface PdfChunk {
   index: number;
+  segments?: PageSegment[];
   pageStart: number;
   pageEnd: number;
   pages: number[];
@@ -39,7 +40,9 @@ function splitAtBoundary(text: string, limit: number): number {
     }
     if (cut > 0) return cut;
   }
-  return limit;
+  // Never split a UTF-16 surrogate pair (emoji and supplementary CJK characters).
+  return /[\uD800-\uDBFF]/.test(text[limit - 1]) && /[\uDC00-\uDFFF]/.test(text[limit])
+    ? limit - 1 : limit;
 }
 
 /** 单页超过上限时在段落或句子边界继续拆分；正常页保持完整。 */
@@ -48,6 +51,7 @@ export function splitPageIntoSegments(
   text: string,
   maxChars = PDF_PAGE_MAX_CHARS,
 ): PageSegment[] {
+  if (!Number.isSafeInteger(maxChars) || maxChars < 2) throw new RangeError('分块长度至少为 2。');
   const segments: PageSegment[] = [];
   let remaining = text;
   for (let part = 0; remaining.length > 0; part += 1) {
@@ -81,6 +85,10 @@ export function buildPdfChunks(
     splitPageIntoSegments(index + 1, text, Math.min(PDF_PAGE_MAX_CHARS, maxChunkChars)),
   );
 
+  return packSegments(segments, maxChunkChars);
+}
+
+function packSegments(segments: PageSegment[], maxChunkChars: number): PdfChunk[] {
   const chunks: PdfChunk[] = [];
   let current: PageSegment[] = [];
   let currentChars = 0;
@@ -91,6 +99,7 @@ export function buildPdfChunks(
     const pageNumbers = [...new Set(current.map((s) => s.pageNumber))];
     chunks.push({
       index: chunks.length,
+      segments: current,
       pageStart: pageNumbers[0]!,
       pageEnd: pageNumbers[pageNumbers.length - 1]!,
       pages: pageNumbers,
@@ -113,4 +122,13 @@ export function buildPdfChunks(
   }
   flush();
   return chunks;
+}
+
+/** Repartition only the failed chunk; page identities survive page-internal splits. */
+export function splitPdfChunk(chunk: PdfChunk): PdfChunk[] {
+  if (!chunk.segments?.length) return [];
+  const limit = Math.max(2, Math.floor(chunk.charCount / 2));
+  const segments = chunk.segments.flatMap(segment =>
+    splitPageIntoSegments(segment.pageNumber, segment.text, limit));
+  return packSegments(segments, limit);
 }

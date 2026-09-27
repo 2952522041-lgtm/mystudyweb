@@ -177,3 +177,54 @@ void test('removing a source document repairs surviving parent references withou
   assert.equal(inspectHierarchy(next.nodes.filter(n => n.kind !== 'course')).orphans.length,0);
   assert.equal(knowledge.nodes.find(n => n.id === 'child')?.parentId,'parent');
 });
+
+void test('repairs the screenshot shape (15 children, depth 2) without regenerating scientific prose', async () => {
+  const input = await extractLecture();
+  const draft = lectureReply(input.documentId, true);
+  const origin = draft.concepts[0].sources;
+  draft.sections[0].summary += '\n$$U = IR$$\n| R | U |\n| --- | --- |\n| 1 | 2 |';
+  draft.concepts = [
+    ...Array.from({ length: 15 }, (_, i) => ({ id: `p${i}`, parentId: null,
+      label: `原文要点${i}`, description: `保留定义和公式 ${i}`, sources: origin })),
+    { id: 'leaf', parentId: 'p0', label: '要点的适用条件', description: '原有条件', sources: origin },
+  ];
+  draft.relations = [{ from: 'p0', to: 'p1', label: '依赖' }];
+  const repair = {
+    hierarchy: draft.hierarchy,
+    concepts: [
+      ...draft.concepts.map((node, index) => ({ ...node,
+        // Corrupt returned prose deliberately: the application must retain the original.
+        description: '不应覆盖已有解释',
+        sources: [{ ...origin[0], pageStart: 999 }],
+        parentId: node.id === 'leaf' ? 'p0' : index < 8 ? 'section-a' : 'section-b' })),
+      { id: 'section-a', parentId: null, label: '电阻电路', description: '原文小节', sources: origin },
+      { id: 'section-b', parentId: null, label: '电容储能', description: '原文小节', sources: draft.sections.slice(1).map(section => ({ ...origin[0], pageStart: section.pageStart })) },
+    ],
+    relations: [],
+  };
+  const { provider, requests } = mockProvider([lectureReply(input.documentId, true), draft, repair]);
+  const digest = await provider.analyzeDocument(input);
+  assert.equal(requests.length, 3);
+  assert.equal(requests[2].messages.length, 2);
+  assert.match(requests[2].messages[1].content, /仅修复以下脑图结构/);
+  assert.match(requests[2].messages[1].content, /节点 主题根 有 15 个子节点/);
+  assert.match(requests[2].messages[1].content, /最大深度 2 < 3/);
+  assert.ok(requests[2].messages[1].content.includes('"parentId":null'));
+  assert.equal(inspectHierarchy(digest.concepts).maxDepth, 3);
+  assert.ok(inspectHierarchy(digest.concepts).maxChildren <= 9);
+  assert.equal(digest.concepts.length, 18);
+  assert.equal(digest.concepts.find(node => node.label === '原文要点0')?.description, '保留定义和公式 0');
+  assert.equal(digest.sections[0].summary, draft.sections[0].summary);
+  assert.deepEqual(digest.concepts.find(node => node.label === '原文要点0')?.sources, [{ ...origin[0], pageEnd: origin[0].pageStart, type: 'pdf' }]);
+  assert.ok(digest.relations.some(relation => relation.label === '依赖'));
+});
+
+void test('structure-only repair cannot discard existing concepts', async () => {
+  const input = await extractLecture();
+  const draft = lectureReply(input.documentId, false);
+  const repair = lectureReply(input.documentId, true);
+  repair.concepts = repair.concepts.slice(0, 4);
+  const { provider, store } = mockProvider([draft, draft, repair]);
+  await assert.rejects(provider.analyzeDocument(input), /遗漏已有节点/);
+  assert.equal((await store.keys()).length, 0);
+});

@@ -479,3 +479,23 @@
     @apply w-[58px];
   }
 }
+
+/* Keep the question and send controls inside short desktop windows, even when
+   field-sizing grows the textarea for a long pasted question. */
+@media (max-height: 600px) {
+  .ai-context-bar {
+    @apply py-1;
+  }
+
+  .ai-message-scroll {
+    @apply py-2;
+  }
+
+  .ai-composer {
+    @apply mb-2 py-2;
+  }
+
+  .ai-composer textarea {
+    @apply min-h-10 max-h-20;
+  }
+}
