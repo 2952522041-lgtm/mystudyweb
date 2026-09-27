@@ -135,6 +135,34 @@ pnpm desktop:test       # electron 单元测试 + 真实启动冒烟测试（需
 
 仅供开发/测试的环境变量（不会写入任何产物）：`YEYU_WORKSPACE_ROOT` 覆盖工作区根目录；`YEYU_DEV_URL` 只在未打包时生效，且只接受 `localhost`/`127.0.0.1`/IPv6 回环；`YEYU_SMOKE=1` 由自动化冒烟测试使用。
 
+## MCP 自动化（桌面版）
+
+页语桌面端启动时会建立一个仅监听 `127.0.0.1` 的控制端点，并把随机令牌写入工作区的 `Settings/mcp-control.json`（Unix 权限为 `0600`）。MCP Server 通过这个短生命周期令牌控制当前页语窗口；网页 Demo 不开放此能力。
+
+先构建 MCP Server，并保持页语桌面端正在运行：
+
+```bash
+cd demo
+pnpm mcp:build
+```
+
+在支持 stdio MCP 的客户端中，把服务器命令配置为 `node`，参数设为本仓库生成文件的绝对路径：
+
+```json
+{
+  "mcpServers": {
+    "yeyu": {
+      "command": "node",
+      "args": ["/absolute/path/to/learning_app/demo/electron/dist/yeyu-mcp.js"]
+    }
+  }
+}
+```
+
+默认从 `~/Documents/页语工作区/Settings/mcp-control.json` 连接。自定义工作区时给 MCP 进程设置 `YEYU_WORKSPACE_ROOT`；系统“文档”目录不在默认位置时，可用 `YEYU_MCP_CONTROL_FILE` 直接指定控制文件。
+
+当前工具包括读取应用状态、显示课程库、打开课程、打开课程 PDF、跳页、切换阅读面板，以及 `yeyu_import_pdf`。导入工具只接受本机绝对路径下的普通 PDF（拒绝符号链接、非 PDF 和超过 128 MiB 的文件），然后复用页语现有导入事务写入课程。每份新 PDF 都需要知识库 AI 建立内部摘要，扫描件还可能使用 OCR，因此可能产生服务费用；总结、脑图和课程合并选项控制额外的可见成果，默认开启。MCP 不提供任意文件读写、删除课程或读取 API Key 的能力。
+
 ## 部署为公开网站
 
 两种方式任选：

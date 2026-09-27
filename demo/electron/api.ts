@@ -32,7 +32,28 @@ export const DESKTOP_CHANNELS = {
   lanShareStatus: 'yeyu:lan-share-status',
   lanShareStart: 'yeyu:lan-share-start',
   lanShareStop: 'yeyu:lan-share-stop',
+  mcpCommand: 'yeyu:mcp-command',
+  mcpResponse: 'yeyu:mcp-response',
 } as const;
+
+export type YeyuMcpCommandName =
+  | 'get_state'
+  | 'show_courses'
+  | 'open_course'
+  | 'open_document'
+  | 'import_pdf'
+  | 'go_to_page'
+  | 'set_reader_panel';
+
+export interface YeyuMcpCommand {
+  id: string;
+  name: YeyuMcpCommandName;
+  args: Record<string, unknown>;
+}
+
+export type YeyuMcpResponse =
+  | { id: string; ok: true; result: unknown }
+  | { id: string; ok: false; error: string };
 
 /** 桌面 API 的全部方法名；冒烟测试用它校验 preload 的暴露面。 */
 export const DESKTOP_METHOD_NAMES = [
@@ -45,6 +66,7 @@ export const DESKTOP_METHOD_NAMES = [
   'getLanShareStatus',
   'listFiles',
   'listCourses',
+  'onMcpCommand',
   'readFile',
   'revealWorkspace',
   'startLanShare',
@@ -100,4 +122,11 @@ export interface YeyuDesktopApi {
   getLanShareStatus?(): Promise<LanShareStatus>;
   startLanShare?(password: string, port: number): Promise<LanShareStatus>;
   stopLanShare?(): Promise<void>;
+  /**
+   * 接收 Electron 主进程转发的本机 MCP 命令。preload 只把结构化命令交给
+   * renderer，并把处理结果回传；不会向页面暴露端口、令牌或 ipcRenderer。
+  */
+  onMcpCommand?(
+    handler: (command: YeyuMcpCommand) => unknown,
+  ): () => void;
 }

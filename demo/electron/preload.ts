@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-import { DESKTOP_CHANNELS, type YeyuDesktopApi } from './api.ts';
+import {
+  DESKTOP_CHANNELS,
+  type YeyuDesktopApi,
+  type YeyuMcpCommand,
+  type YeyuMcpResponse,
+} from './api.ts';
 
 const api: YeyuDesktopApi = {
   getWorkspaceInfo: () => ipcRenderer.invoke(DESKTOP_CHANNELS.workspaceInfo),
@@ -47,6 +52,38 @@ const api: YeyuDesktopApi = {
   startLanShare: (password, port) =>
     ipcRenderer.invoke(DESKTOP_CHANNELS.lanShareStart, password, port),
   stopLanShare: () => ipcRenderer.invoke(DESKTOP_CHANNELS.lanShareStop),
+  onMcpCommand: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: unknown) => {
+      const command = value as YeyuMcpCommand;
+      void Promise.resolve()
+        .then(() => handler(command))
+        .then(
+          (result) => {
+            const response: YeyuMcpResponse = {
+              id: command.id,
+              ok: true,
+              result,
+            };
+            void ipcRenderer
+              .invoke(DESKTOP_CHANNELS.mcpResponse, response)
+              .catch(() => undefined);
+          },
+          (error: unknown) => {
+            const response: YeyuMcpResponse = {
+              id: command.id,
+              ok: false,
+              error: error instanceof Error ? error.message : String(error),
+            };
+            void ipcRenderer
+              .invoke(DESKTOP_CHANNELS.mcpResponse, response)
+              .catch(() => undefined);
+          },
+        );
+    };
+    ipcRenderer.on(DESKTOP_CHANNELS.mcpCommand, listener);
+    return () =>
+      ipcRenderer.removeListener(DESKTOP_CHANNELS.mcpCommand, listener);
+  },
 };
 
 // 只暴露白名单方法；ipcRenderer、fs 和路径解析都不会出现在 window 上。

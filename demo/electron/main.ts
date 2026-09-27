@@ -1,9 +1,16 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 
-import { DESKTOP_CHANNELS, type WorkspaceInfo } from './api.ts';
+import {
+  DESKTOP_CHANNELS,
+  type WorkspaceInfo,
+  type YeyuMcpCommand,
+  type YeyuMcpCommandName,
+  type YeyuMcpResponse,
+} from './api.ts';
 import {
   createCourseDirectory,
   courseFileExists,
@@ -32,6 +39,8 @@ import {
 import { isSmokeRun, probePreloadBridge } from './smoke.ts';
 import { handleSquirrelStartup } from './squirrel.ts';
 import { LanShareServer } from './lan-share.ts';
+import { McpControlServer, type McpControlRequest } from './mcp-control.ts';
+import { prepareMcpRendererArgs } from './mcp-import.ts';
 
 // Windows Squirrel 安装/更新/卸载事件必须在最早期处理（HANDOFF 13.2）。
 if (handleSquirrelStartup()) {
@@ -48,6 +57,96 @@ if (isSmokeRun()) {
  * 主窗口的所有导航检查都以它为准。
  */
 let appOrigin = '';
+
+const MCP_RENDERER_TIMEOUT_MS = 15_000;
+const MCP_IMPORT_TIMEOUT_MS = 30 * 60_000;
+const MCP_COMMAND_NAMES = new Set<YeyuMcpCommandName>([
+  'get_state',
+  'show_courses',
+  'open_course',
+  'open_document',
+  'import_pdf',
+  'go_to_page',
+  'set_reader_panel',
+]);
+
+interface PendingMcpCommand {
+  window: BrowserWindow;
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
+/** Connect the authenticated loopback endpoint to the isolated renderer. */
+function createMcpRendererBridge(): {
+  dispatch: (request: McpControlRequest) => Promise<unknown>;
+  dispose: () => void;
+} {
+  const pending = new Map<string, PendingMcpCommand>();
+  const onResponse = (
+    event: Electron.IpcMainInvokeEvent,
+    response: YeyuMcpResponse,
+  ) => {
+    if (!response || typeof response.id !== 'string') return;
+    const entry = pending.get(response.id);
+    if (!entry || event.sender !== entry.window.webContents) return;
+    pending.delete(response.id);
+    clearTimeout(entry.timer);
+    if (response.ok) entry.resolve(response.result);
+    else entry.reject(new Error(response.error));
+  };
+  ipcMain.handle(DESKTOP_CHANNELS.mcpResponse, onResponse);
+
+  return {
+    dispatch: async (request) => {
+      if (!MCP_COMMAND_NAMES.has(request.name)) {
+        return Promise.reject(new Error(`不支持的页语命令：${request.name}`));
+      }
+      const window = BrowserWindow.getAllWindows()[0];
+      if (!window || window.isDestroyed()) {
+        return Promise.reject(new Error('页语窗口尚未就绪。'));
+      }
+      if (request.name !== 'get_state') {
+        if (window.isMinimized()) window.restore();
+        window.show();
+        window.focus();
+      }
+      const args = await prepareMcpRendererArgs(request.name, request.args);
+      const id = randomUUID();
+      const command: YeyuMcpCommand = {
+        id,
+        name: request.name,
+        args,
+      };
+      return new Promise((resolve, reject) => {
+        const timeout =
+          request.name === 'import_pdf'
+            ? MCP_IMPORT_TIMEOUT_MS
+            : MCP_RENDERER_TIMEOUT_MS;
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(
+            new Error(
+              request.name === 'import_pdf'
+                ? '页语未在 30 分钟内完成 PDF 导入。'
+                : '页语界面未在 15 秒内响应 MCP 命令。',
+            ),
+          );
+        }, timeout);
+        pending.set(id, { window, resolve, reject, timer });
+        window.webContents.send(DESKTOP_CHANNELS.mcpCommand, command);
+      });
+    },
+    dispose: () => {
+      ipcMain.removeHandler(DESKTOP_CHANNELS.mcpResponse);
+      for (const entry of pending.values()) {
+        clearTimeout(entry.timer);
+        entry.reject(new Error('页语正在退出。'));
+      }
+      pending.clear();
+    },
+  };
+}
 
 /** 外部 http/https 交给系统浏览器；其他协议保持拒绝。 */
 function openExternalIfHttp(url: string): void {
@@ -380,10 +479,17 @@ if (!hasSingleInstanceLock) {
         layout,
         staticClientDirectory(),
       );
+      const mcpBridge = createMcpRendererBridge();
+      const mcpControlServer = new McpControlServer({
+        settingsRoot: layout.settingsRoot,
+        dispatch: mcpBridge.dispatch,
+      });
       await ensureWorkspace(layout);
       registerDesktopIpc(layout, lanShareServer);
       app.on('before-quit', () => {
         void lanShareServer.stop();
+        void mcpControlServer.stop();
+        mcpBridge.dispose();
       });
       const window = await createWindow();
       if (isSmokeRun()) {
@@ -394,6 +500,7 @@ if (!hasSingleInstanceLock) {
         app.quit();
         return;
       }
+      await mcpControlServer.start();
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
           void createWindow();

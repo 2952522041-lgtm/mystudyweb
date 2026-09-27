@@ -16,6 +16,27 @@ void test('reader stays mounted while the course library is shown', () => {
   assert.match(pageSource, /inert=\{view !== 'reader'\}/);
 });
 
+void test('course library stays mounted so MCP can open another document', () => {
+  assert.match(pageSource, /<div hidden=\{view !== 'courses'\}/);
+  assert.match(pageSource, /inert=\{view !== 'courses'\}/);
+  assert.doesNotMatch(pageSource, /\{view === 'courses' \? \(/);
+});
+
+void test('desktop shell routes every MCP command to typed UI controls', () => {
+  assert.match(pageSource, /api\.onMcpCommand/);
+  for (const command of [
+    'get_state',
+    'show_courses',
+    'open_course',
+    'open_document',
+    'import_pdf',
+    'go_to_page',
+    'set_reader_panel',
+  ]) {
+    assert.match(pageSource, new RegExp(`case '${command}'`));
+  }
+});
+
 void test('suspension is passed down so the reader can react to being hidden', () => {
   assert.match(pageSource, /suspended=\{view !== 'reader'\}/);
   assert.match(pageSource, /suspended\??: boolean/);

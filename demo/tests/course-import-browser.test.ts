@@ -141,9 +141,19 @@ window.runImportRegression = async () => {
   const original = 'original PDF bytes';
   const fingerprint = await sha256Hex(new TextEncoder().encode(original).buffer);
   f.bundle.manifest.documents.push(f.record(fingerprint, 'lesson.pdf'));
-  createRoot(document.getElementById('root')).render(<CourseLibrary onOpenDocument={(_file, context) => { f.opened = context; }}/>);
+  createRoot(document.getElementById('root')).render(<CourseLibrary
+    onOpenDocument={(_file, context) => { f.opened = context; }}
+    onControlReady={(control) => { if (control) f.control = control; }} />);
   await waitFor('loaded', () => button('导入 PDF'));
+  await waitFor('MCP course control', () => f.control);
   const before = JSON.stringify(f.bundle);
+  const mcpDuplicate = await f.control.importPdf({
+    courseName:'测试课程', fileName:'mcp-duplicate.pdf',
+    fileData:new TextEncoder().encode(original),
+    generateSummary:true, generateMindmap:true, mergeIntoCourse:true,
+  });
+  check(mcpDuplicate.message.includes('已存在，已跳过'), 'MCP duplicate import did not use the course transaction');
+  check(Object.values(f.calls).every((count) => count === 0), 'MCP duplicate import called extraction, OCR, AI or save');
   // An unconfigured provider must not even be constructed for duplicates.
   await submit(original, 'lesson.pdf', true);
   await submit(original, 'renamed.pdf', true);

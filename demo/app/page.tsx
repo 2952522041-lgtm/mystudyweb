@@ -153,6 +153,13 @@ import {
   mergeDocumentDigest,
 } from '@/lib/knowledge/course-merger';
 import { isSharedView } from '@/lib/lan-share-api';
+import {
+  readPage,
+  readReaderPanel,
+  type CourseLibraryControl,
+  type ReaderControl,
+} from '@/lib/yeyu-mcp-control';
+import type { YeyuMcpCommand } from '@/electron/api';
 
 const TARGET_LANGUAGES = ['简体中文', '繁體中文', '日本語', '한국어'] as const;
 const TRANSLATION_STABLE_DELAY = 300;
@@ -675,6 +682,7 @@ function PdfReader({
   onOpenCourses,
   suspended = false,
   onStandaloneImport,
+  onControlReady,
 }: {
   initialFile?: File | null;
   courseContext?: CourseReaderContext | null;
@@ -683,6 +691,7 @@ function PdfReader({
   suspended?: boolean;
   /** Called when a PDF is imported from this reader's own import dialog. */
   onStandaloneImport?: (file: File) => void;
+  onControlReady?: (control: ReaderControl | null) => void;
 }) {
   const sizeLoaderRef = useRef<ReturnType<typeof createProgressivePageSizes> | null>(null);
   const importLifecycleRef = useRef(createPdfImportLifecycle<PDFDocumentProxy>());
@@ -1655,6 +1664,48 @@ function PdfReader({
             ? `当前页文字将发送至 ${remoteProviderHost ?? '所配置服务'}`
             : '演示模式 · 不发送任何数据';
 
+  useEffect(() => {
+    if (!onControlReady) return;
+    const control: ReaderControl = {
+      getState: () => ({
+        hasDocument: Boolean(docMeta),
+        courseName: courseContext?.courseName ?? null,
+        documentId: courseContext?.document.id ?? null,
+        fileName: docMeta?.fileName ?? null,
+        page,
+        pageCount: docMeta?.pageCount ?? 0,
+        panel: activeMode,
+      }),
+      goToPage: (args) => {
+        if (!docMeta) throw new Error('阅读器当前没有打开 PDF。');
+        const requestedPage = readPage(args);
+        if (requestedPage > docMeta.pageCount) {
+          throw new Error(`page 超出 PDF 页数（共 ${docMeta.pageCount} 页）。`);
+        }
+        goToPage(requestedPage);
+        return { page: requestedPage, pageCount: docMeta.pageCount };
+      },
+      setPanel: (args) => {
+        if (!docMeta) throw new Error('阅读器当前没有打开 PDF。');
+        const panel = readReaderPanel(args);
+        if ((panel === 'summary' || panel === 'mindmap') && !courseContext?.digest) {
+          throw new Error('当前 PDF 没有可显示的总结或脑图成果。');
+        }
+        setRightMode(panel);
+        setTranslationVisible(true);
+        return { panel };
+      },
+    };
+    onControlReady(control);
+  });
+
+  useEffect(
+    () => () => {
+      onControlReady?.(null);
+    },
+    [onControlReady],
+  );
+
   // Once the current translation is ready, quietly prepare the next page so
   // sequential reading usually becomes an immediate cache hit.
   useEffect(() => {
@@ -2354,6 +2405,69 @@ function DesktopHome() {
   const [readerFile, setReaderFile] = useState<File | null>(null);
   const [readerContext, setReaderContext] =
     useState<CourseReaderContext | null>(null);
+  const viewRef = useRef(view);
+  const courseControlRef = useRef<CourseLibraryControl | null>(null);
+  const readerControlRef = useRef<ReaderControl | null>(null);
+
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+
+  const registerCourseControl = useCallback((control: CourseLibraryControl | null) => {
+    courseControlRef.current = control;
+  }, []);
+  const registerReaderControl = useCallback((control: ReaderControl | null) => {
+    readerControlRef.current = control;
+  }, []);
+
+  useEffect(() => {
+    const api = window.yeyuDesktop;
+    if (!api?.onMcpCommand) return;
+    return api.onMcpCommand(async (command: YeyuMcpCommand) => {
+      const courses = courseControlRef.current;
+      const reader = readerControlRef.current;
+      switch (command.name) {
+        case 'get_state':
+          return {
+            view: viewRef.current,
+            courseLibrary: courses?.getState() ?? null,
+            reader: reader?.getState() ?? null,
+          };
+        case 'show_courses':
+          setView('courses');
+          return { view: 'courses' };
+        case 'open_course': {
+          if (!courses) throw new Error('课程知识库尚未就绪。');
+          const course = courses.openCourse(command.args);
+          setView('courses');
+          return { view: 'courses', course };
+        }
+        case 'open_document': {
+          if (!courses) throw new Error('课程知识库尚未就绪。');
+          return courses.openDocument(command.args);
+        }
+        case 'import_pdf': {
+          if (!courses) throw new Error('课程知识库尚未就绪。');
+          setView('courses');
+          return courses.importPdf(command.args);
+        }
+        case 'go_to_page': {
+          if (!reader) throw new Error('PDF 阅读器尚未就绪。');
+          const result = reader.goToPage(command.args);
+          setView('reader');
+          return result;
+        }
+        case 'set_reader_panel': {
+          if (!reader) throw new Error('PDF 阅读器尚未就绪。');
+          const result = reader.setPanel(command.args);
+          setView('reader');
+          return result;
+        }
+        default:
+          throw new Error(`不支持的页语命令：${String(command.name)}`);
+      }
+    });
+  }, []);
 
   return (
     <>
@@ -2367,9 +2481,10 @@ function DesktopHome() {
           onOpenCourses={() => setView('courses')}
           suspended={view !== 'reader'}
           onStandaloneImport={() => setReaderContext(null)}
+          onControlReady={registerReaderControl}
         />
       </div>
-      {view === 'courses' ? (
+      <div hidden={view !== 'courses'} inert={view !== 'courses'}>
         <TooltipProvider>
           <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-[#f5f7fa]">
             <header className="flex h-15 shrink-0 items-center justify-between border-b border-white/10 bg-[#243a59] px-5 text-white">
@@ -2399,6 +2514,7 @@ function DesktopHome() {
               <div className="w-24" aria-hidden="true" />
             </header>
             <CourseLibrary
+              onControlReady={registerCourseControl}
               onOpenDocument={(file, context) => {
                 setReaderFile(file);
                 setReaderContext({
@@ -2410,7 +2526,7 @@ function DesktopHome() {
             />
           </main>
         </TooltipProvider>
-      ) : null}
+      </div>
     </>
   );
 }

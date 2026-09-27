@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
   Check,
@@ -77,6 +77,14 @@ import {
   createOcrService,
   resolvePageOcr,
 } from '@/lib/ocr';
+import {
+  locateEntity,
+  readCourseLocator,
+  readDocumentLocator,
+  readPage,
+  type CourseControlItem,
+  type CourseLibraryControl,
+} from '@/lib/yeyu-mcp-control';
 
 export interface CourseReaderContext {
   glossary?: Glossary;
@@ -153,8 +161,10 @@ function Metric({
 
 export function CourseLibrary({
   onOpenDocument,
+  onControlReady,
 }: {
   onOpenDocument: (file: File, context: CourseReaderContext) => void;
+  onControlReady?: (control: CourseLibraryControl | null) => void;
 }) {
   const [entries, setEntries] = useState<CourseEntry[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -187,6 +197,7 @@ export function CourseLibrary({
   const [shareBusy, setShareBusy] = useState(false);
   const [shareError, setShareError] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
+  const controlTaskRef = useRef(false);
 
   const desktopApi =
     typeof window !== 'undefined' ? window.yeyuDesktop : undefined;
@@ -589,35 +600,36 @@ export function CourseLibrary({
       );
   };
 
-  const importPdf = async (
+  const importPdfForEntry = async (
+    entry: CourseEntry,
     file: File,
     options: ImportOptions,
     onProgress: (message: string, percent: number) => void,
     signal?: AbortSignal,
     onImportDiagnostic?: (diagnostic: SynthesisDiagnostic) => void,
   ) => {
-    if (!active?.bundle) throw new Error('请先连接课程文件夹。');
+    if (!entry.bundle) throw new Error('目标课程当前无法读取。');
     setError(null);
     setMessage(null);
     setGenerationDiagnostics([]);
-    setGenerationCourseId(activeId);
+    setGenerationCourseId(entry.id);
     const reportDiagnostic = (diagnostic: SynthesisDiagnostic) => { onDiagnostic(diagnostic); onImportDiagnostic?.(diagnostic); };
     onProgress('正在检查 PDF 内容是否已存在', 3);
     const fingerprint = await sha256Hex(await file.arrayBuffer());
     // 读取当前清单，避免课程在其他窗口更新后仍按旧界面状态启动 AI。
-    const bundle = await active.storage.load();
+    const bundle = await entry.storage.load();
     const existing = bundle.manifest.documents.find(
       (document) => document.fingerprint === fingerprint,
     );
     if (existing) {
       const message = `“${file.name}”已存在，已跳过（课程文件：${existing.fileName}）；未进行文字提取或 AI 分析。`;
-      setEntryBundle(active.id, bundle);
+      setEntryBundle(entry.id, bundle);
       setMessage(message);
       return message;
     }
     // 知识库成果完全由 AI 生成，使用独立的「知识库 AI」配置；未配置时明确报错，不回退本地规则。
     // 扫描页 OCR 是视觉任务，仍使用「AI 答疑」的视觉模型配置。
-    const glossary = await active.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
+    const glossary = await entry.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
     const provider = createKnowledgeProviderForSettings(
       loadKnowledgeSettings(),
     );
@@ -673,7 +685,7 @@ export function CourseLibrary({
 
     if (signal?.aborted) throw new Error('生成已取消；已完成层缓存保留，课程旧成果未变。');
     onProgress('正在保存课程成果', 90);
-    const result = await active.storage.importDocument(
+    const result = await entry.storage.importDocument(
       file,
       digest,
       options,
@@ -681,12 +693,12 @@ export function CourseLibrary({
       aiKnowledge,
     );
     onProgress('正在提交课程新版本', 96);
-    setEntryBundle(active.id, result.bundle);
-    if (active.handle) {
+    setEntryBundle(entry.id, result.bundle);
+    if (entry.handle) {
       await saveRecentCourse({
-        id: active.id,
+        id: entry.id,
         name: result.bundle.manifest.name,
-        handle: active.handle,
+        handle: entry.handle,
         updatedAt: result.bundle.manifest.updatedAt,
       });
     }
@@ -697,6 +709,32 @@ export function CourseLibrary({
           ? 'AI 已生成这份 PDF 的总结和脑图，暂未纳入课程知识库。'
           : 'PDF 已导入，AI 内部摘要已建立，暂未生成可见成果。',
     );
+  };
+
+  const importPdf = async (
+    file: File,
+    options: ImportOptions,
+    onProgress: (message: string, percent: number) => void,
+    signal?: AbortSignal,
+    onImportDiagnostic?: (diagnostic: SynthesisDiagnostic) => void,
+  ) => {
+    if (!active) throw new Error('请先连接课程文件夹。');
+    if (controlTaskRef.current) {
+      throw new Error('页语正在执行另一项课程任务，请稍后重试。');
+    }
+    controlTaskRef.current = true;
+    try {
+      return await importPdfForEntry(
+        active,
+        file,
+        options,
+        onProgress,
+        signal,
+        onImportDiagnostic,
+      );
+    } finally {
+      controlTaskRef.current = false;
+    }
   };
 
   const regenerateDocument = async (document: DocumentRecord, retry = false) => {
@@ -810,33 +848,44 @@ export function CourseLibrary({
     }
   };
 
-  const openDocument = async (
+  const openDocumentForEntry = async (
+    entry: CourseEntry,
     document: DocumentRecord,
     initialPage?: number,
+    propagateError = false,
   ) => {
-    if (!active?.bundle) return;
+    if (!entry.bundle) throw new Error('目标课程当前无法读取。');
     setBusy(true);
     setError(null);
     try {
-      const file = await active.storage.openPdf(document.id);
-      const glossary = await active.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
+      const file = await entry.storage.openPdf(document.id);
+      const glossary = await entry.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
       onOpenDocument(file, {
         glossary,
         glossaryFingerprint: await glossaryFingerprint(glossary),
-        courseName: active.bundle.manifest.name,
+        courseName: entry.bundle.manifest.name,
         document,
-        digest: active.bundle.digests[document.id],
+        digest: entry.bundle.digests[document.id],
         initialPage,
         onBack: () => undefined,
-        storage: active.storage,
+        storage: entry.storage,
       });
     } catch (openError) {
       setError(
         openError instanceof Error ? openError.message : '无法打开 PDF。',
       );
+      if (propagateError) throw openError;
     } finally {
       setBusy(false);
     }
+  };
+
+  const openDocument = async (
+    document: DocumentRecord,
+    initialPage?: number,
+  ) => {
+    if (!active) return;
+    return openDocumentForEntry(active, document, initialPage);
   };
 
   const deleteDocument = async (document: DocumentRecord) => {
@@ -930,6 +979,154 @@ export function CourseLibrary({
         bundle?.manifest.documents.map((document) => [document.id, document]),
       ),
     [bundle?.manifest.documents],
+  );
+
+  useEffect(() => {
+    if (!onControlReady) return;
+    const toControlItem = (entry: CourseEntry): CourseControlItem => ({
+      id: entry.id,
+      name: entry.name,
+      documents: entry.bundle?.manifest.documents.map((document) => ({
+        id: document.id,
+        fileName: document.fileName,
+        pageCount: document.pageCount,
+      })) ?? [],
+    });
+    const selectCourse = (
+      args: Record<string, unknown>,
+      required: boolean,
+    ): CourseEntry => {
+      const locator = readCourseLocator(args, required);
+      if (!locator) {
+        const current = entries.find((entry) => entry.id === activeId);
+        if (!current) throw new Error('当前没有选中的课程。');
+        return current;
+      }
+      return locateEntity(
+        entries,
+        locator,
+        { id: (entry) => entry.id, name: (entry) => entry.name },
+        '课程',
+      );
+    };
+    const booleanOption = (
+      args: Record<string, unknown>,
+      key: keyof ImportOptions,
+      fallback: boolean,
+    ) => {
+      const value = args[key];
+      if (value === undefined) return fallback;
+      if (typeof value !== 'boolean') throw new Error(`${key} 必须是布尔值。`);
+      return value;
+    };
+    const control: CourseLibraryControl = {
+      getState: () => ({
+        loading,
+        activeCourseId: activeId,
+        courses: entries.map(toControlItem),
+      }),
+      openCourse: (args) => {
+        if (loading) throw new Error('课程列表仍在加载，请稍后重试。');
+        const entry = selectCourse(args, true);
+        if (!entry.bundle) throw new Error('目标课程当前无法读取。');
+        setActiveId(entry.id);
+        return toControlItem(entry);
+      },
+      openDocument: async (args) => {
+        if (busy || controlTaskRef.current) {
+          throw new Error('页语正在执行另一项课程任务，请稍后重试。');
+        }
+        const entry = selectCourse(args, false);
+        if (!entry.bundle) throw new Error('目标课程当前无法读取。');
+        const document = locateEntity(
+          entry.bundle.manifest.documents,
+          readDocumentLocator(args),
+          { id: (item) => item.id, name: (item) => item.fileName },
+          'PDF',
+        );
+        const page = readPage(args, 1);
+        if (page > document.pageCount) {
+          throw new Error(`page 超出 PDF 页数（共 ${document.pageCount} 页）。`);
+        }
+        setActiveId(entry.id);
+        controlTaskRef.current = true;
+        try {
+          await openDocumentForEntry(entry, document, page, true);
+          return {
+            courseId: entry.id,
+            courseName: entry.name,
+            documentId: document.id,
+            fileName: document.fileName,
+            page,
+          };
+        } finally {
+          controlTaskRef.current = false;
+        }
+      },
+      importPdf: async (args) => {
+        if (busy || controlTaskRef.current) {
+          throw new Error('页语正在执行另一项课程任务，请稍后重试。');
+        }
+        const entry = selectCourse(args, true);
+        if (!entry.bundle) throw new Error('目标课程当前无法读取。');
+        const fileName = args.fileName;
+        const fileData = args.fileData;
+        const lastModified = args.fileLastModified;
+        if (
+          typeof fileName !== 'string' ||
+          !fileName.toLowerCase().endsWith('.pdf') ||
+          !(fileData instanceof Uint8Array)
+        ) {
+          throw new Error('Electron 未提供有效的 PDF 文件内容。');
+        }
+        const file = new File([Uint8Array.from(fileData).buffer], fileName, {
+          type: 'application/pdf',
+          lastModified: typeof lastModified === 'number' ? lastModified : Date.now(),
+        });
+        const options: ImportOptions = {
+          generateSummary: booleanOption(args, 'generateSummary', true),
+          generateMindmap: booleanOption(args, 'generateMindmap', true),
+          mergeIntoCourse: booleanOption(args, 'mergeIntoCourse', true),
+          includeConversationInsights: true,
+        };
+        setActiveId(entry.id);
+        setBusy(true);
+        const controller = new AbortController();
+        setGenerationAbort(controller);
+        let latestMessage = '准备导入 PDF';
+        controlTaskRef.current = true;
+        try {
+          const completion = await importPdfForEntry(
+            entry,
+            file,
+            options,
+            (progressMessage) => {
+              latestMessage = progressMessage;
+              setMessage(progressMessage);
+            },
+            controller.signal,
+          );
+          return {
+            courseId: entry.id,
+            courseName: entry.name,
+            fileName,
+            message: completion ?? `${latestMessage}；处理完成。`,
+          };
+        } finally {
+          controlTaskRef.current = false;
+          setGenerationAbort(null);
+          setBusy(false);
+        }
+      },
+    };
+    onControlReady(control);
+  });
+
+  useEffect(
+    () => () => {
+      onControlReady?.(null);
+    },
+    [onControlReady],
   );
 
   return (

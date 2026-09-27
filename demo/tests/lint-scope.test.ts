@@ -19,7 +19,10 @@ void test('the standard test command limits file concurrency before its file arg
 void test('lint scans components, keeps errors blocking and limits legacy warnings to named files and rules', async () => {
   const [command, ...scopes] = packageJson.scripts.lint.split(/\s+/);
   assert.equal(command, 'oxlint');
-  assert.deepEqual(new Set(scopes), new Set(['app', 'components', 'lib', 'tests', 'electron']));
+  assert.deepEqual(
+    new Set(scopes),
+    new Set(['app', 'components', 'lib', 'tests', 'electron', 'mcp']),
+  );
   const directory = await mkdtemp(path.join(os.tmpdir(), 'yeyu-lint-scope-'));
   type Diagnostic = { code: string; severity: string; filename: string };
   const lint = () => new Promise<{ code: number; diagnostics: Diagnostic[] }>((resolve, reject) => {
