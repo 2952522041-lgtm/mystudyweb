@@ -110,9 +110,10 @@ function repairPayload(mode: HierarchyMode) {
   };
 }
 
-function createProvider(mode: HierarchyMode) {
+function createProvider(mode: HierarchyMode, duplicateLabels = false) {
   const requests: RequestBody[] = [];
   const initial = initialDigestPayload();
+  if (duplicateLabels) initial.concepts[3]!.label = initial.concepts[2]!.label;
   const initialSnapshot = JSON.parse(JSON.stringify(initial));
   const digestStore = createMemoryStore<DocumentDigest>();
   const intermediateStore = createMemoryStore<unknown>();
@@ -165,6 +166,39 @@ function documentInput() {
     pages: paperPages,
   };
 }
+
+void test('a structure repair may omit duplicate renames without dropping facts or making a third model request', async () => {
+  const mock = createProvider('success', true);
+  const digest = await mock.provider.analyzeDocument(documentInput());
+  assert.deepEqual(mock.calls, {chunkCalls:1,finalCalls:1,repairCalls:1});
+  assert.equal(digest.concepts.length, ROOT_IDS.length + 1);
+  assert.equal(new Set(digest.concepts.map(node => node.label)).size, digest.concepts.length);
+  for (let index = 0; index < ROOT_IDS.length; index += 1) {
+    assert.ok(digest.concepts.some(node => node.description === `事实说明 ${index + 1}`));
+  }
+  assert.deepEqual(mock.initial, mock.initialSnapshot);
+});
+
+void test('duplicate labels alone are qualified locally using original context and sources', async () => {
+  const initial = initialDigestPayload();
+  const draft = {
+    ...initial,
+    hierarchy: {mode:'structured',reason:'明确三级结构。'},
+    concepts: initial.concepts.slice(0,4).map((node,index)=>({
+      ...node, parentId:index===0?null:index===1?ROOT_IDS[0]:ROOT_IDS[1],
+      label:index>=2?'同名要点':node.label,
+    })),
+    relations: [],
+  };
+  let calls=0;
+  const provider=createKnowledgeProviderForSettings(settings,async()=>streamResponse(++calls===1?reply(DOCUMENT_ID,1):draft),createKnowledgeDigestCache(createMemoryStore()),createMemoryStore());
+  const digest=await provider.analyzeDocument(documentInput());
+  assert.equal(calls,2);
+  assert.equal(digest.concepts.length,4);
+  assert.equal(new Set(digest.concepts.map(node=>node.label)).size,4);
+  assert.deepEqual(digest.concepts.map(node=>node.description),draft.concepts.map(node=>node.description));
+  assert.ok(digest.concepts.filter(node=>node.label.startsWith('同名要点')).every(node=>node.label.includes('第1页')));
+});
 
 void test('reversed containment directions and excess depth are repaired locally without another model call', async () => {
   const initial = initialDigestPayload();

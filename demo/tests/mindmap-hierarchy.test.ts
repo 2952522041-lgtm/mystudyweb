@@ -242,23 +242,15 @@ void test('structure-only repair cannot discard existing concepts', async () => 
   assert.equal((await store.keys()).length, 0);
 });
 
-void test('repairs duplicate labels with compact identity mappings while retaining their distinct evidence', async () => {
+void test('repairs duplicate labels locally while retaining their distinct evidence', async () => {
   const input = await extractLecture();
   const draft = lectureReply(input.documentId, true);
   draft.concepts[3].label = draft.concepts[2].label;
   const originalLabel = draft.concepts[2].label;
-  const repair = {
-    hierarchy: draft.hierarchy,
-    assignments: draft.concepts.map((node, index) => ({id:node.id,parentId:node.parentId,
-      ...(index === 2 || index === 3 ? {label:`${originalLabel}（${index === 2 ? '定义' : '应用'}）`} : {})})),
-    branches: [{id:'source-branch',parentId:null,label:'材料中的章主题',description:'由已有章概念提供依据',sourceIds:[draft.concepts[0].id]}],
-  };
-  const {provider,requests} = mockProvider([lectureReply(input.documentId, true), draft, repair]);
+  const {provider,requests} = mockProvider([lectureReply(input.documentId, true), draft]);
   const digest = await provider.analyzeDocument(input);
-  assert.match(requests[2].messages[1].content, /仅修复以下脑图结构/);
-  assert.match(requests[2].messages[1].content, /已有节点只需返回/);
-  assert.equal(digest.concepts.length, draft.concepts.length + 1);
-  assert.deepEqual(digest.concepts.at(-1)?.sources, digest.concepts[0].sources);
+  assert.equal(requests.length, 2, 'a duplicate name alone must not require another model request');
+  assert.equal(digest.concepts.length, draft.concepts.length);
   for (const index of [2,3]) {
     const node = digest.concepts[index];
     assert.equal(node.description, draft.concepts[index].description);

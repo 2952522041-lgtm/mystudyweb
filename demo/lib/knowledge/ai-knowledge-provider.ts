@@ -395,9 +395,12 @@ async function completeJson(
     input.report?.({ layer: input.layer ?? 'document', action: 'rejected', identity: input.contextLabel, inputBytes: utf8Size(result.content), limit: SYNTHESIS_BUDGET[input.layer ?? 'document'], droppedItems: 1, droppedBytes: utf8Size(result.content), detail: `丢弃未通过校验的模型输出，保留全部输入；校验尝试 ${attempt + 1}：${lastFailure}` });
     const draftShape = hierarchyDraft ? inspectHierarchy(hierarchyDraft.concepts as DigestConcept[]) : undefined;
     const originalNodes = hierarchyDraft?.concepts as DigestConcept[] | undefined;
+    const duplicateLabels = originalNodes
+      ? new Set(originalNodes.map(node => normalizeConceptKey(node.label))).size < originalNodes.length
+      : false;
     const consistentContainment = Array.isArray(hierarchyDraft?.relations) && hierarchyDraft.relations.every(relation =>
       relation.label !== '包含' || originalNodes?.find(node => node.id === relation.to)?.parentId === relation.from);
-    if (hierarchyDraft && consistentContainment && draftShape && (draftShape.maxDepth > MINDMAP_MAX_DEPTH || draftShape.maxChildren > MINDMAP_MAX_CHILDREN)) {
+    if (hierarchyDraft && consistentContainment && draftShape && (draftShape.maxDepth > MINDMAP_MAX_DEPTH || draftShape.maxChildren > MINDMAP_MAX_CHILDREN || duplicateLabels)) {
       const normalized = normalizeHierarchy(hierarchyDraft.concepts as Array<DigestConcept & {parentId:string|null}>);
       if (normalized) {
         const relations = [
@@ -888,7 +891,11 @@ function mergeHierarchyRepair(draft: Record<string, unknown>, repair: unknown): 
     const duplicateLabel = original.some(candidate => candidate.id !== previous.id
       && normalizeConceptKey(String(candidate.label)) === normalizeConceptKey(String(previous.label)));
     return { ...previous, parentId: node.parentId,
-      ...(duplicateLabel ? { label: requireString(node.label, 'label（重名节点的语境名称）', '脑图修复') } : {}) };
+      // If a structure-only repair omits a rename, retain the original label.
+      // The normal validator and context-based normalizer will still require
+      // uniqueness; never discard a node just because a rename is missing.
+      ...(duplicateLabel && typeof node.label === 'string' && node.label.trim()
+        ? { label: node.label.trim() } : {}) };
   });
   if (!Array.isArray(root.relations)) throw new KnowledgeError('invalid_output', '脑图修复缺少 relations 数组。');
   const ids = new Set(concepts.map(node => node.id));
