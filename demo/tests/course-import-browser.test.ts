@@ -343,7 +343,7 @@ void test(
     app.disableHardwareAcceleration();
     app.whenReady().then(async () => {
       const win = new BrowserWindow({width: 640, height: 480, show: true,
-        webPreferences: {sandbox: true, contextIsolation: true, nodeIntegration: false}});
+        webPreferences: {sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false}});
       try {
         await win.loadURL(${JSON.stringify(url)});
         const result = await win.webContents.executeJavaScript('window.runImportRegression()', true);

@@ -5,6 +5,7 @@ import { conceptKey as normalizeConceptKey } from './concept-identity.ts';
 import { ChatError } from '../ai-errors.ts';
 import { parseJsonPreservingText } from './json-string-repair.ts';
 import { normalizeHierarchy } from './normalize-hierarchy.ts';
+import { groundSourceRanges } from './ground-source-ranges.ts';
 import {
   knowledgeSettingsConfigured,
   type KnowledgeSettings,
@@ -1216,6 +1217,14 @@ export function createKnowledgeProviderForSettings(
       const signal = requestSignal;
       const prompt = userPrompt + (intermediate ? `\n这是分层中间归并。保留来源、概念身份和真实层级，压缩重复叙述。JSON 输出不得超过 ${SYNTHESIS_BUDGET.intermediate} UTF-8 字节；关键元素由应用独立保管，不必重复展开完整表格。` : '');
       const check = (raw: unknown) => {
+        if (provenance) {
+          const grounded = groundSourceRanges(raw, provenance);
+          if (grounded.splitCount) {
+            Object.assign(raw as object, grounded.raw);
+            report({layer, action:'quality-restored', identity, inputBytes:utf8Size(raw), limit:0, droppedItems:0, droppedBytes:0,
+              detail:`已将 ${grounded.splitCount} 个跨越页码间隙的宽范围引用拆回本批已有来源区间；正文、节点和有效来源页保留，未添加未提供的页码。`});
+          }
+        }
         validate(raw);
         if (provenance) {
           (raw as Record<string, unknown>).provenance = provenance;
