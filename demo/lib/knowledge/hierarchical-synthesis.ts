@@ -43,6 +43,8 @@ export interface KnowledgeEvidence {
   text: string;
   sources: SourceReference[];
 }
+/** Maps a document identity to its local file name without repeating it per source. */
+export type SourceFileNameMap = Readonly<Record<string, string>>;
 export const utf8Size = (value: unknown): number =>
   new TextEncoder().encode(
     typeof value === 'string' ? value : JSON.stringify(value),
@@ -62,6 +64,7 @@ export async function synthesisCacheKey(parts: {
 export function synthesisRecords(
   value: unknown,
   identity: Record<string, unknown> = {},
+  sourceFileNames?: SourceFileNameMap,
 ): unknown[] {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     return [{ ...identity, value }];
@@ -72,7 +75,12 @@ export function synthesisRecords(
   const documentId = identity.documentId ?? object.documentId;
   const fileName = identity.fileName ?? object.fileName;
   const provenance = synthesisSources(object, typeof documentId === 'string' && typeof fileName === 'string'
-    ? { documentId, fileName, pageStart: 1, type: 'pdf' } : undefined);
+    ? { documentId, fileName, pageStart: 1, type: 'pdf' }
+    : typeof documentId === 'string' ? { documentId, pageStart: 1, type: 'pdf' } as SourceReference : undefined,
+    sourceFileNames,
+  ).map((source) => sourceFileNames
+    ? (({ fileName: _fileName, type: _type, ...compactSource }) => compactSource)(source)
+    : source);
   const records: unknown[] = [{ ...identity, ...header,
     ...(provenance.length ? { provenance } : {}) }];
   for (const section of Array.isArray(sections) ? sections : []) {
@@ -220,6 +228,7 @@ export async function reduceWithinBudget(options: {
 export function collectEvidence(
   raw: unknown,
   fallback: SourceReference,
+  sourceFileNames?: SourceFileNameMap,
 ): KnowledgeEvidence[] {
   const result: KnowledgeEvidence[] = [];
   const scientific =
@@ -240,13 +249,17 @@ export function collectEvidence(
     };
     const ownSources =
       Array.isArray(item.sources) && item.sources.length
-        ? (item.sources as SourceReference[]).map((source) => ({
-            ...fallback,
-            ...source,
-            documentId: source.documentId ?? fallback.documentId,
-            fileName: source.fileName ?? fallback.fileName,
-            type: 'pdf' as const,
-          }))
+        ? (item.sources as SourceReference[]).map((source) => {
+            const documentId = source.documentId ?? fallback.documentId;
+            return {
+              ...fallback,
+              ...source,
+              documentId,
+              fileName:
+                source.fileName ?? sourceFileNames?.[documentId] ?? fallback.fileName,
+              type: 'pdf' as const,
+            };
+          })
         : typeof item.pageStart === 'number'
           ? [
               {
@@ -332,6 +345,7 @@ export function sourceEvidence(
 export function synthesisSources(
   value: unknown,
   fallback?: SourceReference,
+  sourceFileNames?: SourceFileNameMap,
 ): SourceReference[] {
   const found: SourceReference[] = [];
   const visit = (value: unknown, inherited?: SourceReference) => {
@@ -341,12 +355,18 @@ export function synthesisSources(
       return;
     }
     const item = value as Record<string, unknown>;
+    const fileName =
+      typeof item.fileName === 'string'
+        ? item.fileName
+        : typeof item.documentId === 'string'
+          ? sourceFileNames?.[item.documentId]
+          : undefined;
     const identity =
-      typeof item.documentId === 'string' && typeof item.fileName === 'string'
+      typeof item.documentId === 'string' && typeof fileName === 'string'
         ? {
             ...inherited,
             documentId: item.documentId,
-            fileName: item.fileName,
+            fileName,
             type: 'pdf' as const,
             pageStart: 1,
           }

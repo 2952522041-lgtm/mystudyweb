@@ -236,12 +236,24 @@ window.runImportRegression = async () => {
   f.blockAnalysis = true;
   button('重试导入').click();
   await waitFor('chunk progress', () => text().includes('分块层：'));
+  const analyzingProgress = f.control.getState().importProgress;
+  check(analyzingProgress?.active === true, 'MCP state lost active import progress');
+  check(analyzingProgress?.fileName === 'flat.pdf', 'MCP state lost imported file name');
+  check(analyzingProgress?.stage === 'analyzing', 'MCP state lost analysis stage');
+  await sleep(50);
+  const elapsedProgress = f.control.getState().importProgress;
+  check(
+    (elapsedProgress?.elapsedMs ?? 0) >= (analyzingProgress?.elapsedMs ?? 0),
+    'MCP state elapsed time moved backwards',
+  );
   f.nextLayer();
   await waitFor('document progress', () => text().includes('文档层：'));
   f.nextLayer();
   await waitFor('course progress', () => text().includes('课程层：'));
   button('取消生成').click();
   await waitFor('cancelled', () => text().includes('生成已取消') && button('重试导入'));
+  const failedProgress = f.control.getState().importProgress;
+  check(failedProgress?.active === false && failedProgress.stage === 'failed', 'MCP state did not finish failed import');
   check(JSON.stringify(f.bundle) === beforeFailure && f.calls.save === 1, 'cancel changed old course');
   f.blockAnalysis = false;
   f.pauseCommit = true;
@@ -250,6 +262,9 @@ window.runImportRegression = async () => {
   await waitFor('commit cannot be cancelled halfway', () => button('取消生成')?.disabled);
   f.finishCommit();
   await waitFor('retry closed', () => !document.querySelector('input[accept="application/pdf,.pdf"]'));
+  const completedProgress = f.control.getState().importProgress;
+  check(completedProgress?.active === false && completedProgress.stage === 'completed' && completedProgress.percent === 100,
+    'MCP state did not finish successful import');
   check(f.calls.analyze === 4 && f.calls.synthesize === 2 && f.calls.extract === 4 && f.calls.save === 2,
     'existing import/cancel assertions changed before async failure regression: ' + JSON.stringify(f.calls));
 

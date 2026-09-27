@@ -45,6 +45,14 @@ function parseInputRecords(prompt: string): unknown[] {
   return [];
 }
 
+function sourceFileNamesForPrompt(prompt: string): Record<string, string> {
+  const line = prompt.split('\n').find((value) => value.startsWith('文档身份映射'));
+  if (!line) return {};
+  const raw = line.slice(line.indexOf('：') + 1);
+  const entries = JSON.parse(raw) as Array<{ documentId: string; fileName: string }>;
+  return Object.fromEntries(entries.map((entry) => [entry.documentId, entry.fileName]));
+}
+
 function courseDigests(): DocumentDigest[] {
   return ['alpha', 'beta', 'gamma'].map((documentId, index) => {
     const digest = legacyLongDigest(documentId);
@@ -66,7 +74,7 @@ function courseDigests(): DocumentDigest[] {
 
 function sourceForPrompt(prompt: string) {
   const records = parseInputRecords(prompt);
-  const allowed = synthesisSources(records);
+  const allowed = synthesisSources(records, undefined, sourceFileNamesForPrompt(prompt));
   return allowed[0] ?? {
     documentId: 'alpha',
     fileName: 'alpha.pdf',
@@ -98,7 +106,7 @@ function compactIntermediate(prompt: string): string {
 }
 
 function finalCourse(prompt: string): string {
-  const sources = synthesisSources(parseInputRecords(prompt));
+  const sources = synthesisSources(parseInputRecords(prompt), undefined, sourceFileNamesForPrompt(prompt));
   const outputSources = (sources.length ? sources : [sourceForPrompt(prompt)]).map((source) => ({
     documentId: source.documentId,
     fileName: source.fileName,

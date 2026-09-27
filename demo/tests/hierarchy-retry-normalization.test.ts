@@ -166,6 +166,37 @@ function documentInput() {
   };
 }
 
+void test('reversed containment directions and excess depth are repaired locally without another model call', async () => {
+  const initial = initialDigestPayload();
+  const draft = {
+    ...initial,
+    hierarchy: { mode: 'structured', reason: '章节、小节与要点已有明确 parentId。' },
+    concepts: initial.concepts.slice(0, 4).map((node, index) => ({
+      ...node,
+      parentId: index === 0 ? null : ROOT_IDS[index - 1],
+      label: index >= 2 ? '重复要点' : node.label,
+    })),
+    relations: [1, 2, 3].map(index => ({
+      from: ROOT_IDS[index], to: ROOT_IDS[index - 1], label: '包含',
+    })),
+  };
+  const snapshot = structuredClone(draft);
+  let calls = 0;
+  const provider = createKnowledgeProviderForSettings(settings, async () => {
+    calls += 1;
+    return streamResponse(calls === 1 ? reply(DOCUMENT_ID, 1) : draft);
+  }, createKnowledgeDigestCache(createMemoryStore()), createMemoryStore());
+  const digest = await provider.analyzeDocument(documentInput());
+  assert.equal(calls, 2, 'chunk and final only; format repair must not add a model request');
+  assert.equal(digest.concepts.length, 4);
+  assert.deepEqual(digest.concepts.map(node => node.description), draft.concepts.map(node => node.description));
+  assert.deepEqual(draft, snapshot);
+  assert.ok(digest.diagnostics?.some(item => item.detail.includes('反向包含边')));
+  for (const relation of digest.relations.filter(edge => edge.label === '包含')) {
+    assert.equal(digest.concepts.find(node => node.id === relation.to)?.parentId, relation.from);
+  }
+});
+
 void test('normalizes a depth-four repair candidate while retaining facts, sources, cross-links and branches', async () => {
   const mock = createProvider('success');
   const digest = await mock.provider.analyzeDocument(documentInput());

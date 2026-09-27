@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,8 +9,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
+import { loopbackFetch } from './loopback-fetch.ts';
+
 const CONTROL_FILE_ENV = 'YEYU_MCP_CONTROL_FILE';
 const WORKSPACE_ROOT_ENV = 'YEYU_WORKSPACE_ROOT';
+const XDG_CONFIG_HOME_ENV = 'XDG_CONFIG_HOME';
 const MAX_ERROR_BODY_LENGTH = 300;
 
 export const YEYU_MCP_SERVER_INFO = {
@@ -40,12 +44,140 @@ export class YeyuMcpBridgeError extends Error {
 export interface ResolveControlPathOptions {
   environment?: Readonly<Record<string, string | undefined>>;
   homeDirectory?: string;
+  platform?: NodeJS.Platform;
+}
+
+function trailingXdgCommentIsValid(value: string): boolean {
+  return /^\s*(?:#.*)?$/.test(value);
+}
+
+/** Parse one user-dirs.dirs value without evaluating shell syntax. */
+function parseXdgValue(rawValue: string): string | undefined {
+  const raw = rawValue.trim();
+  if (!raw) return undefined;
+
+  if (raw.startsWith('"')) {
+    let value = '';
+    let escaped = false;
+    let closingQuote = -1;
+    for (let index = 1; index < raw.length; index += 1) {
+      const character = raw[index];
+      if (escaped) {
+        if (character !== '"' && character !== '\\') return undefined;
+        value += character;
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === '"') {
+        closingQuote = index;
+        break;
+      } else {
+        value += character;
+      }
+    }
+    if (closingQuote < 0 || escaped) return undefined;
+    return trailingXdgCommentIsValid(raw.slice(closingQuote + 1))
+      ? value
+      : undefined;
+  }
+
+  if (raw.startsWith("'")) {
+    const closingQuote = raw.indexOf("'", 1);
+    if (
+      closingQuote < 0 ||
+      !trailingXdgCommentIsValid(raw.slice(closingQuote + 1))
+    ) {
+      return undefined;
+    }
+    return raw.slice(1, closingQuote);
+  }
+
+  const unquoted = raw.match(/^[^\s#]+/u)?.[0];
+  if (!unquoted || !trailingXdgCommentIsValid(raw.slice(unquoted.length))) {
+    return undefined;
+  }
+  return unquoted;
+}
+
+function expandXdgHome(
+  value: string,
+  homeDirectory: string,
+): string | undefined {
+  let expanded = '';
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== '$') {
+      expanded += value[index];
+      continue;
+    }
+    if (value.startsWith('${HOME}', index)) {
+      expanded += homeDirectory;
+      index += '${HOME}'.length - 1;
+      continue;
+    }
+    if (value.startsWith('$HOME', index)) {
+      expanded += homeDirectory;
+      index += '$HOME'.length - 1;
+      continue;
+    }
+    return undefined;
+  }
+  return expanded;
+}
+
+function parseXdgDocumentsDirectory(
+  contents: string,
+  homeDirectory: string,
+): string | undefined {
+  for (const line of contents.split(/\r?\n/u)) {
+    const assignment = line.match(/^\s*XDG_DOCUMENTS_DIR\s*=\s*(.*)$/u);
+    if (!assignment) continue;
+    const parsed = parseXdgValue(assignment[1]);
+    if (parsed === undefined) return undefined;
+    const expanded = expandXdgHome(parsed, homeDirectory);
+    if (
+      expanded === undefined ||
+      expanded.length === 0 ||
+      !path.isAbsolute(expanded) ||
+      Array.from(expanded).some((character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return codePoint < 0x20 || codePoint === 0x7f;
+      })
+    ) {
+      return undefined;
+    }
+    return path.normalize(expanded);
+  }
+  return undefined;
+}
+
+function resolveLinuxDocumentsDirectory(
+  environment: Readonly<Record<string, string | undefined>>,
+  homeDirectory: string,
+): string {
+  const configuredPath = environment[XDG_CONFIG_HOME_ENV]?.trim();
+  const configDirectory =
+    configuredPath && path.isAbsolute(configuredPath)
+      ? configuredPath
+      : path.join(homeDirectory, '.config');
+  const configPath = path.join(configDirectory, 'user-dirs.dirs');
+
+  let contents: string;
+  try {
+    contents = readFileSync(configPath, 'utf8');
+  } catch {
+    return path.join(homeDirectory, 'Documents');
+  }
+  return (
+    parseXdgDocumentsDirectory(contents, homeDirectory) ??
+    path.join(homeDirectory, 'Documents')
+  );
 }
 
 /** Resolve the descriptor in the same precedence order as the desktop app. */
 export function resolveControlFilePath({
   environment = process.env,
   homeDirectory = os.homedir(),
+  platform = process.platform,
 }: ResolveControlPathOptions = {}): string {
   const explicitPath = environment[CONTROL_FILE_ENV]?.trim();
   if (explicitPath) return path.resolve(explicitPath);
@@ -55,9 +187,12 @@ export function resolveControlFilePath({
     return path.resolve(workspaceRoot, 'Settings', 'mcp-control.json');
   }
 
+  const documentsDirectory =
+    platform === 'linux'
+      ? resolveLinuxDocumentsDirectory(environment, homeDirectory)
+      : path.join(homeDirectory, 'Documents');
   return path.join(
-    homeDirectory,
-    'Documents',
+    documentsDirectory,
     '页语工作区',
     'Settings',
     'mcp-control.json',
@@ -162,7 +297,7 @@ export async function invokeElectronCommand(
   const descriptorPath =
     options.controlFilePath ?? resolveControlFilePath(options);
   const descriptor = await readControlDescriptor(descriptorPath);
-  const fetchImplementation = options.fetchImplementation ?? fetch;
+  const fetchImplementation = options.fetchImplementation ?? loopbackFetch;
   const url = `http://127.0.0.1:${descriptor.port}/command`;
   const request: CommandRequest = { name, args };
 

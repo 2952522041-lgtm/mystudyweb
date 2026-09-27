@@ -3,6 +3,7 @@ import { itemsFromPdfJs, normalizePage } from '../pdf-text.ts';
 import { sha256Hex, stableDocumentId } from '../course-storage/file-utils.ts';
 import { pageNeedsOcr } from '../ocr.ts';
 import { renderPageImage } from '../page-vision.ts';
+import { mapWithConcurrency } from '../async-pool.ts';
 import type { PageImageInput } from '../chat.ts';
 import type {
   DigestConcept,
@@ -133,76 +134,137 @@ export interface ExtractedPdfPages {
   pages: string[];
 }
 
+// Two concurrent OCR requests keep the vision provider responsive while
+// cutting the all-pages serial wait substantially for scanned documents.
+const DEFAULT_PAGE_CONCURRENCY = 2;
+const MAX_PAGE_CONCURRENCY = 2;
+const PDF_EXTRACTION_CANCELLED = 'PDF 文字提取已取消。';
+
+interface ExtractPdfPagesOptions {
+  signal?: AbortSignal;
+  onProgress?: (
+    page: number,
+    pageCount: number,
+    stage: 'extracting' | 'ocr',
+  ) => void;
+  /** Maximum number of pages that may be extracted/OCR'd at once. */
+  pageConcurrency?: number;
+  recognizePage?: (input: {
+    fingerprint: string;
+    pageNumber: number;
+    pageImage: PageImageInput;
+    signal?: AbortSignal;
+  }) => Promise<string>;
+}
+
+function validatePageConcurrency(value: number): number {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new RangeError('pageConcurrency must be a positive integer');
+  }
+  return Math.min(value, MAX_PAGE_CONCURRENCY);
+}
+
+function throwIfPageExtractionCancelled(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason ?? new Error(PDF_EXTRACTION_CANCELLED);
+}
+
 /** 用 PDF.js 提取每页文字；缺文字层的页面交给视觉模型 OCR。 */
 export async function extractPdfPages(
   file: File,
-  options: {
-    signal?: AbortSignal;
-    onProgress?: (
-      page: number,
-      pageCount: number,
-      stage: 'extracting' | 'ocr',
-    ) => void;
-    recognizePage?: (input: {
-      fingerprint: string;
-      pageNumber: number;
-      pageImage: PageImageInput;
-    }) => Promise<string>;
-  } = {},
+  options: ExtractPdfPagesOptions = {},
 ): Promise<ExtractedPdfPages> {
+  if (options.signal?.aborted) {
+    throw new Error(PDF_EXTRACTION_CANCELLED);
+  }
+  const pageConcurrency = validatePageConcurrency(
+    options.pageConcurrency ?? DEFAULT_PAGE_CONCURRENCY,
+  );
   const buffer = await file.arrayBuffer();
   const fingerprint = await sha256Hex(buffer);
+  if (options.signal?.aborted) {
+    throw new Error(PDF_EXTRACTION_CANCELLED);
+  }
   const pdfjs = await loadPdfjs();
   const pdf = await pdfjs.getDocument({ data: new Uint8Array(buffer.slice(0)) })
     .promise;
-  const pages: string[] = [];
+
+  // mapWithConcurrency intentionally returns the source order, while the
+  // worker reports progress as individual pages finish. A private controller
+  // lets us preserve the historical cancellation error instead of exposing
+  // the browser's AbortError/DOMException from the caller's signal.
+  const cancellation = new AbortController();
+  const cancel = () => cancellation.abort(new Error(PDF_EXTRACTION_CANCELLED));
+  if (options.signal) {
+    if (options.signal.aborted) cancel();
+    else options.signal.addEventListener('abort', cancel, { once: true });
+  }
+
   try {
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-      if (options.signal?.aborted) {
-        throw new Error('PDF 文字提取已取消。');
-      }
-      const page = await pdf.getPage(pageNumber);
-      const viewport = page.getViewport({ scale: 1 });
-      const content = await page.getTextContent();
-      let text = normalizePage(
-        itemsFromPdfJs(
-          content.items as Array<{
-            str?: string;
-            transform?: number[];
-            width?: number;
-            height?: number;
-          }>,
-          viewport.height,
-        ),
-      ).text;
-      if (pageNeedsOcr(text) && options.recognizePage) {
-        options.onProgress?.(pageNumber, pdf.numPages, 'ocr');
-        const pageImage = await renderPageImage(pdf, pageNumber, {
-          maxDimension: 2200,
-          maxPixels: 4_000_000,
-        });
-        text = await options.recognizePage({
-          fingerprint,
-          pageNumber,
-          pageImage,
-        });
-      } else {
-        options.onProgress?.(pageNumber, pdf.numPages, 'extracting');
-      }
-      pages.push(text);
-      page.cleanup();
+    const pageNumbers = Array.from(
+      { length: pdf.numPages },
+      (_, index) => index + 1,
+    );
+    const pages = await mapWithConcurrency(
+      pageNumbers,
+      pageConcurrency,
+      async (pageNumber, _index, signal) => {
+        throwIfPageExtractionCancelled(signal);
+        const page = await pdf.getPage(pageNumber);
+        try {
+          throwIfPageExtractionCancelled(signal);
+          const viewport = page.getViewport({ scale: 1 });
+          const content = await page.getTextContent();
+          throwIfPageExtractionCancelled(signal);
+          let text = normalizePage(
+            itemsFromPdfJs(
+              content.items as Array<{
+                str?: string;
+                transform?: number[];
+                width?: number;
+                height?: number;
+              }>,
+              viewport.height,
+            ),
+          ).text;
+          if (pageNeedsOcr(text) && options.recognizePage) {
+            options.onProgress?.(pageNumber, pdf.numPages, 'ocr');
+            const pageImage = await renderPageImage(pdf, pageNumber, {
+              signal,
+              maxDimension: 2200,
+              maxPixels: 4_000_000,
+            });
+            throwIfPageExtractionCancelled(signal);
+            text = await options.recognizePage({
+              fingerprint,
+              pageNumber,
+              pageImage,
+              signal,
+            });
+            throwIfPageExtractionCancelled(signal);
+          } else {
+            options.onProgress?.(pageNumber, pdf.numPages, 'extracting');
+          }
+          return text;
+        } finally {
+          page.cleanup();
+        }
+      },
+      { signal: cancellation.signal },
+    );
+    throwIfPageExtractionCancelled(options.signal);
+    if (pages.join('').replace(/\s+/g, '').length < 20) {
+      throw new Error(
+        options.recognizePage
+          ? 'OCR 没有识别到足够文字，请检查页面清晰度或更换视觉模型。'
+          : '这份 PDF 没有文字层。请先配置 AI 答疑的视觉模型，再使用扫描件 OCR 导入。',
+      );
     }
+    return { fingerprint, fileName: file.name, pageCount: pages.length, pages };
   } finally {
+    options.signal?.removeEventListener('abort', cancel);
     await pdf.cleanup();
   }
-  if (pages.join('').replace(/\s+/g, '').length < 20) {
-    throw new Error(
-      options.recognizePage
-        ? 'OCR 没有识别到足够文字，请检查页面清晰度或更换视觉模型。'
-        : '这份 PDF 没有文字层。请先配置 AI 答疑的视觉模型，再使用扫描件 OCR 导入。',
-    );
-  }
-  return { fingerprint, fileName: file.name, pageCount: pages.length, pages };
 }
 
 export async function extractDocumentDigest(
@@ -217,7 +279,9 @@ export async function extractDocumentDigest(
       fingerprint: string;
       pageNumber: number;
       pageImage: PageImageInput;
+      signal?: AbortSignal;
     }) => Promise<string>;
+    pageConcurrency?: number;
   } = {},
 ): Promise<DocumentDigest> {
   const extracted = await extractPdfPages(file, options);

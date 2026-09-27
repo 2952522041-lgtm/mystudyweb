@@ -8,6 +8,7 @@ import {
 } from '../lib/knowledge/ai-knowledge-provider.ts';
 import { createMemoryStore } from '../lib/reader-cache.ts';
 import type { DocumentDigest } from '../lib/course-storage/types.ts';
+import { SYNTHESIS_BUDGET, utf8Size } from '../lib/knowledge/hierarchical-synthesis.ts';
 import { legacyLongDigest, settings } from './fixtures/hierarchical-synthesis.ts';
 
 function streamResponse(value: unknown): Response {
@@ -165,7 +166,7 @@ void test('large courses accept intermediate JSON without hierarchy or batch-glo
   assert.ok(m.requests.some((prompt) => prompt.includes('当前只是中间压缩')));
 });
 
-void test('long restored source metadata does not trigger intermediate retries and remains fully sourced', async () => {
+void test('long restored source metadata is compacted without intermediate retries and remains fully sourced', async () => {
   const digests = courseDigests();
   // The restored source and provenance together exceed the 10 KiB intermediate
   // limit, while the model-controlled content remains tiny.
@@ -193,7 +194,7 @@ void test('long restored source metadata does not trigger intermediate retries a
   const m = createProvider();
   const result = await m.provider.synthesizeCourseKnowledge(courseInput(digests));
 
-  assert.ok(m.intermediateCount >= 2);
+  assert.equal(m.intermediateCount, 0);
   assert.equal(m.intermediateRetries, 0);
   assert.equal(m.finalCount, 1);
   assert.ok(
@@ -278,4 +279,59 @@ void test('the first course intermediate prompt regroups flat digest records and
     new Set(result.nodes.flatMap((node) => node.sources.map((source) => source.documentId))),
     new Set(['alpha', 'beta', 'gamma']),
   );
+});
+
+void test('course source file names are compacted once per document without mutating digests', async () => {
+  const fileNameTail = `${'重复文件名'.repeat(28)}.pdf`;
+  const digests = courseDigests().map((digest) => ({
+    ...digest,
+    sections: [],
+    concepts: Array.from({ length: 30 }, (_, index) => ({
+      id: `${digest.documentId}-concept-${index}`,
+      parentId: null,
+      label: `${digest.documentId} 概念 ${index}`,
+      description: '保留概念定义和条件。',
+      sources: [{
+        documentId: digest.documentId,
+        fileName: `${digest.documentId}-${fileNameTail}`,
+        pageStart: (index % 12) + 1,
+        pageEnd: (index % 12) + 1,
+        type: 'pdf' as const,
+      }],
+    })),
+  }));
+  const before = structuredClone(digests);
+  const m = createProvider({});
+  const result = await m.provider.synthesizeCourseKnowledge(courseInput(digests));
+
+  assert.equal(m.intermediateCount, 0, 'compaction should keep this input under the existing final budget');
+  assert.equal(m.finalCount, 1);
+  assert.deepEqual(digests, before, 'course synthesis must not mutate source digests');
+
+  const finalPrompt = m.requests.find((prompt) => !prompt.includes('当前只是中间压缩'));
+  assert.ok(finalPrompt);
+  const records = JSON.parse(finalPrompt.split('\n')[2]!) as Array<{
+    documentId: string;
+    fileName: string;
+    concepts: Array<{ sources: Array<Record<string, unknown>> }>;
+  }>;
+  const sourceMapLine = finalPrompt.split('\n').find((line) => line.startsWith('文档身份映射'));
+  assert.ok(sourceMapLine);
+  const sourceMap = JSON.parse(sourceMapLine!.slice(sourceMapLine!.indexOf('：') + 1)) as Array<{documentId:string;fileName:string}>;
+  assert.deepEqual(sourceMap.map((item) => item.documentId), records.map((record) => record.documentId));
+  const sources = records.flatMap((record) => record.concepts.flatMap((concept) => concept.sources));
+  assert.ok(sources.length > 0);
+  assert.ok(sources.every((source) => !Object.hasOwn(source, 'fileName')));
+  assert.ok(records.every((record) => typeof record.fileName === 'string'));
+
+  const expanded = structuredClone(records);
+  const names = Object.fromEntries(sourceMap.map((item) => [item.documentId, item.fileName]));
+  for (const record of expanded) {
+    for (const concept of record.concepts) {
+      for (const source of concept.sources) source.fileName = names[source.documentId as string];
+    }
+  }
+  assert.ok(utf8Size(expanded) > SYNTHESIS_BUDGET.finalPayload);
+  assert.ok(utf8Size(records) <= SYNTHESIS_BUDGET.finalPayload);
+  assert.ok(result.nodes.some((node) => node.sources.some((source) => source.fileName === `${'alpha'}-${fileNameTail}`)));
 });

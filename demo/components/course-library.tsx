@@ -79,9 +79,12 @@ import {
 } from '@/lib/ocr';
 import {
   locateEntity,
+  monotonicImportPercent,
   readCourseLocator,
   readDocumentLocator,
   readPage,
+  type CourseImportProgress,
+  type CourseImportStage,
   type CourseControlItem,
   type CourseLibraryControl,
 } from '@/lib/yeyu-mcp-control';
@@ -106,6 +109,27 @@ interface CourseEntry {
   storage: CourseStorage;
   bundle: CourseBundle | null;
   permission: 'granted' | 'prompt' | 'denied' | 'error';
+}
+
+interface ImportProgressRuntime {
+  progress: CourseImportProgress;
+  startedAtMs: number;
+  stageStartedAtMs: number;
+}
+
+function snapshotImportProgress(
+  runtime: ImportProgressRuntime,
+  now = Date.now(),
+): CourseImportProgress {
+  if (!runtime.progress.active) return runtime.progress;
+  return {
+    ...runtime.progress,
+    elapsedMs: Math.max(runtime.progress.elapsedMs, now - runtime.startedAtMs),
+    stageElapsedMs: Math.max(
+      runtime.progress.stageElapsedMs,
+      now - runtime.stageStartedAtMs,
+    ),
+  };
 }
 
 function permissionLabel(permission: CourseEntry['permission']): string {
@@ -198,6 +222,85 @@ export function CourseLibrary({
   const [shareError, setShareError] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
   const controlTaskRef = useRef(false);
+  const [importProgress, setImportProgress] = useState<
+    CourseImportProgress | undefined
+  >(undefined);
+  const importProgressRef = useRef<ImportProgressRuntime | null>(null);
+
+  const beginImportProgress = (fileName: string) => {
+    const now = Date.now();
+    const timestamp = new Date(now).toISOString();
+    const progress: CourseImportProgress = {
+      active: true,
+      fileName,
+      stage: 'checking',
+      message: '准备导入 PDF',
+      percent: 0,
+      startedAt: timestamp,
+      elapsedMs: 0,
+      stageStartedAt: timestamp,
+      stageElapsedMs: 0,
+    };
+    importProgressRef.current = {
+      progress,
+      startedAtMs: now,
+      stageStartedAtMs: now,
+    };
+    setImportProgress(progress);
+  };
+
+  const updateImportProgress = (
+    message: string,
+    percent: number,
+    stage: CourseImportStage,
+  ) => {
+    const runtime = importProgressRef.current;
+    if (!runtime?.progress.active) return;
+    const now = Date.now();
+    const previous = snapshotImportProgress(runtime, now);
+    if (runtime.progress.stage !== stage) runtime.stageStartedAtMs = now;
+    const stageStartedAt = new Date(runtime.stageStartedAtMs).toISOString();
+    runtime.progress = {
+      ...previous,
+      active: true,
+      stage,
+      message,
+      percent: monotonicImportPercent(previous.percent, percent),
+      stageStartedAt,
+      stageElapsedMs: Math.max(0, now - runtime.stageStartedAtMs),
+    };
+    setImportProgress(runtime.progress);
+  };
+
+  const finishImportProgress = (
+    stage: 'completed' | 'failed',
+    message: string,
+    percent?: number,
+  ) => {
+    const runtime = importProgressRef.current;
+    if (!runtime) return;
+    const now = Date.now();
+    const previous = snapshotImportProgress(runtime, now);
+    if (runtime.progress.stage !== stage) runtime.stageStartedAtMs = now;
+    runtime.progress = {
+      ...previous,
+      active: false,
+      stage,
+      message,
+      percent:
+        percent === undefined
+          ? previous.percent
+          : monotonicImportPercent(previous.percent, percent),
+      stageStartedAt: new Date(runtime.stageStartedAtMs).toISOString(),
+      stageElapsedMs: Math.max(0, now - runtime.stageStartedAtMs),
+    };
+    setImportProgress(runtime.progress);
+  };
+
+  const currentImportProgress = () => {
+    const runtime = importProgressRef.current;
+    return runtime ? snapshotImportProgress(runtime) : importProgress;
+  };
 
   const desktopApi =
     typeof window !== 'undefined' ? window.yeyuDesktop : undefined;
@@ -594,10 +697,14 @@ export function CourseLibrary({
       fingerprint: string;
       pageNumber: number;
       pageImage: PageImageInput;
+      signal?: AbortSignal;
     }) =>
-      resolvePageOcr({ provider: ocrProvider, cache: ocrCache, request }).then(
-        (resolved) => resolved.result.text,
-      );
+      resolvePageOcr({
+        provider: ocrProvider,
+        cache: ocrCache,
+        request,
+        signal: request.signal,
+      }).then((resolved) => resolved.result.text);
   };
 
   const importPdfForEntry = async (
@@ -609,106 +716,142 @@ export function CourseLibrary({
     onImportDiagnostic?: (diagnostic: SynthesisDiagnostic) => void,
   ) => {
     if (!entry.bundle) throw new Error('目标课程当前无法读取。');
+    beginImportProgress(file.name);
     setError(null);
     setMessage(null);
     setGenerationDiagnostics([]);
     setGenerationCourseId(entry.id);
-    const reportDiagnostic = (diagnostic: SynthesisDiagnostic) => { onDiagnostic(diagnostic); onImportDiagnostic?.(diagnostic); };
-    onProgress('正在检查 PDF 内容是否已存在', 3);
-    const fingerprint = await sha256Hex(await file.arrayBuffer());
-    // 读取当前清单，避免课程在其他窗口更新后仍按旧界面状态启动 AI。
-    const bundle = await entry.storage.load();
-    const existing = bundle.manifest.documents.find(
-      (document) => document.fingerprint === fingerprint,
-    );
-    if (existing) {
-      const message = `“${file.name}”已存在，已跳过（课程文件：${existing.fileName}）；未进行文字提取或 AI 分析。`;
-      setEntryBundle(entry.id, bundle);
-      setMessage(message);
-      return message;
-    }
-    // 知识库成果完全由 AI 生成，使用独立的「知识库 AI」配置；未配置时明确报错，不回退本地规则。
-    // 扫描页 OCR 是视觉任务，仍使用「AI 答疑」的视觉模型配置。
-    const glossary = await entry.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
-    const provider = createKnowledgeProviderForSettings(
-      loadKnowledgeSettings(),
-    );
-    const chatSettings = loadChatSettings();
+    const reportProgress = (
+      message: string,
+      percent: number,
+      stage: CourseImportStage,
+    ) => {
+      updateImportProgress(message, percent, stage);
+      onProgress(
+        message,
+        importProgressRef.current?.progress.percent ?? percent,
+      );
+    };
+    const reportDiagnostic = (diagnostic: SynthesisDiagnostic) => {
+      onDiagnostic(diagnostic);
+      onImportDiagnostic?.(diagnostic);
+    };
+    try {
+      reportProgress('正在检查 PDF 内容是否已存在', 3, 'checking');
+      const fingerprint = await sha256Hex(await file.arrayBuffer());
+      // 读取当前清单，避免课程在其他窗口更新后仍按旧界面状态启动 AI。
+      const bundle = await entry.storage.load();
+      const existing = bundle.manifest.documents.find(
+        (document) => document.fingerprint === fingerprint,
+      );
+      if (existing) {
+        const message = `“${file.name}”已存在，已跳过（课程文件：${existing.fileName}）；未进行文字提取或 AI 分析。`;
+        setEntryBundle(entry.id, bundle);
+        setMessage(message);
+        finishImportProgress('completed', message, 100);
+        return message;
+      }
+      // 知识库成果完全由 AI 生成，使用独立的「知识库 AI」配置；未配置时明确报错，不回退本地规则。
+      // 扫描页 OCR 是视觉任务，仍使用「AI 答疑」的视觉模型配置。
+      const glossary = await entry.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
+      const provider = createKnowledgeProviderForSettings(
+        loadKnowledgeSettings(),
+      );
+      const chatSettings = loadChatSettings();
 
-    onProgress('正在提取 PDF 文字', 6);
-    const recognizePage = makeOcrRecognizer(chatSettings);
-    const extracted = await extractPdfPages(file, {
-      signal,
-      onProgress: (page, count, stage) => {
-        onProgress(
-          stage === 'ocr'
-            ? `正在用视觉模型识别第 ${page} / ${count} 页（OCR）`
-            : `正在提取第 ${page} / ${count} 页文字`,
-          6 + Math.round((page / count) * 14),
-        );
-      },
-      recognizePage,
-    });
+      reportProgress('正在提取 PDF 文字', 6, 'extracting');
+      const recognizePage = makeOcrRecognizer(chatSettings);
+      const extracted = await extractPdfPages(file, {
+        signal,
+        onProgress: (page, count, stage) => {
+          reportProgress(
+            stage === 'ocr'
+              ? `正在用视觉模型识别第 ${page} / ${count} 页（OCR）`
+              : `正在提取第 ${page} / ${count} 页文字`,
+            6 + Math.round((page / count) * 14),
+            'extracting',
+          );
+        },
+        recognizePage,
+      });
 
-    const digest = await provider.analyzeDocument({
-      signal, onDiagnostic: reportDiagnostic,
-      glossary,
-      fingerprint: extracted.fingerprint,
-      fileName: file.name,
-      documentId: stableDocumentId(extracted.fingerprint),
-      pages: extracted.pages,
-      onStage: (stage, detail) => onProgress(knowledgeStageMessage(stage, detail), stage === 'chunk-analysis' ? 40 : 66),
-    });
-
-    let aiKnowledge: AiCourseKnowledge | undefined;
-    if (options.mergeIntoCourse) {
-      onProgress('AI 正在综合课程总总结与总脑图', 78);
-      const includedDigests = [
-        ...bundle.manifest.documents
-          .filter((document) => document.includedInCourse)
-          .map((document) => bundle.digests[document.id])
-          .filter((item): item is DocumentDigest => Boolean(item)),
-        digest,
-      ];
-      aiKnowledge = await provider.synthesizeCourseKnowledge({
-        signal, onDiagnostic: reportDiagnostic,
-        onStage: (stage, detail) => onProgress(knowledgeStageMessage(stage, detail), 78),
+      reportProgress('AI 正在分析 PDF 内容', 20, 'analyzing');
+      const digest = await provider.analyzeDocument({
+        signal,
+        onDiagnostic: reportDiagnostic,
         glossary,
-        courseId: bundle.manifest.id,
-        courseName: bundle.manifest.name,
-        digests: includedDigests,
-        userNodeLabels: bundle.knowledge.nodes
-          .filter((node) => node.ownership === 'user')
-          .map((node) => node.label),
+        fingerprint: extracted.fingerprint,
+        fileName: file.name,
+        documentId: stableDocumentId(extracted.fingerprint),
+        pages: extracted.pages,
+        onStage: (stage, detail) =>
+          reportProgress(
+            knowledgeStageMessage(stage, detail),
+            stage === 'chunk-analysis' ? 40 : 66,
+            'analyzing',
+          ),
       });
-    }
 
-    if (signal?.aborted) throw new Error('生成已取消；已完成层缓存保留，课程旧成果未变。');
-    onProgress('正在保存课程成果', 90);
-    const result = await entry.storage.importDocument(
-      file,
-      digest,
-      options,
-      bundle.manifest.revision,
-      aiKnowledge,
-    );
-    onProgress('正在提交课程新版本', 96);
-    setEntryBundle(entry.id, result.bundle);
-    if (entry.handle) {
-      await saveRecentCourse({
-        id: entry.id,
-        name: result.bundle.manifest.name,
-        handle: entry.handle,
-        updatedAt: result.bundle.manifest.updatedAt,
-      });
-    }
-    setMessage(
-      options.mergeIntoCourse
+      let aiKnowledge: AiCourseKnowledge | undefined;
+      if (options.mergeIntoCourse) {
+        reportProgress('AI 正在综合课程总总结与总脑图', 78, 'synthesizing');
+        const includedDigests = [
+          ...bundle.manifest.documents
+            .filter((document) => document.includedInCourse)
+            .map((document) => bundle.digests[document.id])
+            .filter((item): item is DocumentDigest => Boolean(item)),
+          digest,
+        ];
+        aiKnowledge = await provider.synthesizeCourseKnowledge({
+          signal,
+          onDiagnostic: reportDiagnostic,
+          onStage: (stage, detail) =>
+            reportProgress(
+              knowledgeStageMessage(stage, detail),
+              78,
+              'synthesizing',
+            ),
+          glossary,
+          courseId: bundle.manifest.id,
+          courseName: bundle.manifest.name,
+          digests: includedDigests,
+          userNodeLabels: bundle.knowledge.nodes
+            .filter((node) => node.ownership === 'user')
+            .map((node) => node.label),
+        });
+      }
+
+      if (signal?.aborted)
+        throw new Error('生成已取消；已完成层缓存保留，课程旧成果未变。');
+      reportProgress('正在保存课程成果', 90, 'saving');
+      const result = await entry.storage.importDocument(
+        file,
+        digest,
+        options,
+        bundle.manifest.revision,
+        aiKnowledge,
+      );
+      reportProgress('正在提交课程新版本', 96, 'committing');
+      setEntryBundle(entry.id, result.bundle);
+      if (entry.handle) {
+        await saveRecentCourse({
+          id: entry.id,
+          name: result.bundle.manifest.name,
+          handle: entry.handle,
+          updatedAt: result.bundle.manifest.updatedAt,
+        });
+      }
+      const completionMessage = options.mergeIntoCourse
         ? 'AI 已生成 PDF 总结和脑图，并更新课程总总结和总脑图。'
         : options.generateSummary || options.generateMindmap
           ? 'AI 已生成这份 PDF 的总结和脑图，暂未纳入课程知识库。'
-          : 'PDF 已导入，AI 内部摘要已建立，暂未生成可见成果。',
-    );
+          : 'PDF 已导入，AI 内部摘要已建立，暂未生成可见成果。';
+      setMessage(completionMessage);
+      finishImportProgress('completed', completionMessage, 100);
+    } catch (importError) {
+      finishImportProgress('failed', '导入失败');
+      throw importError;
+    }
   };
 
   const importPdf = async (
@@ -1020,11 +1163,15 @@ export function CourseLibrary({
       return value;
     };
     const control: CourseLibraryControl = {
-      getState: () => ({
-        loading,
-        activeCourseId: activeId,
-        courses: entries.map(toControlItem),
-      }),
+      getState: () => {
+        const progress = currentImportProgress();
+        return {
+          loading,
+          activeCourseId: activeId,
+          courses: entries.map(toControlItem),
+          ...(progress ? { importProgress: progress } : {}),
+        };
+      },
       openCourse: (args) => {
         if (loading) throw new Error('课程列表仍在加载，请稍后重试。');
         const entry = selectCourse(args, true);

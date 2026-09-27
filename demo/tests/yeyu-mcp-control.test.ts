@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   locateEntity,
+  monotonicImportPercent,
   readCourseLocator,
   readDocumentLocator,
   readPage,
@@ -56,4 +57,13 @@ void test('MCP page and panel arguments are strictly validated', () => {
   assert.throws(() => readPage({ page: 1.5 }), /正整数/);
   assert.equal(readReaderPanel({ panel: 'mindmap' }), 'mindmap');
   assert.throws(() => readReaderPanel({ panel: 'settings' }), /panel/);
+});
+
+void test('import progress percentages stay bounded and never move backwards', () => {
+  assert.equal(monotonicImportPercent(6, 40), 40);
+  assert.equal(monotonicImportPercent(40, 6), 40);
+  assert.equal(monotonicImportPercent(40, 140), 100);
+  assert.equal(monotonicImportPercent(40, -10), 40);
+  assert.equal(monotonicImportPercent(Number.NaN, 12), 12);
+  assert.equal(monotonicImportPercent(12, Number.POSITIVE_INFINITY), 12);
 });

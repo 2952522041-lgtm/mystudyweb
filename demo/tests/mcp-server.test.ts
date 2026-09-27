@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -57,7 +57,11 @@ void test('control file path honors explicit, workspace, then home defaults', ()
     path.join('/tmp/workspace', 'Settings', 'mcp-control.json'),
   );
   assert.equal(
-    resolveControlFilePath({ environment: {}, homeDirectory: '/home/tester' }),
+    resolveControlFilePath({
+      environment: {},
+      homeDirectory: '/home/tester',
+      platform: 'darwin',
+    }),
     path.join(
       '/home/tester',
       'Documents',
@@ -66,6 +70,56 @@ void test('control file path honors explicit, workspace, then home defaults', ()
       'mcp-control.json',
     ),
   );
+});
+
+void test('Linux default follows XDG_DOCUMENTS_DIR without evaluating shell syntax', async () => {
+  const homeDirectory = await mkdtemp(
+    path.join(os.tmpdir(), 'yeyu-mcp-xdg-home-'),
+  );
+  try {
+    const configDirectory = path.join(homeDirectory, '.config');
+    await mkdir(configDirectory, { recursive: true });
+    await writeFile(
+      path.join(configDirectory, 'user-dirs.dirs'),
+      'XDG_DOCUMENTS_DIR="$HOME/文档"\n',
+    );
+
+    assert.equal(
+      resolveControlFilePath({
+        environment: {},
+        homeDirectory,
+        platform: 'linux',
+      }),
+      path.join(
+        homeDirectory,
+        '文档',
+        '页语工作区',
+        'Settings',
+        'mcp-control.json',
+      ),
+    );
+
+    await writeFile(
+      path.join(configDirectory, 'user-dirs.dirs'),
+      'XDG_DOCUMENTS_DIR="$(touch should-not-run)"\n',
+    );
+    assert.equal(
+      resolveControlFilePath({
+        environment: {},
+        homeDirectory,
+        platform: 'linux',
+      }),
+      path.join(
+        homeDirectory,
+        'Documents',
+        '页语工作区',
+        'Settings',
+        'mcp-control.json',
+      ),
+    );
+  } finally {
+    await rm(homeDirectory, { recursive: true, force: true });
+  }
 });
 
 void test('command request uses the descriptor token and sends the expected JSON body', async () => {

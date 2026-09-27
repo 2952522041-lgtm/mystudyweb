@@ -142,7 +142,9 @@ void test('analyzes original chunks with two real fetches and preserves chunk or
   });
 
   await m.firstBatch.promise;
-  assert.deepEqual(m.startedPages, [1, 2]);
+  // Concurrent cache-key hashing can finish in either order. The first two
+  // chunks must both be active; result ordering is checked below separately.
+  assert.deepEqual([...m.startedPages].sort((a, b) => a - b), [1, 2]);
   assert.equal(m.maximumActive, 2);
   assert.equal(
     m.gates.some((gate) => gate.page === 3),
@@ -153,7 +155,8 @@ void test('analyzes original chunks with two real fetches and preserves chunk or
     .find((gate) => gate.page === 2)!
     .request.resolve(streamResponse(chunkReply(2)));
   await m.thirdStarted.promise;
-  assert.deepEqual(m.startedPages, [1, 2, 3]);
+  assert.deepEqual([...m.startedPages].sort((a, b) => a - b), [1, 2, 3]);
+  assert.equal(m.startedPages.at(-1), 3);
   assert.equal(m.maximumActive, 2);
 
   m.gates
@@ -178,13 +181,13 @@ void test('the first chunk failure aborts active work and never starts the queue
   });
 
   await m.firstBatch.promise;
-  assert.deepEqual(m.startedPages, [1, 2]);
+  assert.deepEqual([...m.startedPages].sort((a, b) => a - b), [1, 2]);
   m.gates
     .find((gate) => gate.page === 1)!
     .request.resolve(streamResponse({}, 500));
 
   await assert.rejects(resultPromise, /服务/);
-  assert.deepEqual(m.startedPages, [1, 2]);
+  assert.deepEqual([...m.startedPages].sort((a, b) => a - b), [1, 2]);
   assert.equal(m.gates.find((gate) => gate.page === 2)!.signal?.aborted, true);
   assert.equal(m.maximumActive, 2);
 });

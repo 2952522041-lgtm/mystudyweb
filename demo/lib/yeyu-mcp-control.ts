@@ -17,10 +17,34 @@ export interface CourseControlItem {
   documents: CourseControlDocument[];
 }
 
+export type CourseImportStage =
+  | 'checking'
+  | 'extracting'
+  | 'analyzing'
+  | 'synthesizing'
+  | 'saving'
+  | 'committing'
+  | 'completed'
+  | 'failed';
+
+export interface CourseImportProgress {
+  active: boolean;
+  fileName: string;
+  stage: CourseImportStage;
+  message: string;
+  percent: number;
+  startedAt: string;
+  elapsedMs: number;
+  stageStartedAt: string;
+  stageElapsedMs: number;
+}
+
 export interface CourseLibraryControlState {
   loading: boolean;
   activeCourseId: string | null;
   courses: CourseControlItem[];
+  /** 最近一次导入的进度；首次导入前省略。 */
+  importProgress?: CourseImportProgress;
 }
 
 export interface CourseLibraryControl {
@@ -55,6 +79,17 @@ export interface ReaderControl {
   getState(): ReaderControlState;
   goToPage(args: Record<string, unknown>): { page: number; pageCount: number };
   setPanel(args: Record<string, unknown>): { panel: ReaderRightModeName };
+}
+
+/** Keep externally visible progress within bounds and never move it backwards. */
+export function monotonicImportPercent(previous: number, next: number): number {
+  const safePrevious = Number.isFinite(previous)
+    ? Math.min(100, Math.max(0, previous))
+    : 0;
+  const safeNext = Number.isFinite(next)
+    ? Math.min(100, Math.max(0, next))
+    : safePrevious;
+  return Math.max(safePrevious, safeNext);
 }
 
 function optionalText(

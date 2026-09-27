@@ -919,7 +919,7 @@ void test('course knowledge is synthesized across multiple documents by AI', asy
   assert.match(prompt, /doc-bbbbbbbbbbbbbbbb/);
   assert.match(prompt, /我的疑问/);
 
-  assert.equal(aiKnowledge.promptVersion, 'ai-course-v8');
+  assert.equal(aiKnowledge.promptVersion, 'ai-course-v9');
   assert.equal(aiKnowledge.provider, 'openai-compatible-knowledge');
 
   let knowledge = emptyCourseKnowledge('course-1', '线性代数', '2026-08-31T00:00:00.000Z');
