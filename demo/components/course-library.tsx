@@ -1324,7 +1324,7 @@ export function CourseLibrary({
                 <p className="mt-2 text-[10px] leading-4 text-slate-500">
                   {shareStatus.running
                     ? `端口 ${shareStatus.port} · ${shareStatus.addresses.length} 个可访问地址`
-                    : '用密码把已有课程以只读方式分享给同一局域网的电脑。'}
+                    : '用密码共享已有课程，并允许查看端把 PDF 安全导入主电脑。'}
                 </p>
                 <Button
                   variant="outline"
@@ -1848,9 +1848,8 @@ export function CourseLibrary({
           <DialogHeader>
             <DialogTitle>局域网共享</DialogTitle>
             <DialogDescription>
-              Windows
-              电脑通过浏览器查看主电脑当前工作区中的课程；查看端没有上传、编辑、删除或
-              AI 功能。
+              Windows 电脑可通过浏览器查看主电脑课程，并把新 PDF
+              交给主电脑导入及后台整理；已有资料不能从查看端编辑或删除。
             </DialogDescription>
           </DialogHeader>
           {shareStatus.running ? (
@@ -1947,9 +1946,9 @@ export function CourseLibrary({
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-600">
                 <p className="font-semibold text-slate-700">使用范围与保护</p>
                 <p className="mt-1">
-                  仅绑定主电脑的局域网服务端口；接口只读工作区内合法课程的必要
-                  PDF 和已有成果，不提供任意路径访问。普通 HTTP
-                  不提供加密传输，请仅在可信校园网使用。
+                  仅绑定主电脑的局域网服务端口；查看端可读取合法课程，并通过
+                  CSRF 校验把 PDF 导入所选课程。保存和 AI 整理由主电脑执行，不提供
+                  删除或任意路径访问。普通 HTTP 不提供加密传输，请仅在可信校园网使用。
                 </p>
               </div>
               {shareError ? (

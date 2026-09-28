@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BookOpen,
+  CheckCircle2,
   CircleAlert,
   FileText,
   LogOut,
   Network,
   RefreshCw,
   ShieldCheck,
+  Upload,
   Wifi,
 } from 'lucide-react';
 
@@ -25,6 +27,7 @@ import type {
 } from '@/lib/course-storage/types';
 import {
   getSharedSession,
+  importSharedPdf,
   listSharedCourses,
   loadSharedCourse,
   loadSharedPdf,
@@ -33,9 +36,13 @@ import {
   SharedApiError,
   type SharedCourseDetail,
   type SharedCourseListItem,
+  type ImportSharedPdfOptions,
+  type SharedSessionCapabilities,
 } from '@/lib/lan-share-api';
 import { formatSource } from '@/lib/knowledge/artifact-renderer';
 import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
+
+const MAX_SHARED_IMPORT_BYTES = 128 * 1024 * 1024;
 
 function updatedAt(value: string): string {
   const date = new Date(value);
@@ -171,67 +178,220 @@ function CourseSummary({
   );
 }
 
+function CourseImportPanel({
+  canImportPdf,
+  canTriggerAi,
+  busy,
+  feedback,
+  onImport,
+}: {
+  canImportPdf: boolean;
+  canTriggerAi: boolean;
+  busy: boolean;
+  feedback: string | null;
+  onImport: (file: File, options: ImportSharedPdfOptions) => void;
+}) {
+  const [generateSummary, setGenerateSummary] = useState(true);
+  const [generateMindmap, setGenerateMindmap] = useState(true);
+  const [mergeIntoCourse, setMergeIntoCourse] = useState(true);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const chooseFile = () => {
+    setFileError(null);
+    inputRef.current?.click();
+  };
+
+  const handleFile = (file: File | undefined) => {
+    if (!file) return;
+    const isPdf =
+      file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+      setFileError('请选择 PDF 文件。');
+      return;
+    }
+    if (file.size > MAX_SHARED_IMPORT_BYTES) {
+      setFileError('PDF 文件不能超过 128 MiB，请压缩后重试。');
+      return;
+    }
+    setFileError(null);
+    onImport(file, {
+      generateSummary: canTriggerAi && generateSummary,
+      generateMindmap: canTriggerAi && generateMindmap,
+      mergeIntoCourse: canTriggerAi && mergeIntoCourse,
+    });
+  };
+
+  return (
+    <section className="mb-5 rounded-xl border border-dashed border-indigo-200 bg-indigo-50/50 p-4 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+            <Upload className="size-4 text-indigo-600" /> 导入一份 PDF
+          </p>
+          <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-600">
+            选择单个 PDF 后交给主电脑保存和处理。上传与 AI 生成都在主电脑执行，Windows
+            查看端不会接触 API Key。
+          </p>
+        </div>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="application/pdf,.pdf"
+          className="sr-only"
+          aria-label="选择要导入的 PDF"
+          disabled={!canImportPdf || busy}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            handleFile(file);
+          }}
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={chooseFile}
+          disabled={!canImportPdf || busy}
+        >
+          {busy ? (
+            <RefreshCw className="animate-spin" />
+          ) : (
+            <Upload />
+          )}
+          {busy ? '正在上传并处理…' : '选择 PDF'}
+        </Button>
+      </div>
+      {canImportPdf ? (
+        <div className="mt-4 grid gap-2 text-xs text-slate-700 sm:grid-cols-3">
+          <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+            <input
+              type="checkbox"
+              checked={canTriggerAi && generateSummary}
+              disabled={busy || !canTriggerAi}
+              onChange={(event) => setGenerateSummary(event.target.checked)}
+            />
+            生成 PDF 总结
+          </label>
+          <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+            <input
+              type="checkbox"
+              checked={canTriggerAi && generateMindmap}
+              disabled={busy || !canTriggerAi}
+              onChange={(event) => setGenerateMindmap(event.target.checked)}
+            />
+            生成 PDF 脑图
+          </label>
+          <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+            <input
+              type="checkbox"
+              checked={canTriggerAi && mergeIntoCourse}
+              disabled={busy || !canTriggerAi}
+              onChange={(event) => setMergeIntoCourse(event.target.checked)}
+            />
+            合并到课程知识库
+          </label>
+        </div>
+      ) : (
+        <p className="mt-3 text-xs leading-5 text-slate-500">
+          当前主电脑未开放 PDF 导入权限；已有课程资料仍可查看。
+        </p>
+      )}
+      {!canTriggerAi && canImportPdf ? (
+        <p className="mt-3 text-xs leading-5 text-slate-500">
+          主电脑当前未开放 AI 处理，仍可上传原始 PDF。
+        </p>
+      ) : null}
+      {fileError ? (
+        <p className="mt-3 text-xs text-rose-700">{fileError}</p>
+      ) : null}
+      {feedback ? (
+        <p className="mt-3 flex items-start gap-2 text-xs leading-5 text-emerald-700">
+          <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
+          {feedback}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function CourseDocuments({
   manifest,
   digests,
   onOpenDocument,
+  canImportPdf,
+  canTriggerAi,
+  importBusy,
+  importFeedback,
+  onImportDocument,
 }: {
   manifest: CourseManifest;
   digests: Record<string, DocumentDigest>;
   onOpenDocument: (document: DocumentRecord) => void;
+  canImportPdf: boolean;
+  canTriggerAi: boolean;
+  importBusy: boolean;
+  importFeedback: string | null;
+  onImportDocument: (file: File, options: ImportSharedPdfOptions) => void;
 }) {
-  if (manifest.documents.length === 0) {
-    return (
-      <EmptyResult
-        title="课程中还没有 PDF"
-        description="主电脑新增资料后，点击刷新即可看到最新课程内容。"
-      />
-    );
-  }
   return (
     <div className="p-5 sm:p-7">
       <div className="mb-5">
         <h2 className="text-lg font-semibold text-slate-900">课程资料</h2>
         <p className="mt-1 text-xs text-slate-500">
-          PDF 和主电脑已有成果均为只读。
+          已有 PDF 和主电脑成果只读；新增 PDF 会交给主电脑导入。
         </p>
       </div>
-      <div className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200">
-        {manifest.documents.map((document) => (
-          <div
-            key={document.id}
-            className="grid gap-4 bg-white px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
-          >
-            <div className="flex min-w-0 items-center gap-3">
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-rose-50 text-[10px] font-bold text-rose-700">
-                PDF
-              </span>
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-semibold text-slate-800">
-                  {document.fileName}
-                </span>
-                <span className="mt-1 block text-[10px] text-slate-500">
-                  {document.pageCount} 页 ·{' '}
-                  {document.hasSummary ? '有 PDF 总结' : '无 PDF 总结'} ·{' '}
-                  {document.hasMindmap ? '有 PDF 脑图' : '无 PDF 脑图'}
-                </span>
-                {digests[document.id] ? (
-                  <span className="mt-1 block text-[10px] text-emerald-700">
-                    成果已就绪
-                  </span>
-                ) : null}
-              </span>
-            </div>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => onOpenDocument(document)}
+      <CourseImportPanel
+        canImportPdf={canImportPdf}
+        canTriggerAi={canTriggerAi}
+        busy={importBusy}
+        feedback={importFeedback}
+        onImport={onImportDocument}
+      />
+      {manifest.documents.length === 0 ? (
+        <EmptyResult
+          title="课程中还没有 PDF"
+          description="选择上方的 PDF 文件后，可交给主电脑导入当前课程。"
+        />
+      ) : (
+        <div className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200">
+          {manifest.documents.map((document) => (
+            <div
+              key={document.id}
+              className="grid gap-4 bg-white px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
             >
-              <BookOpen /> 打开 PDF
-            </Button>
-          </div>
-        ))}
-      </div>
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-rose-50 text-[10px] font-bold text-rose-700">
+                  PDF
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold text-slate-800">
+                    {document.fileName}
+                  </span>
+                  <span className="mt-1 block text-[10px] text-slate-500">
+                    {document.pageCount} 页 ·{' '}
+                    {document.hasSummary ? '有 PDF 总结' : '无 PDF 总结'} ·{' '}
+                    {document.hasMindmap ? '有 PDF 脑图' : '无 PDF 脑图'}
+                  </span>
+                  {digests[document.id] ? (
+                    <span className="mt-1 block text-[10px] text-emerald-700">
+                      成果已就绪
+                    </span>
+                  ) : null}
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onOpenDocument(document)}
+              >
+                <BookOpen /> 打开 PDF
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -240,10 +400,20 @@ function SharedCourseDetail({
   detail,
   onOpenSource,
   onOpenDocument,
+  canImportPdf,
+  canTriggerAi,
+  importBusy,
+  importFeedback,
+  onImportDocument,
 }: {
   detail: SharedCourseDetail;
   onOpenSource: (documentId: string, page: number) => void;
   onOpenDocument: (document: DocumentRecord) => void;
+  canImportPdf: boolean;
+  canTriggerAi: boolean;
+  importBusy: boolean;
+  importFeedback: string | null;
+  onImportDocument: (file: File, options: ImportSharedPdfOptions) => void;
 }) {
   return (
     <Tabs defaultValue="summary" className="min-h-0 flex-1 gap-0">
@@ -291,6 +461,11 @@ function SharedCourseDetail({
           manifest={detail.manifest}
           digests={detail.digests}
           onOpenDocument={onOpenDocument}
+          canImportPdf={canImportPdf}
+          canTriggerAi={canTriggerAi}
+          importBusy={importBusy}
+          importFeedback={importFeedback}
+          onImportDocument={onImportDocument}
         />
       </TabsContent>
     </Tabs>
@@ -312,7 +487,12 @@ export function SharedCourseViewer() {
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [capabilities, setCapabilities] =
+    useState<SharedSessionCapabilities | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importFeedback, setImportFeedback] = useState<string | null>(null);
   const requestVersionRef = useRef(0);
+  const importRequestRef = useRef(0);
 
   const signedOut = useCallback((message?: string) => {
     requestVersionRef.current += 1;
@@ -322,6 +502,10 @@ export function SharedCourseViewer() {
     setDetail(null);
     setReader(null);
     setRefreshing(false);
+    setCapabilities(null);
+    setImportBusy(false);
+    setImportFeedback(null);
+    importRequestRef.current += 1;
     if (message) setError(message);
   }, []);
   const sessionExpired = useCallback(
@@ -337,10 +521,14 @@ export function SharedCourseViewer() {
     setError(describeApiError(requestError));
   };
 
-  const refresh = async (preferredId = selectedId) => {
+  const refresh = async (
+    preferredId = selectedId,
+    preserveImportFeedback = false,
+  ) => {
     const requestVersion = ++requestVersionRef.current;
     setRefreshing(true);
     setError(null);
+    if (!preserveImportFeedback) setImportFeedback(null);
     setDetail(null);
     setReader(null);
     try {
@@ -370,8 +558,9 @@ export function SharedCourseViewer() {
     let cancelled = false;
     void (async () => {
       try {
-        await getSharedSession();
+        const session = await getSharedSession();
         if (cancelled) return;
+        setCapabilities(session.capabilities ?? null);
         setAuthenticated(true);
         await refresh();
       } catch (requestError) {
@@ -425,6 +614,7 @@ export function SharedCourseViewer() {
     setReader(null);
     setRefreshing(true);
     setError(null);
+    setImportFeedback(null);
     try {
       const nextDetail = await loadSharedCourse(course.id);
       if (requestVersion !== requestVersionRef.current) return;
@@ -437,13 +627,48 @@ export function SharedCourseViewer() {
     }
   };
 
+  const importDocument = async (
+    file: File,
+    options: ImportSharedPdfOptions,
+  ) => {
+    if (!selectedId || importBusy) return;
+    const courseId = selectedId;
+    const requestVersion = ++requestVersionRef.current;
+    const importRequest = ++importRequestRef.current;
+    setImportBusy(true);
+    setImportFeedback(null);
+    setError(null);
+    try {
+      const result = await importSharedPdf(courseId, file, options);
+      if (requestVersion !== requestVersionRef.current) return;
+      setImportFeedback(
+        result.import.message ??
+          `主电脑已接受 ${result.import.fileName || file.name}，正在更新课程资料；稍后可点击“刷新”查看处理结果。`,
+      );
+      const refreshVersion = requestVersionRef.current;
+      await refresh(courseId, true);
+      if (
+        requestVersionRef.current !== refreshVersion + 1 ||
+        importRequest !== importRequestRef.current
+      ) {
+        return;
+      }
+    } catch (importError) {
+      if (requestVersion !== requestVersionRef.current) return;
+      handleRequestError(importError);
+    } finally {
+      if (importRequest === importRequestRef.current) setImportBusy(false);
+    }
+  };
+
   const login = async (event: React.FormEvent) => {
     event.preventDefault();
     setLoginBusy(true);
     setError(null);
     try {
-      await loginToSharedService(password);
+      const session = await loginToSharedService(password);
       setPassword('');
+      setCapabilities(session.capabilities ?? null);
       setAuthenticated(true);
       await refresh(null);
     } catch (loginError) {
@@ -489,8 +714,8 @@ export function SharedCourseViewer() {
             </div>
           </div>
           <p className="mt-7 text-sm leading-6 text-slate-600">
-            请输入主电脑设置的访问密码。课程资料保持只读，PDF
-            页码和缩放进度会与主电脑同步。
+            请输入主电脑设置的访问密码。已有课程资料保持只读；如主电脑开放导入权限，
+            你可以把新的 PDF 交给主电脑处理。PDF 页码和缩放进度会与主电脑同步。
           </p>
           <form className="mt-6 space-y-4" onSubmit={login}>
             <label className="block space-y-2">
@@ -562,7 +787,7 @@ export function SharedCourseViewer() {
             页语 · 局域网共享
           </span>
           <span className="hidden items-center gap-1 rounded-full bg-white/10 px-2 py-1 text-[10px] text-slate-200 sm:flex">
-            <Wifi className="size-3" /> 资料只读 · 进度同步
+            <Wifi className="size-3" /> 已有资料只读 · 新 PDF 可导入
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -621,11 +846,11 @@ export function SharedCourseViewer() {
           <div className="mt-8 rounded-xl border border-slate-200 bg-white p-4 text-[11px] leading-5 text-slate-500">
             <p className="flex items-center gap-2 font-semibold text-slate-700">
               <ShieldCheck className="size-4 text-emerald-600" />
-              资料只读
+              已有资料只读
             </p>
             <p className="mt-2">
-              查看端不会上传、编辑、删除或调用
-              AI；阅读页码和缩放会保存到主电脑，并在两端恢复。
+              查看端不会删除或任意编辑；新增 PDF 会由主电脑保存并处理。AI
+              也在主电脑执行，Windows 端不会接触 API Key。阅读页码和缩放会保存到主电脑。
             </p>
           </div>
         </aside>
@@ -670,6 +895,13 @@ export function SharedCourseViewer() {
                 else setError('来源 PDF 已被删除，请刷新课程列表。');
               }}
               onOpenDocument={(document) => void openDocument(document)}
+              canImportPdf={capabilities?.importPdf === true}
+              canTriggerAi={capabilities?.ai === true}
+              importBusy={importBusy}
+              importFeedback={importFeedback}
+              onImportDocument={(file, options) => {
+                void importDocument(file, options);
+              }}
             />
           ) : (
             <EmptyResult

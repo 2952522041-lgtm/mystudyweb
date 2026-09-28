@@ -15,6 +15,7 @@ export interface SharedReadingState {
 export interface SharedSessionCapabilities {
   readingState: boolean;
   courseContent: 'read' | 'write';
+  importPdf: boolean;
   ai: boolean;
   manage: boolean;
 }
@@ -29,6 +30,23 @@ export interface SaveSharedReadingStateInput {
   page: number;
   zoom: number;
   expectedVersion: number;
+}
+
+export interface ImportSharedPdfOptions {
+  generateSummary: boolean;
+  generateMindmap: boolean;
+  mergeIntoCourse: boolean;
+}
+
+export interface SharedPdfImportResult {
+  import: {
+    courseId: string;
+    courseName: string;
+    fileName: string;
+    documentId?: string;
+    processing?: unknown;
+    message?: string;
+  };
 }
 
 export interface SharedCourseListItem {
@@ -227,6 +245,49 @@ export async function saveSharedReadingState(
     headers,
     body: JSON.stringify(input),
   });
+}
+
+export async function importSharedPdf(
+  courseId: string,
+  file: File | Blob,
+  options: ImportSharedPdfOptions = {
+    generateSummary: true,
+    generateMindmap: true,
+    mergeIntoCourse: true,
+  },
+): Promise<SharedPdfImportResult> {
+  const fileWithMetadata = file as File & {
+    name?: string;
+    lastModified?: number;
+  };
+  const fileName =
+    typeof fileWithMetadata.name === 'string' && fileWithMetadata.name.length > 0
+      ? fileWithMetadata.name
+      : 'document.pdf';
+  const fileLastModified =
+    typeof fileWithMetadata.lastModified === 'number' &&
+    Number.isFinite(fileWithMetadata.lastModified) &&
+    fileWithMetadata.lastModified >= 0
+      ? Math.floor(fileWithMetadata.lastModified)
+      : 0;
+  const params = new URLSearchParams({
+    fileName,
+    fileLastModified: String(fileLastModified),
+    generateSummary: options.generateSummary ? '1' : '0',
+    generateMindmap: options.generateMindmap ? '1' : '0',
+    mergeIntoCourse: options.mergeIntoCourse ? '1' : '0',
+  });
+  const csrfToken = await getSharedCsrfToken();
+  const headers = new Headers({ 'Content-Type': 'application/pdf' });
+  if (csrfToken) headers.set('X-Yeyu-CSRF', csrfToken);
+  return requestJson(
+    `/api/share/courses/${encodeURIComponent(courseId)}/documents/import?${params.toString()}`,
+    {
+      method: 'POST',
+      headers,
+      body: file,
+    },
+  );
 }
 
 export function isSharedView(): boolean {

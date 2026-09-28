@@ -10,7 +10,9 @@ import test from 'node:test';
 import { build } from 'esbuild';
 
 import {
+  importSharedPdf,
   loadSharedReadingState,
+  logoutFromSharedService,
   saveSharedReadingState,
   SharedApiError,
 } from '../lib/lan-share-api.ts';
@@ -1740,6 +1742,7 @@ void test('shared reading-state client encodes the route, sends CSRF, and preser
         capabilities: {
           readingState: true,
           courseContent: 'read',
+          importPdf: true,
           ai: false,
           manage: false,
         },
@@ -1817,5 +1820,111 @@ void test('shared reader restores host state without claiming full read-only acc
   );
   assert.match(source, /setTimeout\(\(\) => \{/);
   assert.match(source, /\}, 600\);/);
-  assert.match(source, /课程资料只读 · 进度同步/);
+  assert.match(source, /局域网共享 · 课程资料只读 · 进度同步/);
+  assert.match(source, /阅读进度会同步/);
+});
+
+void test(
+  'shared PDF import client sends the encoded options, CSRF, and original file body',
+  async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const file = new File(['%PDF-import-fixture'], '课件 sample.pdf', {
+      type: 'application/pdf',
+      lastModified: 1760000123456,
+    });
+    globalThis.fetch = (async (input, init) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      calls.push({ url, init });
+      if (url.endsWith('/api/share/logout')) {
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/api/share/session')) {
+        return Response.json({
+          expiresAt: Date.now() + 3600000,
+          csrfToken: 'import-csrf-token',
+          capabilities: {
+            readingState: true,
+            courseContent: 'write',
+            importPdf: true,
+            ai: true,
+            manage: false,
+          },
+        });
+      }
+      const requestUrl = new URL(url, 'http://shared.test');
+      const headers = new Headers(init?.headers);
+      assert.equal(init?.method, 'POST');
+      assert.equal(headers.get('Content-Type'), 'application/pdf');
+      assert.equal(headers.get('X-Yeyu-CSRF'), 'import-csrf-token');
+      assert.equal(init?.body, file);
+      assert.equal(
+        requestUrl.pathname,
+        '/api/share/courses/course%2Fwith%20slash/documents/import',
+      );
+      assert.equal(requestUrl.searchParams.get('fileName'), file.name);
+      assert.equal(
+        requestUrl.searchParams.get('fileLastModified'),
+        String(file.lastModified),
+      );
+      assert.equal(requestUrl.searchParams.get('generateSummary'), '0');
+      assert.equal(requestUrl.searchParams.get('generateMindmap'), '1');
+      assert.equal(requestUrl.searchParams.get('mergeIntoCourse'), '1');
+      return Response.json({
+        import: {
+          courseId: 'course/with slash',
+          courseName: '测试课程',
+          fileName: file.name,
+          processing: { queued: true },
+        },
+      });
+    }) as typeof fetch;
+    try {
+      await logoutFromSharedService();
+      const result = await importSharedPdf('course/with slash', file, {
+        generateSummary: false,
+        generateMindmap: true,
+        mergeIntoCourse: true,
+      });
+      assert.equal(result.import.courseName, '测试课程');
+      assert.equal(calls.at(-1)?.init?.method, 'POST');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  },
+);
+
+void test('shared course UI wires single-PDF import without enabling destructive edits', async () => {
+  const [source, apiSource] = await Promise.all([
+    readFile(
+      new URL('../components/shared-course-viewer.tsx', import.meta.url),
+      'utf8',
+    ),
+    readFile(new URL('../lib/lan-share-api.ts', import.meta.url), 'utf8'),
+  ]);
+  for (const requirement of [
+    'importSharedPdf',
+    'type="file"',
+    'accept="application/pdf,.pdf"',
+    'generateSummary',
+    'generateMindmap',
+    'mergeIntoCourse',
+    '上传与 AI 生成都在主电脑执行',
+    'Windows',
+    '不会接触 API Key',
+    '正在上传并处理',
+  ]) {
+    assert.match(
+      source,
+      new RegExp(requirement.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    );
+  }
+  assert.match(apiSource, /X-Yeyu-CSRF/);
+  assert.match(source, /已有资料只读 · 新 PDF 可导入/);
+  assert.doesNotMatch(source, /deleteCourse|removeDocument|startLanShare/);
 });

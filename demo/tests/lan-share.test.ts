@@ -14,7 +14,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { getLanShareAddresses, LanShareServer } from '../electron/lan-share.ts';
+import {
+  getLanShareAddresses,
+  LanShareServer,
+  type LanSharePdfImportRequest,
+} from '../electron/lan-share.ts';
 import {
   createCourseDirectory,
   ensureWorkspace,
@@ -34,7 +38,8 @@ function request(
   options: {
     method?: string;
     cookie?: string;
-    body?: string;
+    body?: string | Buffer;
+    contentType?: string;
     headers?: Record<string, string>;
   } = {},
 ): Promise<HttpResult> {
@@ -52,7 +57,7 @@ function request(
           ...(body
             ? {
                 'Content-Length': Buffer.byteLength(body),
-                'Content-Type': 'application/json',
+                'Content-Type': options.contentType ?? 'application/json',
               }
             : {}),
         },
@@ -567,14 +572,29 @@ void test('LAN share persists versioned reading state and rejects stale writes',
       capabilities: {
         readingState: boolean;
         courseContent: string;
+        importPdf: boolean;
         ai: boolean;
         manage: boolean;
       };
     }>(login);
     assert.equal(session.capabilities.readingState, true);
     assert.equal(session.capabilities.courseContent, 'read');
+    assert.equal(session.capabilities.importPdf, false);
     assert.equal(session.capabilities.ai, false);
     const cookie = cookieFrom(login);
+
+    const unavailableImport = await request(
+      started.port!,
+      `/api/share/courses/${encodeURIComponent(fixture.manifest.id)}/documents/import?fileName=blocked.pdf`,
+      {
+        method: 'POST',
+        cookie,
+        headers: { 'X-Yeyu-CSRF': session.csrfToken },
+        body: Buffer.from('%PDF-1.7\nblocked'),
+        contentType: 'application/pdf',
+      },
+    );
+    assert.equal(unavailableImport.status, 503);
 
     const empty = await request(started.port!, endpoint, { cookie });
     assert.equal(empty.status, 200);
@@ -648,6 +668,170 @@ void test('LAN share persists versioned reading state and rejects stale writes',
     assert.equal(persisted.states[0]?.courseId, fixture.manifest.id);
     assert.equal(persisted.states[0]?.documentId, fixture.document.id);
     assert.equal('csrfToken' in persisted.states[0]!, false);
+  } finally {
+    await server.stop();
+    await rm(root, { recursive: true, force: true });
+    await rm(client, { recursive: true, force: true });
+  }
+});
+
+void test('LAN share imports a validated PDF through the host renderer bridge', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-lan-share-'));
+  const client = await mkdtemp(path.join(os.tmpdir(), 'yeyu-share-client-'));
+  const fixture = await createFixture(root);
+  await writeFile(path.join(client, 'index.html'), 'share');
+  const captured: LanSharePdfImportRequest[] = [];
+  const server = new LanShareServer(fixture.layout, client, {
+    host: '127.0.0.1',
+    importPdf: async (requestValue) => {
+      captured.push(requestValue);
+      return {
+        courseId: requestValue.courseId,
+        courseName: fixture.manifest.name,
+        fileName: requestValue.fileName,
+        documentId: 'new-document',
+        message: 'PDF 已保存，可立即阅读；AI 整理已加入后台队列。',
+        apiKey: 'sk-must-not-leak',
+        workspacePath: '/private/course/path',
+      };
+    },
+  });
+  try {
+    const started = await server.start('上传测试-abcdef', 0);
+    const fileName = '第二 讲义.pdf';
+    const endpoint =
+      `/api/share/courses/${encodeURIComponent(fixture.manifest.id)}/documents/import` +
+      `?fileName=${encodeURIComponent(fileName)}` +
+      '&fileLastModified=1780000000000' +
+      '&generateSummary=1&generateMindmap=0&mergeIntoCourse=1';
+    const pdf = Buffer.from('%PDF-1.7\nremote upload');
+    assert.equal(
+      (
+        await request(started.port!, endpoint, {
+          method: 'POST',
+          body: pdf,
+          contentType: 'application/pdf',
+        })
+      ).status,
+      401,
+    );
+    const login = await request(started.port!, '/api/share/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: '上传测试-abcdef' }),
+    });
+    assert.equal(login.status, 200);
+    const session = json<{
+      csrfToken: string;
+      capabilities: {
+        readingState: boolean;
+        courseContent: string;
+        importPdf: boolean;
+        ai: boolean;
+        manage: boolean;
+      };
+    }>(login);
+    assert.equal(session.capabilities.courseContent, 'write');
+    assert.equal(session.capabilities.importPdf, true);
+    assert.equal(session.capabilities.ai, true);
+    assert.equal(session.capabilities.manage, false);
+    const cookie = cookieFrom(login);
+
+    assert.equal(
+      (
+        await request(started.port!, endpoint, {
+          method: 'POST',
+          cookie,
+          body: pdf,
+          contentType: 'application/pdf',
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await request(started.port!, endpoint, {
+          method: 'POST',
+          cookie,
+          headers: { 'X-Yeyu-CSRF': session.csrfToken },
+          body: Buffer.from('not a PDF'),
+          contentType: 'application/pdf',
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await request(started.port!, endpoint, {
+          method: 'POST',
+          cookie,
+          headers: { 'X-Yeyu-CSRF': session.csrfToken },
+          body: pdf,
+          contentType: 'application/octet-stream',
+        })
+      ).status,
+      415,
+    );
+    assert.equal(
+      (
+        await request(
+          started.port!,
+          endpoint.replace(
+            `fileName=${encodeURIComponent(fileName)}`,
+            `fileName=${encodeURIComponent('../escape.pdf')}`,
+          ),
+          {
+            method: 'POST',
+            cookie,
+            headers: { 'X-Yeyu-CSRF': session.csrfToken },
+            body: pdf,
+            contentType: 'application/pdf',
+          },
+        )
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await request(
+          started.port!,
+          endpoint.replace('generateSummary=1', 'generateSummary=yes'),
+          {
+            method: 'POST',
+            cookie,
+            headers: { 'X-Yeyu-CSRF': session.csrfToken },
+            body: pdf,
+            contentType: 'application/pdf',
+          },
+        )
+      ).status,
+      400,
+    );
+
+    const imported = await request(started.port!, endpoint, {
+      method: 'POST',
+      cookie,
+      headers: { 'X-Yeyu-CSRF': session.csrfToken },
+      body: pdf,
+      contentType: 'application/pdf',
+    });
+    assert.equal(imported.status, 202);
+    assert.equal(
+      json<{ import: { documentId: string } }>(imported).import.documentId,
+      'new-document',
+    );
+    assert.doesNotMatch(
+      imported.body.toString('utf8'),
+      /sk-must|private\/course/,
+    );
+    const received = captured[0];
+    assert.ok(received);
+    assert.equal(received.courseId, fixture.manifest.id);
+    assert.equal(received.fileName, fileName);
+    assert.equal(received.fileLastModified, 1780000000000);
+    assert.equal(received.generateSummary, true);
+    assert.equal(received.generateMindmap, false);
+    assert.equal(received.mergeIntoCourse, true);
+    assert.deepEqual(Buffer.from(received.fileData), pdf);
   } finally {
     await server.stop();
     await rm(root, { recursive: true, force: true });

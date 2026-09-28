@@ -392,6 +392,9 @@ void test('electron main and preload keep the secure process boundary', async ()
     'setWindowOpenHandler',
     'will-navigate',
     'resolveDevTargetUrl',
+    'dispatchPrepared',
+    'importPdf: (request)',
+    'fileData: request.fileData',
   ]) {
     assert.match(
       main,

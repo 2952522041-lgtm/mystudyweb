@@ -20,6 +20,7 @@ import {
 export const DEFAULT_LAN_SHARE_PORT = 37891;
 export const LAN_SHARE_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const MAX_LOGIN_BODY_BYTES = 4096;
+export const LAN_SHARE_MAX_PDF_BYTES = 128 * 1024 * 1024;
 const LOGIN_WINDOW_MS = 5 * 60 * 1000;
 const LOGIN_BLOCK_MS = 30 * 1000;
 const MAX_LOGIN_FAILURES = 5;
@@ -60,7 +61,23 @@ interface LanShareOptions {
   host?: string;
   /** Desktop IPC and the HTTP listener must share one mutation queue. */
   readingStateStore?: ReadingStateStore;
+  /** Runs the existing renderer-owned import pipeline on the host computer. */
+  importPdf?: LanSharePdfImporter;
 }
+
+export interface LanSharePdfImportRequest {
+  courseId: string;
+  fileName: string;
+  fileData: Uint8Array;
+  fileLastModified: number;
+  generateSummary: boolean;
+  generateMindmap: boolean;
+  mergeIntoCourse: boolean;
+}
+
+export type LanSharePdfImporter = (
+  request: LanSharePdfImportRequest,
+) => Promise<unknown>;
 
 interface ShareDocument {
   id: string;
@@ -89,11 +106,12 @@ function jsonHeaders(): Record<string, string> {
   };
 }
 
-function shareCapabilities() {
+function shareCapabilities(canImportPdf: boolean) {
   return {
     readingState: true,
-    courseContent: 'read' as const,
-    ai: false,
+    courseContent: canImportPdf ? ('write' as const) : ('read' as const),
+    importPdf: canImportPdf,
+    ai: canImportPdf,
     manage: false,
   };
 }
@@ -194,6 +212,83 @@ export function getLanShareAddresses(
 
 function safeHeaderFileName(value: string): string {
   return value.replace(/[\r\n"]/g, '_');
+}
+
+function importBoolean(
+  url: URL,
+  name: string,
+  fallback = true,
+): boolean | null {
+  const value = url.searchParams.get(name);
+  if (value === null) return fallback;
+  if (value === '1') return true;
+  if (value === '0') return false;
+  return null;
+}
+
+function safePdfUploadName(value: string | null): string | null {
+  const hasControlCharacter =
+    value !== null &&
+    Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x1f || code === 0x7f;
+    });
+  if (
+    !value ||
+    value !== value.trim() ||
+    value.length > 255 ||
+    Buffer.byteLength(value, 'utf8') > 255 ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    hasControlCharacter ||
+    path.extname(value).toLowerCase() !== '.pdf'
+  ) {
+    return null;
+  }
+  return value;
+}
+
+function hasPdfSignature(data: Buffer): boolean {
+  return data.subarray(0, 1024).indexOf('%PDF-') >= 0;
+}
+
+function boundedString(value: unknown, maximumLength: number): string | null {
+  return typeof value === 'string' && value.length > 0
+    ? value.slice(0, maximumLength)
+    : null;
+}
+
+function publicImportResult(
+  value: unknown,
+  request: LanSharePdfImportRequest,
+  courseName: string,
+): Record<string, unknown> {
+  const result = isRecord(value) ? value : {};
+  const documentId = boundedString(result.documentId, 255);
+  const message = boundedString(result.message, 1000);
+  const processing = isRecord(result.processing) ? result.processing : null;
+  const publicProcessing =
+    processing &&
+    (processing.phase === 'document' || processing.phase === 'course') &&
+    (processing.status === 'queued' ||
+      processing.status === 'running' ||
+      processing.status === 'failed')
+      ? {
+          phase: processing.phase,
+          status: processing.status,
+          ...(typeof processing.updatedAt === 'string'
+            ? { updatedAt: processing.updatedAt.slice(0, 64) }
+            : {}),
+        }
+      : null;
+  return {
+    courseId: request.courseId,
+    courseName,
+    fileName: request.fileName,
+    ...(documentId ? { documentId } : {}),
+    ...(message ? { message } : {}),
+    ...(publicProcessing ? { processing: publicProcessing } : {}),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -500,6 +595,7 @@ export class LanShareServer {
   private sessions = new Map<string, ShareSession>();
   private loginAttempts = new Map<string, LoginAttempt>();
   private readonly readingStates: ReadingStateStore;
+  private readonly importPdf: LanSharePdfImporter | null;
 
   constructor(
     layout: WorkspaceLayout,
@@ -514,6 +610,7 @@ export class LanShareServer {
     this.readingStates =
       options.readingStateStore ??
       new ReadingStateStore(layout.settingsRoot, this.now);
+    this.importPdf = options.importPdf ?? null;
   }
 
   getStatus(): LanShareStatus {
@@ -661,15 +758,18 @@ export class LanShareServer {
     return timingSafeEqual(candidate, this.passwordHash);
   }
 
-  private async requestBody(request: IncomingMessage): Promise<Buffer> {
+  private async requestBody(
+    request: IncomingMessage,
+    maximumBytes = MAX_LOGIN_BODY_BYTES,
+  ): Promise<Buffer> {
     const contentLength = Number(request.headers['content-length'] ?? 0);
-    if (contentLength > MAX_LOGIN_BODY_BYTES) throw new Error('请求内容过大。');
+    if (contentLength > maximumBytes) throw new Error('请求内容过大。');
     return await new Promise<Buffer>((resolve, reject) => {
       const chunks: Buffer[] = [];
       let total = 0;
       request.on('data', (chunk: Buffer) => {
         total += chunk.length;
-        if (total > MAX_LOGIN_BODY_BYTES) {
+        if (total > maximumBytes) {
           reject(new Error('请求内容过大。'));
           request.destroy();
           return;
@@ -741,7 +841,7 @@ export class LanShareServer {
         authenticated: true,
         expiresAt,
         csrfToken,
-        capabilities: shareCapabilities(),
+        capabilities: shareCapabilities(this.importPdf !== null),
       },
       {
         'Set-Cookie': sessionCookie(token, this.sessionTtlMs / 1000),
@@ -947,6 +1047,92 @@ export class LanShareServer {
         return;
       }
       sendJson(response, 200, { knowledge: await this.readKnowledge(course) });
+      return;
+    }
+
+    if (
+      parts[1] === 'documents' &&
+      parts[2] === 'import' &&
+      parts.length === 3
+    ) {
+      if (request.method !== 'POST') {
+        sendText(response, 405, '只支持 POST。');
+        return;
+      }
+      if (!this.requireCsrf(request, response)) return;
+      if (!this.importPdf) {
+        sendJson(response, 503, {
+          error: '主电脑当前未启用 PDF 导入桥接，请重启页语后重试。',
+        });
+        return;
+      }
+      const course = await this.findCourse(courseId);
+      if (!course) {
+        sendJson(response, 404, { error: '课程不存在，可能已被删除。' });
+        return;
+      }
+      const fileName = safePdfUploadName(url.searchParams.get('fileName'));
+      const generateSummary = importBoolean(url, 'generateSummary');
+      const generateMindmap = importBoolean(url, 'generateMindmap');
+      const mergeIntoCourse = importBoolean(url, 'mergeIntoCourse');
+      const fileLastModifiedValue = url.searchParams.get('fileLastModified');
+      const fileLastModified =
+        fileLastModifiedValue === null
+          ? this.now()
+          : Number(fileLastModifiedValue);
+      if (
+        !fileName ||
+        generateSummary === null ||
+        generateMindmap === null ||
+        mergeIntoCourse === null ||
+        !Number.isSafeInteger(fileLastModified) ||
+        fileLastModified < 0
+      ) {
+        sendJson(response, 400, { error: 'PDF 文件名或导入选项不合法。' });
+        return;
+      }
+      if (
+        !String(request.headers['content-type'] ?? '')
+          .toLowerCase()
+          .startsWith('application/pdf')
+      ) {
+        sendJson(response, 415, { error: '只能上传 PDF 文件。' });
+        return;
+      }
+      let fileData: Buffer;
+      try {
+        fileData = await this.requestBody(request, LAN_SHARE_MAX_PDF_BYTES);
+      } catch {
+        sendJson(response, 413, { error: 'PDF 超过 128 MiB，已拒绝上传。' });
+        return;
+      }
+      if (fileData.byteLength === 0 || !hasPdfSignature(fileData)) {
+        sendJson(response, 400, { error: '文件内容不是有效的 PDF。' });
+        return;
+      }
+      const importRequest: LanSharePdfImportRequest = {
+        courseId,
+        fileName,
+        fileData: new Uint8Array(fileData),
+        fileLastModified,
+        generateSummary,
+        generateMindmap,
+        mergeIntoCourse,
+      };
+      try {
+        const result = await this.importPdf(importRequest);
+        sendJson(response, 202, {
+          import: publicImportResult(
+            result,
+            importRequest,
+            course.manifest.name,
+          ),
+        });
+      } catch {
+        sendJson(response, 422, {
+          error: '主电脑未能接受这份 PDF，请在主电脑查看课程状态后重试。',
+        });
+      }
       return;
     }
 
@@ -1214,7 +1400,7 @@ export class LanShareServer {
         authenticated: true,
         expiresAt: session.expiresAt,
         csrfToken: session.csrfToken,
-        capabilities: shareCapabilities(),
+        capabilities: shareCapabilities(this.importPdf !== null),
       });
       return;
     }

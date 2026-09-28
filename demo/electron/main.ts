@@ -84,6 +84,7 @@ interface PendingMcpCommand {
 /** Connect the authenticated loopback endpoint to the isolated renderer. */
 function createMcpRendererBridge(): {
   dispatch: (request: McpControlRequest) => Promise<unknown>;
+  dispatchPrepared: (request: McpControlRequest) => Promise<unknown>;
   dispose: () => void;
 } {
   const pending = new Map<string, PendingMcpCommand>();
@@ -101,46 +102,55 @@ function createMcpRendererBridge(): {
   };
   ipcMain.handle(DESKTOP_CHANNELS.mcpResponse, onResponse);
 
+  const sendToRenderer = async (
+    request: McpControlRequest,
+    args: Record<string, unknown>,
+    focusWindow: boolean,
+  ): Promise<unknown> => {
+    if (!MCP_COMMAND_NAMES.has(request.name)) {
+      return Promise.reject(new Error(`不支持的页语命令：${request.name}`));
+    }
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window || window.isDestroyed()) {
+      return Promise.reject(new Error('页语窗口尚未就绪。'));
+    }
+    if (focusWindow && request.name !== 'get_state') {
+      if (window.isMinimized()) window.restore();
+      window.show();
+      window.focus();
+    }
+    const id = randomUUID();
+    const command: YeyuMcpCommand = {
+      id,
+      name: request.name,
+      args,
+    };
+    return new Promise((resolve, reject) => {
+      const timeout =
+        request.name === 'import_pdf'
+          ? MCP_IMPORT_TIMEOUT_MS
+          : MCP_RENDERER_TIMEOUT_MS;
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(
+          new Error(
+            request.name === 'import_pdf'
+              ? '页语未在 30 分钟内完成 PDF 导入。'
+              : '页语界面未在 15 秒内响应 MCP 命令。',
+          ),
+        );
+      }, timeout);
+      pending.set(id, { window, resolve, reject, timer });
+      window.webContents.send(DESKTOP_CHANNELS.mcpCommand, command);
+    });
+  };
+
   return {
     dispatch: async (request) => {
-      if (!MCP_COMMAND_NAMES.has(request.name)) {
-        return Promise.reject(new Error(`不支持的页语命令：${request.name}`));
-      }
-      const window = BrowserWindow.getAllWindows()[0];
-      if (!window || window.isDestroyed()) {
-        return Promise.reject(new Error('页语窗口尚未就绪。'));
-      }
-      if (request.name !== 'get_state') {
-        if (window.isMinimized()) window.restore();
-        window.show();
-        window.focus();
-      }
       const args = await prepareMcpRendererArgs(request.name, request.args);
-      const id = randomUUID();
-      const command: YeyuMcpCommand = {
-        id,
-        name: request.name,
-        args,
-      };
-      return new Promise((resolve, reject) => {
-        const timeout =
-          request.name === 'import_pdf'
-            ? MCP_IMPORT_TIMEOUT_MS
-            : MCP_RENDERER_TIMEOUT_MS;
-        const timer = setTimeout(() => {
-          pending.delete(id);
-          reject(
-            new Error(
-              request.name === 'import_pdf'
-                ? '页语未在 30 分钟内完成 PDF 导入。'
-                : '页语界面未在 15 秒内响应 MCP 命令。',
-            ),
-          );
-        }, timeout);
-        pending.set(id, { window, resolve, reject, timer });
-        window.webContents.send(DESKTOP_CHANNELS.mcpCommand, command);
-      });
+      return sendToRenderer(request, args, true);
     },
+    dispatchPrepared: (request) => sendToRenderer(request, request.args, false),
     dispose: () => {
       ipcMain.removeHandler(DESKTOP_CHANNELS.mcpResponse);
       for (const entry of pending.values()) {
@@ -546,12 +556,27 @@ if (!hasSingleInstanceLock) {
         process.env.YEYU_WORKSPACE_ROOT,
       );
       const readingStateStore = new ReadingStateStore(layout.settingsRoot);
+      const mcpBridge = createMcpRendererBridge();
       const lanShareServer = new LanShareServer(
         layout,
         staticClientDirectory(),
-        { readingStateStore },
+        {
+          readingStateStore,
+          importPdf: (request) =>
+            mcpBridge.dispatchPrepared({
+              name: 'import_pdf',
+              args: {
+                courseId: request.courseId,
+                fileName: request.fileName,
+                fileData: request.fileData,
+                fileLastModified: request.fileLastModified,
+                generateSummary: request.generateSummary,
+                generateMindmap: request.generateMindmap,
+                mergeIntoCourse: request.mergeIntoCourse,
+              },
+            }),
+        },
       );
-      const mcpBridge = createMcpRendererBridge();
       const mcpControlServer = new McpControlServer({
         settingsRoot: layout.settingsRoot,
         dispatch: mcpBridge.dispatch,
