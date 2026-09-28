@@ -12,5 +12,6 @@
     "sourceMap": false,
     "types": ["node"]
   },
-  "include": ["*.ts"]
+  "include": ["*.ts"],
+  "exclude": ["dsh-worker.ts"]
 }

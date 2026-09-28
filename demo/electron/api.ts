@@ -3,6 +3,8 @@
  * 保持一致（demo 全量 tsc 会在桌面存储的使用处校验两者兼容）。
  * 不直接跨目录 import，是为了让 Electron 编译产物完全自包含。
  */
+import type { DshCompletionRequest, DshCompletionResult, DshProgress } from './dsh-types.ts';
+
 export interface DesktopCourseManifest {
   schemaVersion: number;
   id: string;
@@ -36,6 +38,9 @@ export const DESKTOP_CHANNELS = {
   readingStatePut: 'yeyu:reading-state-put',
   mcpCommand: 'yeyu:mcp-command',
   mcpResponse: 'yeyu:mcp-response',
+  dshRun: 'yeyu:dsh-run',
+  dshCancel: 'yeyu:dsh-cancel',
+  dshProgress: 'yeyu:dsh-progress',
 } as const;
 
 export type YeyuMcpCommandName =
@@ -88,6 +93,9 @@ export const DESKTOP_METHOD_NAMES = [
   'startLanShare',
   'stopLanShare',
   'writeFile',
+  'runDsh',
+  'cancelDsh',
+  'onDshProgress',
 ] as const;
 
 export interface WorkspaceInfo {
@@ -121,6 +129,9 @@ export interface SharedReadingState {
 
 /** 主进程暴露给 renderer 的唯一文件入口；绝不暴露 ipcRenderer 或 fs 本身。 */
 export interface YeyuDesktopApi {
+  runDsh?(request: DshCompletionRequest): Promise<DshCompletionResult>;
+  cancelDsh?(requestId: string): Promise<void>;
+  onDshProgress?(listener: (value: DshProgress) => void): () => void;
   getWorkspaceInfo(): Promise<WorkspaceInfo>;
   listCourses(): Promise<DesktopCourseSummary[]>;
   createCourseDirectory(name: string): Promise<{ directoryName: string }>;

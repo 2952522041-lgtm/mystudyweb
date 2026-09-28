@@ -32,6 +32,12 @@ import {
   type KnowledgeGenerationMode,
   type KnowledgeSettings,
 } from '@/lib/knowledge-settings';
+import {
+  loadAgentSettings,
+  saveAgentSettings,
+  type AgentBackend,
+  type AgentSettings,
+} from '@/lib/agent-settings';
 
 export type SettingsTab = 'translation' | 'chat' | 'knowledge';
 
@@ -61,6 +67,9 @@ export function ReaderSettingsDialog({
     ...knowledgeSettings,
     generationMode: knowledgeSettings.generationMode ?? 'fast',
   });
+  const [agentSettingsDraft, setAgentSettingsDraft] = useState<AgentSettings>(
+    () => loadAgentSettings(),
+  );
   const [error, setError] = useState<string | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
@@ -88,6 +97,7 @@ export function ReaderSettingsDialog({
         return;
       }
     }
+    saveAgentSettings(agentSettingsDraft);
     onSave(translationDraft, chatDraft, knowledgeDraft);
   };
 
@@ -112,6 +122,68 @@ export function ReaderSettingsDialog({
             分别保存接口、API Key 和模型，互不串用。接口地址填写基础路径，程序会追加 /chat/completions；模型填写服务商提供的模型 ID。
           </DialogDescription>
         </DialogHeader>
+
+        <section
+          aria-labelledby="agent-backend-heading"
+          className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5"
+        >
+          <div>
+            <h2
+              id="agent-backend-heading"
+              className="text-xs font-semibold text-slate-800"
+            >
+              AI 执行后端
+            </h2>
+            <p className="mt-1 text-[11px] leading-5 text-slate-500">
+              只影响 PDF 整理和整份文档问答；页面翻译、OCR、图片问答仍使用原路径。
+            </p>
+          </div>
+          <NativeSelect
+            id="agent-backend"
+            aria-label="AI 执行后端"
+            value={agentSettingsDraft.backend}
+            onChange={(event) =>
+              setAgentSettingsDraft((previous) => ({
+                ...previous,
+                backend: event.target.value as AgentBackend,
+              }))
+            }
+          >
+            <NativeSelectOption value="api">API 直接调用</NativeSelectOption>
+            <NativeSelectOption value="dsh">
+              DeepSeek Harness
+            </NativeSelectOption>
+          </NativeSelect>
+          {agentSettingsDraft.backend === 'dsh' ? (
+            <div className="space-y-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] leading-5 text-amber-900">
+              <p>
+                DSH 第一版仅支持官方 DeepSeek Flash / V4 Pro，在本机桌面宿主运行；Windows
+                共享端通过宿主，不会替换数据。
+              </p>
+              <div className="flex items-start gap-2 pt-1">
+                <Checkbox
+                  id="agent-dsh-document-chat"
+                  checked={agentSettingsDraft.dshDocumentChat}
+                  onCheckedChange={(checked) =>
+                    setAgentSettingsDraft((previous) => ({
+                      ...previous,
+                      dshDocumentChat: checked === true,
+                    }))
+                  }
+                />
+                <label
+                  htmlFor="agent-dsh-document-chat"
+                  className="text-[11px] leading-5 text-amber-950"
+                >
+                  整份文档问答使用知识库的 DeepSeek 配置（页面图片问答仍用原配置）
+                </label>
+              </div>
+              <p>
+                使用 DSH 前必须安装页语托管的 DSH 运行时。本设置页不检测运行时状态。
+              </p>
+            </div>
+          ) : null}
+        </section>
 
         <Tabs
           value={tab}

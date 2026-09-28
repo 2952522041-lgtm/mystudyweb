@@ -20,6 +20,7 @@
     "lint": "oxlint app components lib tests electron mcp",
     "desktop:web": "node scripts/copy-pdf-worker.mjs && VINEXT_EXPORT=1 vinext build",
     "desktop:compile": "node scripts/build-electron.mjs && node scripts/build-mcp.mjs",
+    "dsh:install": "node scripts/install-dsh.mjs",
     "desktop:build": "pnpm desktop:web && pnpm desktop:compile && electron-forge package",
     "desktop:make": "pnpm desktop:web && pnpm desktop:compile && electron-forge make",
     "desktop:test": "pnpm desktop:compile && node --test --experimental-strip-types tests/electron-workspace.test.ts tests/electron-smoke.smoke.ts",

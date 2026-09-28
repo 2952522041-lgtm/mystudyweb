@@ -45,6 +45,9 @@ import {
 } from './reading-state-store.ts';
 import { McpControlServer, type McpControlRequest } from './mcp-control.ts';
 import { prepareMcpRendererArgs } from './mcp-import.ts';
+import { DshManager } from './dsh-manager.ts';
+
+const dshManager = new DshManager(path.join(__dirname, 'dsh-worker.mjs'));
 
 // Windows Squirrel 安装/更新/卸载事件必须在最早期处理（HANDOFF 13.2）。
 if (handleSquirrelStartup()) {
@@ -306,6 +309,20 @@ function registerDesktopIpc(
   lanShareServer: LanShareServer,
   readingStateStore: ReadingStateStore,
 ): void {
+  const trustedDshSender = (event: Electron.IpcMainInvokeEvent) => {
+    if (!BrowserWindow.fromWebContents(event.sender) || event.senderFrame !== event.sender.mainFrame
+      || !isAppOrigin(event.senderFrame.url, appOrigin)) throw new Error('DSH 仅允许页语桌面主窗口调用。');
+  };
+  ipcMain.handle(DESKTOP_CHANNELS.dshRun, (event, request) => {
+    trustedDshSender(event);
+    return dshManager.run(event.sender.id, request, progress => {
+      if (!event.sender.isDestroyed()) event.sender.send(DESKTOP_CHANNELS.dshProgress, progress);
+    });
+  });
+  ipcMain.handle(DESKTOP_CHANNELS.dshCancel, (event, requestId) => {
+    trustedDshSender(event);
+    if(typeof requestId === 'string') dshManager.cancel(event.sender.id, requestId);
+  });
   ipcMain.handle(
     DESKTOP_CHANNELS.workspaceInfo,
     async (): Promise<WorkspaceInfo> => {
@@ -547,6 +564,11 @@ async function createWindow(): Promise<BrowserWindow> {
     },
   });
   applyNavigationGuards(window);
+  const dshOwner = window.webContents.id;
+  window.webContents.on('destroyed', () => dshManager.cancelOwner(dshOwner));
+  window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) dshManager.cancelOwner(dshOwner);
+  });
   if (!isSmokeRun()) {
     window.once('ready-to-show', () => window.show());
   }
@@ -621,7 +643,12 @@ if (!hasSingleInstanceLock) {
       });
       await ensureWorkspace(layout);
       registerDesktopIpc(layout, lanShareServer, readingStateStore);
-      app.on('before-quit', () => {
+      let dshClosed = false;
+      app.on('before-quit', event => {
+        if (!dshClosed) {
+          event.preventDefault();
+          void dshManager.close().finally(() => { dshClosed = true; app.quit(); });
+        }
         void lanShareServer.stop();
         void mcpControlServer.stop();
         mcpBridge.dispose();

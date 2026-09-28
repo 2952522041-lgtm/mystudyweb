@@ -13,6 +13,10 @@ import {
   type KnowledgeSettings,
 } from '../knowledge-settings.ts';
 import {
+  readSelectedAgentBackend,
+  type AgentBackend,
+} from '../agent-settings.ts';
+import {
   stableDocumentId,
 } from '../course-storage/file-utils.ts';
 import type {
@@ -37,6 +41,10 @@ import { mapWithConcurrency } from '../async-pool.ts';
 import { buildPdfChunks, splitPdfChunk, type PdfChunk } from './pdf-chunks.ts';
 
 export const KNOWLEDGE_PROVIDER_ID = 'openai-compatible-knowledge';
+/** API keeps the historical identity; DSH gets a separate cache namespace. */
+export function knowledgeProviderIdentity(backend: AgentBackend): string {
+  return backend === 'dsh' ? `${KNOWLEDGE_PROVIDER_ID}:dsh` : KNOWLEDGE_PROVIDER_ID;
+}
 /** 内容/语义要求变更时递增；兼容的格式澄清不废弃已通过校验的完整摘要。 */
 export const KNOWLEDGE_DIGEST_PROMPT_VERSION = 'ai-digest-v11';
 export const KNOWLEDGE_COURSE_PROMPT_VERSION = 'ai-course-v10';
@@ -1276,6 +1284,8 @@ export function createKnowledgeProviderForSettings(
     );
   }
   const model = settings.model.trim();
+  const executionBackend = readSelectedAgentBackend();
+  const providerIdentity = knowledgeProviderIdentity(executionBackend);
   const fastSynthesis = settings.generationMode !== 'deep'
     && supportsThinkingControl(model, settings.baseUrl);
   const maxOutputTokens = knowledgeMaxOutputTokens(model, settings.baseUrl);
@@ -1283,6 +1293,7 @@ export function createKnowledgeProviderForSettings(
     baseUrl: settings.baseUrl,
     apiKey: settings.apiKey.trim(),
     model,
+    executionBackend,
     fetchImpl,
   };
   const digestCache = cache ?? createKnowledgeDigestCache();
@@ -1315,7 +1326,7 @@ export function createKnowledgeProviderForSettings(
         if (intermediate && !intermediateOutputFitsBudget({contentBytes, fullBytes:utf8Size(raw), inputBytes:intermediateInputBytes})) throw new KnowledgeError('invalid_output', '中间归并未满足预算：目标 10000 字节，完整结果须在 24000 字节内；超过目标时完整结果须小于本批输入；整轮不缩小或超过轮次上限时停止。这是中间索引，不是最终总结：文档 sections 只保留一条简短主题索引，points 使用 []；原始全部要点、公式和表格由应用独立证据账本保留，最终会补回。concepts 保留不同概念及真实来源，但不要在 overview、summary、points 和 description 中重复展开同一内容。压缩重复解释，不要复制大段原文。');
       };
       if (signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
-      const key = await synthesisCacheKey({ layer, identity, provider: `${KNOWLEDGE_PROVIDER_ID}@${settings.baseUrl}`, model, promptVersion: layer === 'chunk' ? CHUNK_CACHE_PROMPT_VERSION : `${KNOWLEDGE_DIGEST_PROMPT_VERSION}/${KNOWLEDGE_COURSE_PROMPT_VERSION}/${HIERARCHICAL_PROMPT_VERSION}`, input: { prompt, glossaryText, ...(fastSynthesis && layer !== 'chunk' && !intermediate ? {generationMode:'fast'} : {}) } });
+      const key = await synthesisCacheKey({ layer, identity, provider: `${providerIdentity}@${settings.baseUrl}`, model, promptVersion: layer === 'chunk' ? CHUNK_CACHE_PROMPT_VERSION : `${KNOWLEDGE_DIGEST_PROMPT_VERSION}/${KNOWLEDGE_COURSE_PROMPT_VERSION}/${HIERARCHICAL_PROMPT_VERSION}`, input: { prompt, glossaryText, ...(fastSynthesis && layer !== 'chunk' && !intermediate ? {generationMode:'fast'} : {}) } });
       if (signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
       const unavailable = () => { input.onStage?.('cache-unavailable', {}); report({layer, action:'cache-unavailable', identity, inputBytes:0, limit:0, droppedItems:0, droppedBytes:0, detail:'中间缓存不可用；本次计算继续，跨重试复用不可保证。'}); };
       if ('bypassCache' in input && input.bypassCache) {
@@ -1359,7 +1370,7 @@ export function createKnowledgeProviderForSettings(
   };
 
   return {
-    id: KNOWLEDGE_PROVIDER_ID,
+    id: providerIdentity,
     model,
     digestPromptVersion: KNOWLEDGE_DIGEST_PROMPT_VERSION,
     coursePromptVersion: KNOWLEDGE_COURSE_PROMPT_VERSION,
@@ -1376,7 +1387,7 @@ export function createKnowledgeProviderForSettings(
       const digestKey = (fast: boolean) => knowledgeDigestCacheKey({
         glossaryFingerprint: termFingerprint,
         fingerprint: `${input.fingerprint}:${documentId}:${input.fileName}`,
-        provider: `${KNOWLEDGE_PROVIDER_ID}@${settings.baseUrl}${fast ? '#fast' : ''}`,
+        provider: `${providerIdentity}@${settings.baseUrl}${fast ? '#fast' : ''}`,
         model,
         promptVersion: KNOWLEDGE_DIGEST_PROMPT_VERSION,
         schemaVersion: DIGEST_SCHEMA_VERSION,
@@ -1394,7 +1405,7 @@ export function createKnowledgeProviderForSettings(
         try {
         if (cached && isDocumentDigestLike(cached) && cached.documentId === documentId
           && cached.schemaVersion === DIGEST_SCHEMA_VERSION && cached.promptVersion === KNOWLEDGE_DIGEST_PROMPT_VERSION
-          && cached.model === model && cached.provider === KNOWLEDGE_PROVIDER_ID
+          && cached.model === model && cached.provider === providerIdentity
           && cached.concepts.every(node => node && typeof node.id === 'string' && Array.isArray(node.sources))
           && hierarchyIssues(cached.concepts, hasExplicitChapterHierarchy(input.pages) ? 3 : 1).length === 0) {
           if (input.signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
@@ -1501,7 +1512,7 @@ export function createKnowledgeProviderForSettings(
           ((raw as {concepts: DigestConcept[]}).concepts).forEach((node, index) => {node.sources = payload.concepts[index].sources;});
           if (!intermediate) {
             validateHierarchyPayload(raw, hasExplicitChapterHierarchy(input.pages) ? 3 : 1);
-            const candidate = buildDocumentDigest(payload, { documentId, fingerprint:input.fingerprint, fileName:input.fileName, pageCount, provider:KNOWLEDGE_PROVIDER_ID, model, now:'' });
+            const candidate = buildDocumentDigest(payload, { documentId, fingerprint:input.fingerprint, fileName:input.fileName, pageCount, provider:providerIdentity, model, now:'' });
             assertNormalizedHierarchy(candidate.concepts, raw);
           }
         }, intermediate, synthesisSources(batch, {documentId,fileName:input.fileName,pageStart:1,type:'pdf'}), signal, utf8Size(batch));
@@ -1520,7 +1531,7 @@ export function createKnowledgeProviderForSettings(
         fingerprint: input.fingerprint,
         fileName: input.fileName,
         pageCount,
-        provider: KNOWLEDGE_PROVIDER_ID,
+        provider: providerIdentity,
         model,
         now: new Date().toISOString(),
       });
@@ -1602,7 +1613,7 @@ export function createKnowledgeProviderForSettings(
         ...payload,
         evidence,
         diagnostics:run.diagnostics,
-        provider: KNOWLEDGE_PROVIDER_ID,
+        provider: providerIdentity,
         model,
         promptVersion: KNOWLEDGE_COURSE_PROMPT_VERSION,
       };

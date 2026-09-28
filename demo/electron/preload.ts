@@ -8,6 +8,13 @@ import {
 } from './api.ts';
 
 const api: YeyuDesktopApi = {
+  runDsh: request => ipcRenderer.invoke(DESKTOP_CHANNELS.dshRun, request),
+  cancelDsh: requestId => ipcRenderer.invoke(DESKTOP_CHANNELS.dshCancel, requestId),
+  onDshProgress: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, value: import('./dsh-types.ts').DshProgress) => listener(value);
+    ipcRenderer.on(DESKTOP_CHANNELS.dshProgress, handler);
+    return () => ipcRenderer.removeListener(DESKTOP_CHANNELS.dshProgress, handler);
+  },
   getWorkspaceInfo: () => ipcRenderer.invoke(DESKTOP_CHANNELS.workspaceInfo),
   listCourses: () => ipcRenderer.invoke(DESKTOP_CHANNELS.listCourses),
   createCourseDirectory: (name) =>

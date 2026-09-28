@@ -4,6 +4,7 @@ import {
   describeChatError,
   extractErrorDetail,
 } from './ai-errors.ts';
+import { requestDshCompletion } from './dsh-client.ts';
 
 export type ChatApiContentPart =
   | { type: 'text'; text: string }
@@ -18,6 +19,8 @@ export interface ChatCompletionConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** Route this completion through the local DeepSeek Harness when selected. */
+  executionBackend?: 'api' | 'dsh';
   fetchImpl?: typeof fetch;
   /** Disabled when omitted; applies while waiting for the response headers. */
   connectionTimeoutMs?: number;
@@ -68,6 +71,10 @@ export async function requestChatCompletion(
   config: ChatCompletionConfig,
   input: ChatCompletionInput,
 ): Promise<ChatCompletionResult> {
+  if (config.executionBackend === 'dsh') {
+    return requestDshCompletion(config, input);
+  }
+
   const startedAt = monotonicNow();
   const timing: MutableChatCompletionTiming = {
     headersMs: null,

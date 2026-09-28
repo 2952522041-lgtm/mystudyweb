@@ -51,4 +51,10 @@ await writeFile(
   path.join(distDir, 'package.json'),
   `${JSON.stringify({ type: 'commonjs' })}\n`,
 );
+await esbuild.build({
+  entryPoints: [path.join(electronDir, 'dsh-worker.ts')],
+  outfile: path.join(distDir, 'dsh-worker.mjs'),
+  bundle: true, platform: 'node', format: 'esm', target: 'node22',
+  sourcemap: false, legalComments: 'none', logLevel: 'info',
+});
 console.log('build:electron compiled main, bundled sandbox preload, marked dist as CommonJS');
