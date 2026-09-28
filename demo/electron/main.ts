@@ -63,13 +63,25 @@ if (isSmokeRun()) {
 let appOrigin = '';
 
 const MCP_RENDERER_TIMEOUT_MS = 15_000;
-const MCP_IMPORT_TIMEOUT_MS = 30 * 60_000;
+const MCP_AI_TIMEOUT_MS = 30 * 60_000;
 const MCP_COMMAND_NAMES = new Set<YeyuMcpCommandName>([
   'get_state',
   'show_courses',
   'open_course',
   'open_document',
   'import_pdf',
+  'translate_page',
+  'ask_document',
+  'get_conversation',
+  'clear_conversation',
+  'create_course',
+  'regenerate_document',
+  'regenerate_course',
+  'remove_document',
+  'remove_course',
+  'get_glossary',
+  'save_glossary',
+  'cancel_shared_action',
   'go_to_page',
   'set_reader_panel',
 ]);
@@ -127,8 +139,12 @@ function createMcpRendererBridge(): {
     };
     return new Promise((resolve, reject) => {
       const timeout =
-        request.name === 'import_pdf'
-          ? MCP_IMPORT_TIMEOUT_MS
+        request.name === 'import_pdf' ||
+        request.name === 'translate_page' ||
+        request.name === 'ask_document' ||
+        request.name === 'regenerate_document' ||
+        request.name === 'regenerate_course'
+          ? MCP_AI_TIMEOUT_MS
           : MCP_RENDERER_TIMEOUT_MS;
       const timer = setTimeout(() => {
         pending.delete(id);
@@ -136,7 +152,9 @@ function createMcpRendererBridge(): {
           new Error(
             request.name === 'import_pdf'
               ? '页语未在 30 分钟内完成 PDF 导入。'
-              : '页语界面未在 15 秒内响应 MCP 命令。',
+              : timeout === MCP_AI_TIMEOUT_MS
+                ? '页语未在 30 分钟内完成 AI 任务。'
+                : '页语界面未在 15 秒内响应 MCP 命令。',
           ),
         );
       }, timeout);
@@ -428,11 +446,11 @@ function registerDesktopIpc(
   );
   ipcMain.handle(
     DESKTOP_CHANNELS.lanShareStart,
-    async (_event, password, port) => {
+    async (_event, password, port, permissions) => {
       if (typeof password !== 'string' || typeof port !== 'number') {
         throw new Error('局域网共享参数不合法。');
       }
-      return lanShareServer.start(password, port);
+      return lanShareServer.start(password, port, permissions);
     },
   );
   ipcMain.handle(DESKTOP_CHANNELS.lanShareStop, () => lanShareServer.stop());
@@ -575,6 +593,26 @@ if (!hasSingleInstanceLock) {
                 mergeIntoCourse: request.mergeIntoCourse,
               },
             }),
+          action: async (request) => {
+            const sharedTaskId = randomUUID();
+            const cancel = () => {
+              void mcpBridge
+                .dispatchPrepared({
+                  name: 'cancel_shared_action',
+                  args: { sharedTaskId },
+                })
+                .catch(() => undefined);
+            };
+            request.signal?.addEventListener('abort', cancel, { once: true });
+            try {
+              return await mcpBridge.dispatchPrepared({
+                name: request.name,
+                args: { ...request.args, sharedTaskId },
+              });
+            } finally {
+              request.signal?.removeEventListener('abort', cancel);
+            }
+          },
         },
       );
       const mcpControlServer = new McpControlServer({

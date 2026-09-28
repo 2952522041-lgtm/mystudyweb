@@ -15,10 +15,14 @@ import {
   FileText,
   Languages,
   LoaderCircle,
+  MessageCircle,
   Minus,
   Network,
   Plus,
   RefreshCw,
+  Send,
+  Square,
+  Trash2,
 } from 'lucide-react';
 
 import { DocumentSummaryPanel } from '@/components/document-summary-panel';
@@ -35,12 +39,18 @@ import {
 import { itemsFromPdfJs } from '@/lib/pdf-text';
 import { shouldBuildTextLayer, textLayerScale } from '@/lib/pdf-text-layer';
 import {
+  askSharedDocument,
+  clearSharedConversation,
+  loadSharedConversation,
   loadSharedReadingState,
   loadSharedTranslations,
   saveSharedReadingState,
   SharedApiError,
+  type SharedGeneratedTranslation,
+  translateSharedPage,
   type SharedReadingState,
 } from '@/lib/lan-share-api';
+import type { ChatScope, PageConversation } from '@/lib/chat-cache';
 import type { SharedTranslationRecord } from '@/lib/shared-translation';
 
 interface PageSize {
@@ -187,18 +197,27 @@ function SharedTranslationPanel({
   courseId,
   documentId,
   page,
+  canUseAi,
   onSessionExpired,
 }: {
   courseId: string;
   documentId: string;
   page: number;
+  canUseAi: boolean;
   onSessionExpired?: () => void;
 }) {
   const [records, setRecords] = useState<SharedTranslationRecord[]>([]);
-  const [selectedLanguage, setSelectedLanguage] = useState('');
+  const [targetLanguage, setTargetLanguage] = useState('简体中文');
   const [loading, setLoading] = useState(true);
   const [refreshToken, setRefreshToken] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [generatedTranslation, setGeneratedTranslation] = useState<{
+    documentId: string;
+    record: SharedGeneratedTranslation;
+  } | null>(null);
+  const translationAbortRef = useRef<AbortController | null>(null);
+  const translationRequestRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -228,6 +247,16 @@ function SharedTranslationPanel({
     };
   }, [courseId, documentId, refreshToken, onSessionExpired]);
 
+  useEffect(
+    () => () => {
+      translationAbortRef.current?.abort();
+      translationAbortRef.current = null;
+      translationRequestRef.current += 1;
+      setGeneratedTranslation(null);
+    },
+    [courseId, documentId, page],
+  );
+
   const languages = useMemo(() => {
     const seen = new Set<string>();
     return [...records]
@@ -241,10 +270,8 @@ function SharedTranslationPanel({
   }, [records]);
 
   useEffect(() => {
-    if (languages.length === 0) {
-      setSelectedLanguage('');
-      return;
-    }
+    if (canUseAi) return;
+    if (languages.length === 0) return;
     let recent = '';
     try {
       recent =
@@ -254,18 +281,30 @@ function SharedTranslationPanel({
     } catch {
       // Browser storage can be disabled; most recently updated remains valid.
     }
-    setSelectedLanguage(
-      recent && languages.includes(recent) ? recent : languages[0]!,
+    setTargetLanguage((current) =>
+      languages.includes(current)
+        ? current
+        : recent && languages.includes(recent)
+          ? recent
+          : languages[0]!,
     );
-  }, [documentId, languages]);
+  }, [canUseAi, documentId, languages]);
 
-  const current = records.find(
+  const publishedCurrent = records.find(
     (record) =>
-      record.pageNumber === page && record.targetLanguage === selectedLanguage,
+      record.pageNumber === page &&
+      record.targetLanguage === targetLanguage.trim(),
   );
+  const generatedCurrent =
+    generatedTranslation?.documentId === documentId &&
+    generatedTranslation.record.pageNumber === page &&
+    generatedTranslation.record.targetLanguage === targetLanguage.trim()
+      ? generatedTranslation.record
+      : undefined;
+  const current = generatedCurrent ?? publishedCurrent;
 
   const selectLanguage = (language: string) => {
-    setSelectedLanguage(language);
+    setTargetLanguage(language);
     try {
       window.localStorage.setItem(
         `yeyu-shared-translation-language:${documentId}`,
@@ -276,13 +315,74 @@ function SharedTranslationPanel({
     }
   };
 
+  const cancelTranslation = () => {
+    translationAbortRef.current?.abort();
+    translationAbortRef.current = null;
+  };
+
+  const generateTranslation = async () => {
+    const language = targetLanguage.trim();
+    if (!canUseAi || !language || generating) return;
+    translationAbortRef.current?.abort();
+    const controller = new AbortController();
+    const requestId = ++translationRequestRef.current;
+    translationAbortRef.current = controller;
+    setGenerating(true);
+    setError(null);
+    try {
+      const result = await translateSharedPage(
+        courseId,
+        documentId,
+        page,
+        language,
+        true,
+        controller.signal,
+      );
+      if (
+        controller.signal.aborted ||
+        requestId !== translationRequestRef.current
+      ) {
+        return;
+      }
+      setGeneratedTranslation({ documentId, record: result.translation });
+      setRefreshToken((value) => value + 1);
+    } catch (translationError) {
+      if (
+        controller.signal.aborted ||
+        requestId !== translationRequestRef.current
+      ) {
+        return;
+      }
+      if (
+        translationError instanceof SharedApiError &&
+        translationError.status === 401
+      ) {
+        onSessionExpired?.();
+      }
+      setError(
+        translationError instanceof Error
+          ? translationError.message
+          : '译文生成失败，请稍后重试。',
+      );
+    } finally {
+      if (requestId === translationRequestRef.current) {
+        setGenerating(false);
+        if (translationAbortRef.current === controller) {
+          translationAbortRef.current = null;
+        }
+      }
+    }
+  };
+
   return (
     <section className="flex min-h-0 flex-col" aria-label="页面翻译面板">
       <div className="flex items-center gap-2 border-b border-slate-200/80 px-5 py-3">
         <div className="min-w-0 flex-1">
           <p className="text-xs font-semibold text-slate-800">页面翻译</p>
           <p className="mt-1 text-[11px] text-slate-500">
-            只显示主电脑已经完成并发布的译文。
+            {canUseAi
+              ? '可请求主电脑生成译文，AI 在主电脑执行。'
+              : '只显示主电脑已经完成并发布的译文。'}
           </p>
         </div>
         <Button
@@ -295,13 +395,64 @@ function SharedTranslationPanel({
           <RefreshCw className={loading ? 'animate-spin' : undefined} />
         </Button>
       </div>
-      {languages.length > 0 ? (
+      {canUseAi ? (
+        <div className="flex flex-wrap items-end gap-2 border-b border-slate-100 px-5 py-3">
+          <div className="min-w-0 flex-1">
+            <label className="block text-xs text-slate-600">
+              <span className="mb-1 block">目标语言</span>
+              <input
+                aria-label="译文目标语言"
+                className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-800 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                value={targetLanguage}
+                onChange={(event) => setTargetLanguage(event.target.value)}
+                placeholder="例如：简体中文"
+                disabled={generating}
+              />
+            </label>
+            {languages.length > 0 ? (
+              <select
+                aria-label="选择已发布译文语言"
+                className="mt-1 h-7 w-full rounded-md border border-slate-200 bg-white px-2 text-[11px] text-slate-600"
+                value={languages.includes(targetLanguage) ? targetLanguage : ''}
+                onChange={(event) => selectLanguage(event.target.value)}
+                disabled={generating}
+              >
+                <option value="">选择已发布译文（可选）</option>
+                {languages.map((language) => (
+                  <option key={language} value={language}>
+                    {language}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+          </div>
+          {generating ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={cancelTranslation}
+            >
+              <Square /> 取消
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => void generateTranslation()}
+              disabled={!targetLanguage.trim() || loading}
+            >
+              <Languages /> {current ? '重新翻译' : '生成译文'}
+            </Button>
+          )}
+        </div>
+      ) : languages.length > 0 ? (
         <label className="flex items-center gap-2 px-5 py-3 text-xs text-slate-600">
           <span className="shrink-0">目标语言</span>
           <select
             aria-label="译文目标语言"
             className="min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-800"
-            value={selectedLanguage}
+            value={targetLanguage}
             onChange={(event) => selectLanguage(event.target.value)}
           >
             {languages.map((language) => (
@@ -328,7 +479,9 @@ function SharedTranslationPanel({
               主电脑尚未翻译第 {page} 页
             </p>
             <p className="mt-2 text-xs leading-5 text-slate-500">
-              主电脑完成翻译并发布后，点击“刷新译文”即可查看。
+              {canUseAi
+                ? '输入目标语言并生成，完成后即可在这里查看。'
+                : '主电脑完成翻译并发布后，点击“刷新译文”即可查看。'}
             </p>
           </div>
         ) : (
@@ -339,11 +492,347 @@ function SharedTranslationPanel({
               {current.model ? ` · ${current.model}` : ''}
             </p>
             {current.paragraphs.map((paragraph, index) => (
-              <p key={`${current.sourceHash}-${index}`}>{paragraph}</p>
+              <p
+                key={`${current.pageNumber}-${current.targetLanguage}-${current.updatedAt}-${index}`}
+              >
+                {paragraph}
+              </p>
             ))}
           </article>
         )}
       </div>
+    </section>
+  );
+}
+
+function SharedChatPanel({
+  courseId,
+  documentId,
+  page,
+  canUseAi,
+  onSessionExpired,
+}: {
+  courseId: string;
+  documentId: string;
+  page: number;
+  canUseAi: boolean;
+  onSessionExpired?: () => void;
+}) {
+  const [scope, setScope] = useState<ChatScope>('page');
+  const [conversation, setConversation] = useState<PageConversation | null>(
+    null,
+  );
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const requestGenerationRef = useRef(0);
+  const requestAbortRef = useRef<AbortController | null>(null);
+  const onSessionExpiredRef = useRef(onSessionExpired);
+
+  useEffect(() => {
+    onSessionExpiredRef.current = onSessionExpired;
+  }, [onSessionExpired]);
+
+  useEffect(() => {
+    const generation = ++requestGenerationRef.current;
+    let cancelled = false;
+    requestAbortRef.current?.abort();
+    requestAbortRef.current = null;
+    setConversation(null);
+    setInput('');
+    setPendingQuestion(null);
+    setError(null);
+    setLoading(canUseAi);
+    setSending(false);
+    setClearing(false);
+    if (!canUseAi) return () => undefined;
+
+    void loadSharedConversation(courseId, documentId, page, scope)
+      .then((payload) => {
+        if (cancelled || generation !== requestGenerationRef.current) return;
+        setConversation(payload.conversation);
+      })
+      .catch((loadError) => {
+        if (cancelled || generation !== requestGenerationRef.current) return;
+        if (loadError instanceof SharedApiError && loadError.status === 401) {
+          onSessionExpiredRef.current?.();
+        }
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : '对话历史暂时无法读取，请稍后重试。',
+        );
+      })
+      .finally(() => {
+        if (!cancelled && generation === requestGenerationRef.current) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      if (requestGenerationRef.current === generation) {
+        requestGenerationRef.current += 1;
+      }
+      requestAbortRef.current?.abort();
+      requestAbortRef.current = null;
+    };
+  }, [canUseAi, courseId, documentId, page, scope]);
+
+  const sendQuestion = async () => {
+    const question = input.trim();
+    if (!canUseAi || !question || loading || sending || clearing) return;
+    const generation = requestGenerationRef.current;
+    const controller = new AbortController();
+    requestAbortRef.current?.abort();
+    requestAbortRef.current = controller;
+    setSending(true);
+    setPendingQuestion(question);
+    setInput('');
+    setError(null);
+    try {
+      const result = await askSharedDocument(
+        courseId,
+        documentId,
+        page,
+        scope,
+        question,
+        controller.signal,
+      );
+      if (
+        controller.signal.aborted ||
+        generation !== requestGenerationRef.current
+      ) {
+        return;
+      }
+      setConversation(result.conversation);
+      setPendingQuestion(null);
+    } catch (askError) {
+      if (
+        controller.signal.aborted ||
+        generation !== requestGenerationRef.current
+      ) {
+        return;
+      }
+      if (askError instanceof SharedApiError && askError.status === 401) {
+        onSessionExpiredRef.current?.();
+      }
+      setError(
+        askError instanceof Error
+          ? askError.message
+          : '主电脑暂时无法回答，请稍后重试。',
+      );
+      setInput(question);
+      setPendingQuestion(null);
+    } finally {
+      if (generation === requestGenerationRef.current) {
+        setSending(false);
+        if (requestAbortRef.current === controller) {
+          requestAbortRef.current = null;
+        }
+      }
+    }
+  };
+
+  const cancelQuestion = () => {
+    requestAbortRef.current?.abort();
+    requestAbortRef.current = null;
+    setSending(false);
+    setPendingQuestion(null);
+  };
+
+  const clearConversation = async () => {
+    if (!canUseAi || loading || sending || clearing || !conversation) return;
+    setClearing(true);
+    setError(null);
+    try {
+      await clearSharedConversation(courseId, documentId, page, scope);
+      setConversation(null);
+    } catch (clearError) {
+      if (clearError instanceof SharedApiError && clearError.status === 401) {
+        onSessionExpiredRef.current?.();
+      }
+      setError(
+        clearError instanceof Error
+          ? clearError.message
+          : '对话清空失败，请稍后重试。',
+      );
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const messages = conversation?.messages ?? [];
+
+  return (
+    <section
+      className="flex min-h-0 flex-col"
+      aria-label={
+        scope === 'document' ? '全文 AI 答疑' : `第 ${page} 页 AI 答疑`
+      }
+    >
+      <div className="flex items-center gap-2 border-b border-slate-200/80 px-5 py-3">
+        <div className="min-w-0 flex-1">
+          <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-800">
+            <MessageCircle className="size-3.5 text-violet-600" /> AI 答疑
+          </p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            {canUseAi
+              ? scope === 'document'
+                ? '主电脑基于整份文档回答问题。'
+                : `主电脑基于第 ${page} 页回答问题。`
+              : '主电脑未开放 AI 能力。'}
+          </p>
+        </div>
+        {canUseAi ? (
+          <div className="flex items-center gap-1">
+            <select
+              aria-label="提问范围"
+              className="max-w-24 rounded border border-slate-200 bg-white px-1.5 py-1 text-xs text-slate-700"
+              value={scope}
+              onChange={(event) => setScope(event.target.value as ChatScope)}
+              disabled={loading || sending || clearing}
+            >
+              <option value="page">当前页</option>
+              <option value="document">全文</option>
+            </select>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={
+                scope === 'document' ? '清空全文对话' : '清空本页对话'
+              }
+              onClick={() => void clearConversation()}
+              disabled={loading || sending || clearing || messages.length === 0}
+            >
+              {clearing ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <Trash2 />
+              )}
+            </Button>
+          </div>
+        ) : null}
+      </div>
+
+      {!canUseAi ? (
+        <div className="flex min-h-40 flex-1 flex-col items-center justify-center px-6 text-center">
+          <MessageCircle className="size-7 text-slate-300" />
+          <p className="mt-3 text-sm font-medium text-slate-700">
+            主电脑未开放 AI 答疑
+          </p>
+          <p className="mt-2 max-w-xs text-xs leading-5 text-slate-500">
+            当前共享会话只提供已生成的课程资料。请在主电脑开启 AI
+            能力后重试；API Key 不会传到 Windows。
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+            {loading ? (
+              <div className="flex min-h-32 items-center justify-center text-xs text-slate-500">
+                <LoaderCircle className="mr-2 size-4 animate-spin" />{' '}
+                正在读取对话历史…
+              </div>
+            ) : error && messages.length === 0 && !pendingQuestion ? (
+              <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-3 text-xs leading-5 text-rose-700">
+                {error}
+              </p>
+            ) : messages.length === 0 && !pendingQuestion ? (
+              <div className="flex min-h-32 flex-col items-center justify-center text-center">
+                <MessageCircle className="size-7 text-slate-300" />
+                <p className="mt-3 text-sm font-medium text-slate-700">
+                  {scope === 'document'
+                    ? '就整份文档提问'
+                    : `就第 ${page} 页提问`}
+                </p>
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  历史对话会保存在主电脑，页面或范围变化后会重新读取。
+                </p>
+              </div>
+            ) : (
+              <>
+                {messages.map((message) => (
+                  <div
+                    key={message.id}
+                    className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div
+                      className={`max-w-[90%] whitespace-pre-wrap rounded-xl px-3 py-2 text-xs leading-5 ${message.role === 'user' ? 'bg-violet-100 text-violet-950' : 'bg-slate-100 text-slate-700'}`}
+                    >
+                      {message.content}
+                    </div>
+                  </div>
+                ))}
+                {pendingQuestion ? (
+                  <div className="flex justify-end">
+                    <div className="max-w-[90%] whitespace-pre-wrap rounded-xl bg-violet-100 px-3 py-2 text-xs leading-5 text-violet-950">
+                      {pendingQuestion}
+                    </div>
+                  </div>
+                ) : null}
+                {sending ? (
+                  <p className="flex items-center gap-2 text-xs text-slate-500">
+                    <LoaderCircle className="size-3.5 animate-spin" />{' '}
+                    主电脑正在回答…
+                  </p>
+                ) : null}
+                {error ? (
+                  <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">
+                    {error}
+                  </p>
+                ) : null}
+              </>
+            )}
+          </div>
+          <div className="border-t border-slate-200/80 p-4">
+            <textarea
+              aria-label="提问内容"
+              className="min-h-16 w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-5 text-slate-800 outline-none placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  void sendQuestion();
+                }
+              }}
+              placeholder={
+                scope === 'document' ? '询问整份文档…' : `询问第 ${page} 页…`
+              }
+              disabled={loading || sending || clearing}
+            />
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <p className="text-[11px] text-slate-400">
+                Enter 发送，Shift + Enter 换行
+              </p>
+              {sending ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={cancelQuestion}
+                >
+                  <Square /> 取消
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void sendQuestion()}
+                  disabled={!input.trim() || loading || clearing}
+                >
+                  <Send /> 发送
+                </Button>
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -356,6 +845,7 @@ export function SharedPdfReader({
   digest,
   hasSummary,
   hasMindmap,
+  canUseAi = false,
   initialPage = 1,
   onBack,
   onSessionExpired,
@@ -367,10 +857,12 @@ export function SharedPdfReader({
   digest?: DocumentDigest;
   hasSummary: boolean;
   hasMindmap: boolean;
+  canUseAi?: boolean;
   initialPage?: number;
   onBack: () => void;
   onSessionExpired?: () => void;
 }) {
+  const aiEnabled = canUseAi === true;
   const initialPageTarget = Number.isFinite(initialPage)
     ? Math.max(1, Math.floor(initialPage))
     : 1;
@@ -383,9 +875,9 @@ export function SharedPdfReader({
   const [visiblePages, setVisiblePages] = useState<Set<number>>(
     () => new Set([initialPageTarget]),
   );
-  const [panel, setPanel] = useState<'summary' | 'mindmap' | 'translation'>(
-    hasSummary ? 'summary' : hasMindmap ? 'mindmap' : 'translation',
-  );
+  const [panel, setPanel] = useState<
+    'summary' | 'mindmap' | 'translation' | 'chat'
+  >(hasSummary ? 'summary' : hasMindmap ? 'mindmap' : 'translation');
   const stageRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLElement>());
   const pendingPageRef = useRef<number | null>(initialPageTarget);
@@ -687,13 +1179,29 @@ export function SharedPdfReader({
     if (!pdfDoc || pageSizes.length !== pdfDoc.numPages || target === null) {
       return;
     }
-    const frame = requestAnimationFrame(() => {
-      const element = pageRefs.current.get(target);
-      if (!element) return;
-      element.scrollIntoView({ behavior: 'auto', block: 'start' });
-      pendingPageRef.current = null;
+    let scrollFrame = 0;
+    const layoutFrame = requestAnimationFrame(() => {
+      scrollFrame = requestAnimationFrame(() => {
+        if (pendingPageRef.current !== target) return;
+        const element = pageRefs.current.get(target);
+        const stage = stageRef.current;
+        if (!element || !stage) return;
+        const stageRect = stage.getBoundingClientRect();
+        const pageRect = element.getBoundingClientRect();
+        stage.scrollTo({
+          top: Math.max(
+            0,
+            stage.scrollTop + pageRect.top - stageRect.top - 12,
+          ),
+          behavior: 'auto',
+        });
+        pendingPageRef.current = null;
+      });
     });
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(layoutFrame);
+      cancelAnimationFrame(scrollFrame);
+    };
   }, [pdfDoc, pageSizes.length, pageWidth, visiblePages]);
 
   const pageNumbers = Array.from(
@@ -744,6 +1252,7 @@ export function SharedPdfReader({
   const updatePageFromScroll = () => {
     const stage = stageRef.current;
     if (!stage) return;
+    pendingPageRef.current = null;
     const stageTop = stage.getBoundingClientRect().top;
     let closest = currentPageRef.current;
     let distance = Number.POSITIVE_INFINITY;
@@ -974,14 +1483,16 @@ export function SharedPdfReader({
             <div className="border-b border-slate-200/80 px-5 py-4">
               <p className="text-xs font-semibold text-slate-800">已有成果</p>
               <p className="mt-1 text-[11px] text-slate-500">
-                课程资料只读，不会触发生成或上传；阅读进度会同步。
+                课程资料本身只读；阅读进度会同步，AI 请求由主电脑执行。
               </p>
             </div>
             {panelContent ? (
               <Tabs
                 value={panel}
                 onValueChange={(value) =>
-                  setPanel(value as 'summary' | 'mindmap' | 'translation')
+                  setPanel(
+                    value as 'summary' | 'mindmap' | 'translation' | 'chat',
+                  )
                 }
                 className="min-h-0 flex-1 gap-0"
               >
@@ -999,6 +1510,11 @@ export function SharedPdfReader({
                   {hasTranslationPanel ? (
                     <TabsTrigger value="translation">
                       <Languages /> 页面翻译
+                    </TabsTrigger>
+                  ) : null}
+                  {hasTranslationPanel ? (
+                    <TabsTrigger value="chat">
+                      <MessageCircle /> AI 答疑
                     </TabsTrigger>
                   ) : null}
                 </TabsList>
@@ -1033,6 +1549,21 @@ export function SharedPdfReader({
                       courseId={courseId}
                       documentId={documentId}
                       page={page}
+                      canUseAi={aiEnabled}
+                      onSessionExpired={onSessionExpired}
+                    />
+                  </TabsContent>
+                ) : null}
+                {hasTranslationPanel ? (
+                  <TabsContent
+                    value="chat"
+                    className="min-h-0 overflow-y-auto data-[hidden]:hidden"
+                  >
+                    <SharedChatPanel
+                      courseId={courseId}
+                      documentId={documentId}
+                      page={page}
+                      canUseAi={aiEnabled}
                       onSessionExpired={onSessionExpired}
                     />
                   </TabsContent>
@@ -1045,7 +1576,8 @@ export function SharedPdfReader({
                   暂无该 PDF 的可查看成果
                 </h2>
                 <p className="mt-2 text-xs leading-5 text-slate-500">
-                  主电脑尚未生成这份 PDF 的总结或脑图。查看端不会发起生成。
+                  主电脑尚未生成这份 PDF 的总结或脑图；如已开放
+                  AI，可在翻译或答疑面板中请求处理。
                 </p>
               </div>
             )}
@@ -1058,14 +1590,16 @@ export function SharedPdfReader({
           <div className="border-b border-slate-200/80 px-5 py-3">
             <p className="text-xs font-semibold text-slate-800">已有成果</p>
             <p className="mt-1 text-[11px] text-slate-500">
-              窄窗口可在下方切换查看 PDF 总结、脑图或页面翻译。
+              窄窗口可在下方切换查看 PDF 总结、脑图、页面翻译或 AI 答疑。
             </p>
           </div>
           {panelContent ? (
             <Tabs
               value={panel}
               onValueChange={(value) =>
-                setPanel(value as 'summary' | 'mindmap' | 'translation')
+                setPanel(
+                  value as 'summary' | 'mindmap' | 'translation' | 'chat',
+                )
               }
               className="min-h-0 flex-1 gap-0"
             >
@@ -1083,6 +1617,11 @@ export function SharedPdfReader({
                 {hasTranslationPanel ? (
                   <TabsTrigger value="translation">
                     <Languages /> 页面翻译
+                  </TabsTrigger>
+                ) : null}
+                {hasTranslationPanel ? (
+                  <TabsTrigger value="chat">
+                    <MessageCircle /> AI 答疑
                   </TabsTrigger>
                 ) : null}
               </TabsList>
@@ -1117,6 +1656,21 @@ export function SharedPdfReader({
                     courseId={courseId}
                     documentId={documentId}
                     page={page}
+                    canUseAi={aiEnabled}
+                    onSessionExpired={onSessionExpired}
+                  />
+                </TabsContent>
+              ) : null}
+              {hasTranslationPanel ? (
+                <TabsContent
+                  value="chat"
+                  className="max-h-[32vh] overflow-y-auto data-[hidden]:hidden"
+                >
+                  <SharedChatPanel
+                    courseId={courseId}
+                    documentId={documentId}
+                    page={page}
+                    canUseAi={aiEnabled}
                     onSessionExpired={onSessionExpired}
                   />
                 </TabsContent>
@@ -1129,7 +1683,8 @@ export function SharedPdfReader({
                 暂无该 PDF 的可查看成果
               </h2>
               <p className="mt-2 text-xs leading-5 text-slate-500">
-                主电脑尚未生成这份 PDF 的总结或脑图。查看端不会发起生成。
+                主电脑尚未生成这份 PDF 的总结或脑图；如已开放
+                AI，可在翻译或答疑面板中请求处理。
               </p>
             </div>
           )}

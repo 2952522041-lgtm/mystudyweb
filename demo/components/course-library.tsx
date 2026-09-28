@@ -27,7 +27,12 @@ import {
 import { knowledgeStageMessage } from '@/lib/knowledge/synthesis-progress';
 import type { SynthesisDiagnostic } from '@/lib/knowledge/hierarchical-synthesis';
 import { CourseGlossary } from '@/components/course-glossary';
-import { EMPTY_GLOSSARY, glossaryFingerprint, type Glossary } from '@/lib/glossary';
+import {
+  EMPTY_GLOSSARY,
+  glossaryFingerprint,
+  parseGlossary,
+  type Glossary,
+} from '@/lib/glossary';
 import { CourseImportDialog } from '@/components/course-import-dialog';
 import { DocumentProcessingStatus } from '@/components/document-processing-status';
 import { BackgroundImports } from '@/lib/background-imports';
@@ -65,6 +70,13 @@ import type {
 import { createReaderService } from '@/lib/reader-cache';
 import { publishCachedTranslation } from '@/lib/shared-translation';
 import { loadChatSettings, type ChatSettings } from '@/lib/chat-cache';
+import type { ChatScope } from '@/lib/chat-cache';
+import {
+  askSharedDocument,
+  clearSharedConversation,
+  getSharedConversation,
+  translateSharedPage,
+} from '@/lib/host-shared-actions';
 import { loadKnowledgeSettings } from '@/lib/knowledge-settings';
 import type { PageImageInput } from '@/lib/chat';
 import { sha256Hex, stableDocumentId } from '@/lib/course-storage/file-utils';
@@ -223,10 +235,16 @@ export function CourseLibrary({
   const [shareOpen, setShareOpen] = useState(false);
   const [sharePassword, setSharePassword] = useState('');
   const [sharePort, setSharePort] = useState('37891');
+  const [sharePermissions, setSharePermissions] = useState({
+    importPdf: true,
+    ai: true,
+    manage: false,
+  });
   const [shareBusy, setShareBusy] = useState(false);
   const [shareError, setShareError] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
   const controlTaskRef = useRef(false);
+  const sharedActionControllersRef = useRef(new Map<string, AbortController>());
   const [importProgress, setImportProgress] = useState<
     CourseImportProgress | undefined
   >(undefined);
@@ -633,7 +651,11 @@ export function CourseLibrary({
     setShareBusy(true);
     setShareError(null);
     try {
-      const status = await desktopApi.startLanShare(sharePassword, port);
+      const status = await desktopApi.startLanShare(
+        sharePassword,
+        port,
+        sharePermissions,
+      );
       setShareStatus(status);
       setSharePassword('');
       setMessage('局域网共享已开启。请保持主电脑上的页语运行且不要休眠。');
@@ -1130,6 +1152,75 @@ export function CourseLibrary({
       if (typeof value !== 'boolean') throw new Error(`${key} 必须是布尔值。`);
       return value;
     };
+    const selectDocument = (
+      entry: CourseEntry,
+      args: Record<string, unknown>,
+    ): DocumentRecord => {
+      if (!entry.bundle) throw new Error('目标课程当前无法读取。');
+      return locateEntity(
+        entry.bundle.manifest.documents,
+        readDocumentLocator(args),
+        { id: (item) => item.id, name: (item) => item.fileName },
+        'PDF',
+      );
+    };
+    const requiredText = (
+      args: Record<string, unknown>,
+      key: string,
+      maximumLength: number,
+    ): string => {
+      const value = args[key];
+      if (
+        typeof value !== 'string' ||
+        !value.trim() ||
+        value.trim().length > maximumLength
+      ) {
+        throw new Error(`${key} 必须是 1–${maximumLength} 个字符。`);
+      }
+      return value.trim();
+    };
+    const readChatScope = (args: Record<string, unknown>): ChatScope => {
+      const value = args.scope ?? 'page';
+      if (value !== 'page' && value !== 'document') {
+        throw new Error('scope 必须是 page 或 document。');
+      }
+      return value;
+    };
+    const runExclusive = async <T,>(task: () => Promise<T>): Promise<T> => {
+      if (busy || controlTaskRef.current) {
+        throw new Error('页语正在执行另一项课程任务，请稍后重试。');
+      }
+      controlTaskRef.current = true;
+      setBusy(true);
+      setError(null);
+      try {
+        return await task();
+      } finally {
+        controlTaskRef.current = false;
+        setGenerationAbort(null);
+        setBusy(false);
+      }
+    };
+    const withSharedController = async <T,>(
+      args: Record<string, unknown>,
+      task: (controller: AbortController) => Promise<T>,
+    ): Promise<T> => {
+      const sharedTaskId =
+        typeof args.sharedTaskId === 'string' && args.sharedTaskId
+          ? args.sharedTaskId
+          : `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const controller = new AbortController();
+      sharedActionControllersRef.current.set(sharedTaskId, controller);
+      try {
+        return await task(controller);
+      } finally {
+        if (
+          sharedActionControllersRef.current.get(sharedTaskId) === controller
+        ) {
+          sharedActionControllersRef.current.delete(sharedTaskId);
+        }
+      }
+    };
     const control: CourseLibraryControl = {
       getState: () => {
         const progress = currentImportProgress();
@@ -1236,6 +1327,236 @@ export function CourseLibrary({
           setGenerationAbort(null);
           setBusy(false);
         }
+      },
+      runSharedAction: async (name, args) => {
+        if (loading) throw new Error('课程列表仍在加载，请稍后重试。');
+        if (name === 'create_course') {
+          return runExclusive(async () => {
+            if (!desktopApi) throw new Error('当前环境不支持创建桌面课程。');
+            const nameValue = requiredText(args, 'name', 120);
+            const { directoryName } =
+              await desktopApi.createCourseDirectory(nameValue);
+            const storage = new DesktopCourseStorage(desktopApi, directoryName);
+            const nextBundle = await storage.initialize(nameValue);
+            const entry: CourseEntry = {
+              id: nextBundle.manifest.id,
+              name: nextBundle.manifest.name,
+              updatedAt: nextBundle.manifest.updatedAt,
+              storage,
+              bundle: nextBundle,
+              permission: 'granted',
+            };
+            setEntries((previous) => [
+              entry,
+              ...previous.filter((item) => item.id !== entry.id),
+            ]);
+            setActiveId(entry.id);
+            setMessage(`课程“${entry.name}”已由共享端创建。`);
+            return toControlItem(entry);
+          });
+        }
+
+        const entry = selectCourse(args, true);
+        if (!entry.bundle) throw new Error('目标课程当前无法读取。');
+        setActiveId(entry.id);
+
+        if (name === 'get_glossary') {
+          return {
+            glossary: (await entry.storage.loadGlossary?.()) ?? EMPTY_GLOSSARY,
+          };
+        }
+        if (name === 'save_glossary') {
+          return runExclusive(async () => {
+            if (!entry.storage.saveGlossary) {
+              throw new Error('当前课程存储不支持术语表。');
+            }
+            const glossary = parseGlossary(args.glossary);
+            await entry.storage.saveGlossary(glossary);
+            setMessage(`课程“${entry.name}”的术语表已更新。`);
+            return { glossary };
+          });
+        }
+        if (name === 'remove_course') {
+          return runExclusive(async () => {
+            if (
+              entry.bundle?.manifest.documents.some(
+                (item) =>
+                  item.processing && item.processing.status !== 'failed',
+              )
+            ) {
+              throw new Error('请在本课程后台整理结束后删除课程。');
+            }
+            await entry.storage.deleteCourse();
+            backgroundRef.current!.unregister(entry.id);
+            setEntries((previous) =>
+              previous.filter((item) => item.id !== entry.id),
+            );
+            setActiveId((current) =>
+              current === entry.id
+                ? entries.find((item) => item.id !== entry.id)?.id ?? null
+                : current,
+            );
+            setMessage(`已删除课程“${entry.name}”。`);
+            return { removed: true, courseId: entry.id };
+          });
+        }
+
+        const document = selectDocument(entry, args);
+        const page = readPage(args, 1);
+        if (name === 'get_conversation') {
+          return {
+            conversation: await getSharedConversation({
+              document,
+              page,
+              scope: readChatScope(args),
+            }),
+          };
+        }
+        if (name === 'clear_conversation') {
+          return runExclusive(() =>
+            clearSharedConversation({
+              document,
+              page,
+              scope: readChatScope(args),
+            }),
+          );
+        }
+        if (name === 'translate_page') {
+          return runExclusive(() =>
+            withSharedController(args, async (controller) => {
+              setGenerationAbort(controller);
+              const translation = await translateSharedPage({
+                storage: entry.storage,
+                document,
+                page,
+                targetLanguage: requiredText(args, 'targetLanguage', 128),
+                bypassCache: args.bypassCache === true,
+                signal: controller.signal,
+              });
+              setMessage(
+                `已为共享端翻译“${document.fileName}”第 ${page} 页。`,
+              );
+              return { translation };
+            }),
+          );
+        }
+        if (name === 'ask_document') {
+          return runExclusive(() =>
+            withSharedController(args, async (controller) => {
+              setGenerationAbort(controller);
+              return {
+                conversation: await askSharedDocument({
+                  storage: entry.storage,
+                  document,
+                  page,
+                  scope: readChatScope(args),
+                  question: requiredText(args, 'question', 8_000),
+                  allowWebSearch: args.allowWebSearch !== false,
+                  signal: controller.signal,
+                }),
+              };
+            }),
+          );
+        }
+        if (name === 'remove_document') {
+          return runExclusive(async () => {
+            const current = await entry.storage.load();
+            const currentDocument = current.manifest.documents.find(
+              (item) => item.id === document.id,
+            );
+            if (!currentDocument) throw new Error('这份 PDF 已不存在。');
+            if (
+              currentDocument.processing &&
+              currentDocument.processing.status !== 'failed'
+            ) {
+              throw new Error('请在这份 PDF 后台整理结束后再删除。');
+            }
+            const next = await entry.storage.removeDocument(
+              document.id,
+              current.manifest.revision,
+            );
+            setEntryBundle(entry.id, next);
+            setMessage(`已删除“${document.fileName}”及其成果。`);
+            return { removed: true, documentId: document.id };
+          });
+        }
+        if (name === 'regenerate_document') {
+          return runExclusive(() => withSharedController(args, async (controller) => {
+            setGenerationAbort(controller);
+            const glossary =
+              (await entry.storage.loadGlossary?.()) ?? EMPTY_GLOSSARY;
+            const file = await entry.storage.openPdf(document.id);
+            const extracted = await extractPdfPages(file, {
+              signal: controller.signal,
+              recognizePage: makeOcrRecognizer(loadChatSettings()),
+            });
+            const digest = await createKnowledgeProviderForSettings(
+              loadKnowledgeSettings(),
+            ).analyzeDocument({
+              signal: controller.signal,
+              glossary,
+              fingerprint: extracted.fingerprint,
+              fileName: file.name,
+              documentId: stableDocumentId(extracted.fingerprint),
+              pages: extracted.pages,
+              bypassCache: true,
+            });
+            const current = await entry.storage.load();
+            const next = await entry.storage.updateDocumentArtifacts(
+              document.id,
+              current.manifest.revision,
+              digest,
+            );
+            setEntryBundle(entry.id, next);
+            setMessage(`已重新生成“${document.fileName}”的总结和脑图。`);
+            return { document: toControlItem({ ...entry, bundle: next }).documents.find((item) => item.id === document.id) };
+          }));
+        }
+        if (name === 'regenerate_course') {
+          return runExclusive(() => withSharedController(args, async (controller) => {
+            setGenerationAbort(controller);
+            const current = await entry.storage.load();
+            const documents = current.manifest.documents.filter(
+              (item) => item.includedInCourse && current.digests[item.id],
+            );
+            if (documents.length === 0) {
+              throw new Error('课程中没有可用于重新生成的 PDF 成果。');
+            }
+            const glossary =
+              (await entry.storage.loadGlossary?.()) ?? EMPTY_GLOSSARY;
+            const aiKnowledge =
+              await createKnowledgeProviderForSettings(
+                loadKnowledgeSettings(),
+              ).synthesizeCourseKnowledge({
+                signal: controller.signal,
+                glossary,
+                courseId: current.manifest.id,
+                courseName: current.manifest.name,
+                digests: documents.map((item) => current.digests[item.id]),
+                userNodeLabels: current.knowledge.nodes
+                  .filter((node) => node.ownership === 'user')
+                  .map((node) => node.label),
+              });
+            const next = await entry.storage.mergeDocuments(
+              documents.map((item) => item.id),
+              current.manifest.revision,
+              aiKnowledge,
+            );
+            setEntryBundle(entry.id, next);
+            setMessage(`课程“${entry.name}”的总总结和总脑图已重新生成。`);
+            return { course: toControlItem({ ...entry, bundle: next }) };
+          }));
+        }
+        throw new Error('不支持的共享操作。');
+      },
+      cancelSharedAction: (args) => {
+        const sharedTaskId = args.sharedTaskId;
+        if (typeof sharedTaskId !== 'string' || !sharedTaskId) {
+          throw new Error('sharedTaskId 必须是非空字符串。');
+        }
+        const controller = sharedActionControllersRef.current.get(sharedTaskId);
+        controller?.abort();
+        return { cancelled: Boolean(controller) };
       },
     };
     onControlReady(control);
@@ -1848,8 +2169,8 @@ export function CourseLibrary({
           <DialogHeader>
             <DialogTitle>局域网共享</DialogTitle>
             <DialogDescription>
-              Windows 电脑可通过浏览器查看主电脑课程，并把新 PDF
-              交给主电脑导入及后台整理；已有资料不能从查看端编辑或删除。
+              Windows 电脑可通过浏览器使用共享阅读、翻译、AI 答疑和课程功能；
+              API Key 与实际处理始终留在主电脑。
             </DialogDescription>
           </DialogHeader>
           {shareStatus.running ? (
@@ -1943,12 +2264,61 @@ export function CourseLibrary({
                   onChange={(event) => setSharePort(event.target.value)}
                 />
               </label>
+              <fieldset className="space-y-2 rounded-xl border border-slate-200 bg-white p-4">
+                <legend className="px-1 text-xs font-semibold text-slate-700">
+                  Windows 端权限
+                </legend>
+                <label className="flex items-start gap-2 text-xs leading-5 text-slate-700">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={sharePermissions.importPdf}
+                    onChange={(event) =>
+                      setSharePermissions((current) => ({
+                        ...current,
+                        importPdf: event.target.checked,
+                      }))
+                    }
+                  />
+                  <span>允许上传 PDF 到现有课程</span>
+                </label>
+                <label className="flex items-start gap-2 text-xs leading-5 text-slate-700">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={sharePermissions.ai}
+                    onChange={(event) =>
+                      setSharePermissions((current) => ({
+                        ...current,
+                        ai: event.target.checked,
+                      }))
+                    }
+                  />
+                  <span>允许翻译、AI 答疑和重新生成成果</span>
+                </label>
+                <label className="flex items-start gap-2 text-xs leading-5 text-rose-700">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={sharePermissions.manage}
+                    onChange={(event) =>
+                      setSharePermissions((current) => ({
+                        ...current,
+                        manage: event.target.checked,
+                      }))
+                    }
+                  />
+                  <span>
+                    允许创建课程、编辑术语表以及删除课程/PDF（高权限）
+                  </span>
+                </label>
+              </fieldset>
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-600">
                 <p className="font-semibold text-slate-700">使用范围与保护</p>
                 <p className="mt-1">
                   仅绑定主电脑的局域网服务端口；查看端可读取合法课程，并通过
-                  CSRF 校验把 PDF 导入所选课程。保存和 AI 整理由主电脑执行，不提供
-                  删除或任意路径访问。普通 HTTP 不提供加密传输，请仅在可信校园网使用。
+                  CSRF 校验执行上面选中的功能。保存和 AI 整理由主电脑执行；
+                  未勾选的能力会由服务端拒绝。普通 HTTP 不提供加密传输，请仅在可信校园网使用。
                 </p>
               </div>
               {shareError ? (

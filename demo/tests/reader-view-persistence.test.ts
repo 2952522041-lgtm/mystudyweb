@@ -30,6 +30,12 @@ void test('desktop shell routes every MCP command to typed UI controls', () => {
     'open_course',
     'open_document',
     'import_pdf',
+    'translate_page',
+    'ask_document',
+    'create_course',
+    'regenerate_document',
+    'remove_document',
+    'cancel_shared_action',
     'go_to_page',
     'set_reader_panel',
   ]) {

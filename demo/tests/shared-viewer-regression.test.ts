@@ -15,6 +15,7 @@ import {
   logoutFromSharedService,
   saveSharedReadingState,
   SharedApiError,
+  translateSharedPage,
 } from '../lib/lan-share-api.ts';
 
 const require = createRequire(import.meta.url);
@@ -71,7 +72,20 @@ async function waitFor(description, predicate, timeout = 8000) {
     if (predicate()) return;
     await sleep(25);
   }
-  throw new Error('等待超时：' + description);
+  const stage = document.querySelector('[aria-label="PDF 连续阅读画布"]');
+  const page = document.querySelector('[data-page="3"]');
+  throw new Error('等待超时：' + description + ' ' + JSON.stringify({
+    stage: stage instanceof HTMLElement ? {
+      scrollTop: stage.scrollTop,
+      scrollHeight: stage.scrollHeight,
+      clientHeight: stage.clientHeight,
+      rect: stage.getBoundingClientRect().toJSON(),
+    } : null,
+    page: page instanceof HTMLElement ? {
+      offsetTop: page.offsetTop,
+      rect: page.getBoundingClientRect().toJSON(),
+    } : null,
+  }));
 }
 
 function buttonWithText(text) {
@@ -1051,7 +1065,17 @@ const setup = String.raw\`(() => {
   }
   window.__sharedViewerDiagnostics = () => {
     const panel = document.querySelector('[aria-label="已有课程成果（窄窗口）"]');
+    const stage = document.querySelector('[aria-label="PDF 连续阅读画布"]');
+    const pageSix = document.querySelector('[data-page="6"]');
     return { events, width: window.innerWidth,
+      currentPage: document.querySelector('input[inputmode="numeric"]')?.value,
+      scroll: stage instanceof HTMLElement ? {
+        top: stage.scrollTop,
+        height: stage.clientHeight,
+        scrollHeight: stage.scrollHeight,
+        rect: stage.getBoundingClientRect().toJSON(),
+        pageSix: pageSix instanceof HTMLElement ? pageSix.getBoundingClientRect().toJSON() : null,
+      } : null,
       tabs: [...(panel?.querySelectorAll('[role="tab"]') ?? [])].map((tab) => {
         const rect = tab.getBoundingClientRect();
         const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
@@ -1899,7 +1923,83 @@ void test(
   },
 );
 
-void test('shared course UI wires single-PDF import without enabling destructive edits', async () => {
+void test('shared AI action client sends only structured arguments with CSRF', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    calls.push({ url, init });
+    if (url.endsWith('/api/share/logout')) {
+      return new Response(null, { status: 204 });
+    }
+    if (url.endsWith('/api/share/session')) {
+      return Response.json({
+        expiresAt: Date.now() + 3600000,
+        csrfToken: 'action-csrf-token',
+        capabilities: {
+          readingState: true,
+          courseContent: 'write',
+          importPdf: true,
+          ai: true,
+          manage: true,
+        },
+      });
+    }
+    assert.equal(
+      new URL(url, 'http://shared.test').pathname,
+      '/api/share/actions/translate_page',
+    );
+    const headers = new Headers(init?.headers);
+    assert.equal(init?.method, 'POST');
+    assert.equal(headers.get('Content-Type'), 'application/json');
+    assert.equal(headers.get('X-Yeyu-CSRF'), 'action-csrf-token');
+    const actionBody = init?.body;
+    assert.equal(typeof actionBody, 'string');
+    if (typeof actionBody !== 'string') throw new Error('动作请求缺少 JSON。');
+    assert.deepEqual(JSON.parse(actionBody), {
+      args: {
+        courseId: 'course/中文',
+        documentId: 'doc/第一讲',
+        page: 2,
+        targetLanguage: '简体中文',
+        bypassCache: true,
+      },
+    });
+    return Response.json({
+      result: {
+        translation: {
+          pageNumber: 2,
+          targetLanguage: '简体中文',
+          paragraphs: ['远程译文'],
+          provider: 'host-provider',
+          model: 'host-model',
+          updatedAt: '2026-09-28T00:00:00.000Z',
+        },
+      },
+    });
+  }) as typeof fetch;
+  try {
+    await logoutFromSharedService();
+    const result = await translateSharedPage(
+      'course/中文',
+      'doc/第一讲',
+      2,
+      '简体中文',
+      true,
+    );
+    assert.deepEqual(result.translation.paragraphs, ['远程译文']);
+    assert.equal(calls.at(-1)?.init?.method, 'POST');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+void test('shared course UI wires permission-gated import, AI, and management actions', async () => {
   const [source, apiSource] = await Promise.all([
     readFile(
       new URL('../components/shared-course-viewer.tsx', import.meta.url),
@@ -1918,6 +2018,16 @@ void test('shared course UI wires single-PDF import without enabling destructive
     'Windows',
     '不会接触 API Key',
     '正在上传并处理',
+    'createSharedCourse',
+    'regenerateSharedDocument',
+    'regenerateSharedCourse',
+    'removeSharedDocument',
+    'removeSharedCourse',
+    'loadSharedGlossary',
+    'saveSharedGlossary',
+    'canManage',
+    'canUseAi',
+    'window.confirm',
   ]) {
     assert.match(
       source,
@@ -1926,5 +2036,6 @@ void test('shared course UI wires single-PDF import without enabling destructive
   }
   assert.match(apiSource, /X-Yeyu-CSRF/);
   assert.match(source, /已有资料只读 · 新 PDF 可导入/);
-  assert.doesNotMatch(source, /deleteCourse|removeDocument|startLanShare/);
+  assert.match(apiSource, /\/api\/share\/actions\//);
+  assert.doesNotMatch(source, /startLanShare|apiKey\s*[:=]/i);
 });

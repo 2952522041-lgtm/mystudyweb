@@ -44,6 +44,18 @@ export type YeyuMcpCommandName =
   | 'open_course'
   | 'open_document'
   | 'import_pdf'
+  | 'translate_page'
+  | 'ask_document'
+  | 'get_conversation'
+  | 'clear_conversation'
+  | 'create_course'
+  | 'regenerate_document'
+  | 'regenerate_course'
+  | 'remove_document'
+  | 'remove_course'
+  | 'get_glossary'
+  | 'save_glossary'
+  | 'cancel_shared_action'
   | 'go_to_page'
   | 'set_reader_panel';
 
@@ -94,6 +106,12 @@ export interface LanShareStatus {
   addresses: string[];
 }
 
+export interface LanSharePermissions {
+  importPdf: boolean;
+  ai: boolean;
+  manage: boolean;
+}
+
 export interface SharedReadingState {
   page: number;
   zoom: number;
@@ -131,7 +149,11 @@ export interface YeyuDesktopApi {
   deleteCourseDirectory(directoryName: string): Promise<void>;
   revealWorkspace(): Promise<void>;
   getLanShareStatus?(): Promise<LanShareStatus>;
-  startLanShare?(password: string, port: number): Promise<LanShareStatus>;
+  startLanShare?(
+    password: string,
+    port: number,
+    permissions?: LanSharePermissions,
+  ): Promise<LanShareStatus>;
   stopLanShare?(): Promise<void>;
   getReadingState?(
     courseId: string,

@@ -8,8 +8,13 @@ import {
   FileText,
   LogOut,
   Network,
+  Plus,
   RefreshCw,
+  Save,
   ShieldCheck,
+  Sparkles,
+  Square,
+  Trash2,
   Upload,
   Wifi,
 } from 'lucide-react';
@@ -26,23 +31,39 @@ import type {
   SourceReference,
 } from '@/lib/course-storage/types';
 import {
+  createSharedCourse,
   getSharedSession,
   importSharedPdf,
   listSharedCourses,
   loadSharedCourse,
+  loadSharedGlossary,
   loadSharedPdf,
   loginToSharedService,
   logoutFromSharedService,
+  regenerateSharedCourse,
+  regenerateSharedDocument,
+  removeSharedCourse,
+  removeSharedDocument,
+  saveSharedGlossary,
   SharedApiError,
   type SharedCourseDetail,
   type SharedCourseListItem,
   type ImportSharedPdfOptions,
   type SharedSessionCapabilities,
 } from '@/lib/lan-share-api';
+import {
+  EMPTY_GLOSSARY,
+  parseGlossary,
+  reviseGlossary,
+  type Glossary,
+  type GlossaryEntry,
+} from '@/lib/glossary';
 import { formatSource } from '@/lib/knowledge/artifact-renderer';
 import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
 
 const MAX_SHARED_IMPORT_BYTES = 128 * 1024 * 1024;
+const MAX_SHARED_COURSE_NAME_LENGTH = 120;
+const SHARED_IMPORT_DESCRIPTION = '上传与 AI 生成都在主电脑执行';
 
 function updatedAt(value: string): string {
   const date = new Date(value);
@@ -60,6 +81,19 @@ function describeApiError(error: unknown): string {
   return error instanceof Error ? error.message : '共享服务暂时无法处理请求。';
 }
 
+function validateSharedCourseName(value: string): string | null {
+  const name = value.trim();
+  if (!name) return '请输入课程名称。';
+  if (name.length > MAX_SHARED_COURSE_NAME_LENGTH) {
+    return `课程名称不能超过 ${MAX_SHARED_COURSE_NAME_LENGTH} 个字符。`;
+  }
+  for (let index = 0; index < name.length; index += 1) {
+    const code = name.charCodeAt(index);
+    if (code < 32 || code === 127) return '课程名称不能包含控制字符。';
+  }
+  return null;
+}
+
 function EmptyResult({
   title,
   description,
@@ -75,6 +109,305 @@ function EmptyResult({
         {description}
       </p>
     </div>
+  );
+}
+
+function SharedCourseCreateControl({
+  canManage,
+  busy,
+  onCreate,
+}: {
+  canManage: boolean;
+  busy: boolean;
+  onCreate: (name: string) => Promise<boolean>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  if (!canManage) return null;
+
+  const submit = async (event: { preventDefault: () => void }) => {
+    event.preventDefault();
+    const trimmed = name.trim();
+    const nextError = validateSharedCourseName(trimmed);
+    if (nextError) {
+      setValidationError(nextError);
+      return;
+    }
+    setValidationError(null);
+    if (await onCreate(trimmed)) {
+      setName('');
+      setOpen(false);
+    }
+  };
+
+  return open ? (
+    <form
+      className="flex min-w-0 flex-wrap items-center gap-2"
+      onSubmit={(event) => void submit(event)}
+    >
+      <Input
+        aria-label="新课程名称"
+        className="h-7 w-44 bg-white text-xs"
+        value={name}
+        maxLength={MAX_SHARED_COURSE_NAME_LENGTH}
+        onChange={(event) => {
+          setName(event.target.value);
+          if (validationError) setValidationError(null);
+        }}
+        placeholder="输入课程名称"
+        disabled={busy}
+      />
+      <Button type="submit" size="sm" disabled={busy}>
+        {busy ? <RefreshCw className="animate-spin" /> : <Plus />}
+        创建课程
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        disabled={busy}
+        onClick={() => {
+          setOpen(false);
+          setValidationError(null);
+        }}
+      >
+        取消
+      </Button>
+      {validationError ? (
+        <p className="basis-full text-[11px] text-rose-700">
+          {validationError}
+        </p>
+      ) : null}
+    </form>
+  ) : (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      disabled={busy}
+      onClick={() => {
+        setValidationError(null);
+        setOpen(true);
+      }}
+    >
+      <Plus /> 新建课程
+    </Button>
+  );
+}
+
+function SharedGlossaryEditor({
+  courseName,
+  canManage,
+  disabled,
+  onLoad,
+  onSave,
+}: {
+  courseName: string;
+  canManage: boolean;
+  disabled: boolean;
+  onLoad: () => Promise<Glossary>;
+  onSave: (glossary: Glossary) => Promise<Glossary | null>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [glossary, setGlossary] = useState<Glossary>(EMPTY_GLOSSARY);
+  const [rows, setRows] = useState<GlossaryEntry[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+
+  if (!canManage) return null;
+
+  const openEditor = () => {
+    setOpen(true);
+    setLoading(true);
+    setError(null);
+    setStatus(null);
+    void onLoad()
+      .then((value) => {
+        const parsed = parseGlossary(value);
+        setGlossary(parsed);
+        setRows(parsed.entries);
+      })
+      .catch((loadError: unknown) => {
+        setError(describeApiError(loadError));
+      })
+      .finally(() => setLoading(false));
+  };
+
+  const updateRow = (index: number, patch: Partial<GlossaryEntry>) => {
+    setRows((current) =>
+      current.map((row, rowIndex) =>
+        rowIndex === index ? { ...row, ...patch } : row,
+      ),
+    );
+    setStatus(null);
+    setError(null);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    setStatus(null);
+    try {
+      const next = reviseGlossary(
+        glossary,
+        rows.map((row) => ({
+          ...row,
+          source: row.source.trim(),
+          target: row.target.trim(),
+          forbidden: row.forbidden.map((word) => word.trim()).filter(Boolean),
+          note: row.note.trim(),
+        })),
+      );
+      const saved = await onSave(next);
+      if (!saved) return;
+      const parsed = parseGlossary(saved);
+      setGlossary(parsed);
+      setRows(parsed.entries);
+      setStatus(`已保存术语表版本 ${parsed.version}。`);
+    } catch (saveError: unknown) {
+      setError(describeApiError(saveError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-sm font-semibold text-slate-900">课程术语表</p>
+          <p className="mt-1 text-xs text-slate-500">
+            管理端可编辑 source、target、forbidden 和 note；保存会创建新版本。
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={disabled || loading}
+          onClick={() => {
+            if (open) {
+              setOpen(false);
+              return;
+            }
+            openEditor();
+          }}
+        >
+          {loading ? <RefreshCw className="animate-spin" /> : <BookOpen />}
+          {open ? '收起术语表' : '编辑术语表'}
+        </Button>
+      </div>
+      {open ? (
+        <div
+          className="mt-4 space-y-3"
+          aria-label={`课程术语表：${courseName}`}
+        >
+          {loading ? (
+            <p className="text-xs text-slate-500">正在读取术语表…</p>
+          ) : rows.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-slate-200 px-3 py-3 text-xs text-slate-500">
+              暂无术语，点击“新增术语”开始编辑。
+            </p>
+          ) : (
+            <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
+              {rows.map((entry, index) => (
+                <div
+                  key={index}
+                  className="grid gap-2 rounded-lg border border-slate-200 p-3 sm:grid-cols-2"
+                >
+                  <Input
+                    aria-label={`source ${index + 1}`}
+                    placeholder="source"
+                    value={entry.source}
+                    disabled={disabled || saving || loading}
+                    onChange={(event) =>
+                      updateRow(index, { source: event.target.value })
+                    }
+                  />
+                  <Input
+                    aria-label={`target ${index + 1}`}
+                    placeholder="target"
+                    value={entry.target}
+                    disabled={disabled || saving || loading}
+                    onChange={(event) =>
+                      updateRow(index, { target: event.target.value })
+                    }
+                  />
+                  <Input
+                    aria-label={`forbidden ${index + 1}`}
+                    placeholder="forbidden（用 | 分隔）"
+                    value={entry.forbidden.join('|')}
+                    disabled={disabled || saving || loading}
+                    onChange={(event) =>
+                      updateRow(index, {
+                        forbidden: event.target.value.split('|'),
+                      })
+                    }
+                  />
+                  <Input
+                    aria-label={`note ${index + 1}`}
+                    placeholder="note（可选）"
+                    value={entry.note}
+                    disabled={disabled || saving || loading}
+                    onChange={(event) =>
+                      updateRow(index, { note: event.target.value })
+                    }
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={disabled || saving || loading}
+                    onClick={() =>
+                      setRows((current) =>
+                        current.filter((_, rowIndex) => rowIndex !== index),
+                      )
+                    }
+                  >
+                    <Trash2 /> 删除第 {index + 1} 条
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={disabled || saving || loading}
+              onClick={() =>
+                setRows((current) => [
+                  ...current,
+                  { source: '', target: '', forbidden: [], note: '' },
+                ])
+              }
+            >
+              <Plus /> 新增术语
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={disabled || saving || loading}
+              onClick={() => void save()}
+            >
+              {saving ? <RefreshCw className="animate-spin" /> : <Save />}{' '}
+              保存术语表
+            </Button>
+          </div>
+          {error ? <p className="text-xs text-rose-700">{error}</p> : null}
+          {status ? <p className="text-xs text-emerald-700">{status}</p> : null}
+          <p className="text-[11px] text-slate-400">
+            当前版本 {glossary.version}；source 不能重复，target 不能出现在
+            forbidden 中。
+          </p>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -205,7 +538,8 @@ function CourseImportPanel({
   const handleFile = (file: File | undefined) => {
     if (!file) return;
     const isPdf =
-      file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      file.type === 'application/pdf' ||
+      file.name.toLowerCase().endsWith('.pdf');
     if (!isPdf) {
       setFileError('请选择 PDF 文件。');
       return;
@@ -230,8 +564,8 @@ function CourseImportPanel({
             <Upload className="size-4 text-indigo-600" /> 导入一份 PDF
           </p>
           <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-600">
-            选择单个 PDF 后交给主电脑保存和处理。上传与 AI 生成都在主电脑执行，Windows
-            查看端不会接触 API Key。
+            选择单个 PDF 后交给主电脑保存和处理。{SHARED_IMPORT_DESCRIPTION}
+            ，Windows 查看端不会接触 API Key。
           </p>
         </div>
         <input
@@ -254,11 +588,7 @@ function CourseImportPanel({
           onClick={chooseFile}
           disabled={!canImportPdf || busy}
         >
-          {busy ? (
-            <RefreshCw className="animate-spin" />
-          ) : (
-            <Upload />
-          )}
+          {busy ? <RefreshCw className="animate-spin" /> : <Upload />}
           {busy ? '正在上传并处理…' : '选择 PDF'}
         </Button>
       </div>
@@ -319,19 +649,27 @@ function CourseDocuments({
   manifest,
   digests,
   onOpenDocument,
+  onRemoveDocument,
+  onRegenerateDocument,
   canImportPdf,
   canTriggerAi,
+  canManage,
   importBusy,
   importFeedback,
+  actionBusy,
   onImportDocument,
 }: {
   manifest: CourseManifest;
   digests: Record<string, DocumentDigest>;
   onOpenDocument: (document: DocumentRecord) => void;
+  onRemoveDocument: (document: DocumentRecord) => void;
+  onRegenerateDocument: (document: DocumentRecord) => void;
   canImportPdf: boolean;
   canTriggerAi: boolean;
+  canManage: boolean;
   importBusy: boolean;
   importFeedback: string | null;
+  actionBusy: boolean;
   onImportDocument: (file: File, options: ImportSharedPdfOptions) => void;
 }) {
   return (
@@ -341,11 +679,21 @@ function CourseDocuments({
         <p className="mt-1 text-xs text-slate-500">
           已有 PDF 和主电脑成果只读；新增 PDF 会交给主电脑导入。
         </p>
+        {!canTriggerAi ? (
+          <p className="mt-1 text-xs text-slate-500">
+            主电脑未开放 AI 成果重新生成权限，已有总结和脑图仍可查看。
+          </p>
+        ) : null}
+        {!canManage ? (
+          <p className="mt-1 text-xs text-slate-500">
+            主电脑未开放课程管理权限，查看端不会删除 PDF。
+          </p>
+        ) : null}
       </div>
       <CourseImportPanel
         canImportPdf={canImportPdf}
         canTriggerAi={canTriggerAi}
-        busy={importBusy}
+        busy={importBusy || actionBusy}
         feedback={importFeedback}
         onImport={onImportDocument}
       />
@@ -379,15 +727,53 @@ function CourseDocuments({
                       成果已就绪
                     </span>
                   ) : null}
+                  {document.processing ? (
+                    <span
+                      className={`mt-1 block text-[10px] ${document.processing.status === 'failed' ? 'text-rose-700' : 'text-amber-700'}`}
+                    >
+                      {document.processing.status === 'queued'
+                        ? '主电脑已排队，等待 AI 整理'
+                        : document.processing.status === 'running'
+                          ? '主电脑正在 AI 整理'
+                          : `AI 整理失败：${document.processing.error ?? '可在主电脑或共享端重新生成'}`}
+                    </span>
+                  ) : null}
                 </span>
               </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => onOpenDocument(document)}
-              >
-                <BookOpen /> 打开 PDF
-              </Button>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onOpenDocument(document)}
+                  disabled={actionBusy || importBusy}
+                >
+                  <BookOpen /> 打开 PDF
+                </Button>
+                {canTriggerAi ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    title="重新生成这份 PDF 的总结和脑图"
+                    aria-label={`重新生成 ${document.fileName} 的成果`}
+                    onClick={() => onRegenerateDocument(document)}
+                    disabled={actionBusy || importBusy}
+                  >
+                    <Sparkles /> 重新生成 PDF 成果
+                  </Button>
+                ) : null}
+                {canManage ? (
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    title="删除这份 PDF 及其成果"
+                    aria-label={`删除 PDF ${document.fileName}`}
+                    onClick={() => onRemoveDocument(document)}
+                    disabled={actionBusy || importBusy}
+                  >
+                    <Trash2 /> 删除 PDF
+                  </Button>
+                ) : null}
+              </div>
             </div>
           ))}
         </div>
@@ -400,23 +786,84 @@ function SharedCourseDetail({
   detail,
   onOpenSource,
   onOpenDocument,
+  onRemoveDocument,
+  onRegenerateDocument,
+  onRegenerateCourse,
+  onRemoveCourse,
+  onLoadGlossary,
+  onSaveGlossary,
   canImportPdf,
   canTriggerAi,
+  canManage,
   importBusy,
   importFeedback,
+  actionBusy,
   onImportDocument,
 }: {
   detail: SharedCourseDetail;
   onOpenSource: (documentId: string, page: number) => void;
   onOpenDocument: (document: DocumentRecord) => void;
+  onRemoveDocument: (document: DocumentRecord) => void;
+  onRegenerateDocument: (document: DocumentRecord) => void;
+  onRegenerateCourse: () => void;
+  onRemoveCourse: () => void;
+  onLoadGlossary: () => Promise<Glossary>;
+  onSaveGlossary: (glossary: Glossary) => Promise<Glossary | null>;
   canImportPdf: boolean;
   canTriggerAi: boolean;
+  canManage: boolean;
   importBusy: boolean;
   importFeedback: string | null;
+  actionBusy: boolean;
   onImportDocument: (file: File, options: ImportSharedPdfOptions) => void;
 }) {
   return (
     <Tabs defaultValue="summary" className="min-h-0 flex-1 gap-0">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-5 py-3 sm:px-7">
+        <div>
+          {!canTriggerAi ? (
+            <p className="text-xs text-slate-500">
+              主电脑未开放 AI 权限，不能从共享端重新生成成果。
+            </p>
+          ) : null}
+          {!canManage ? (
+            <p className="text-xs text-slate-500">
+              主电脑未开放管理权限，课程、PDF 和术语表保持只读。
+            </p>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {canTriggerAi ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onRegenerateCourse}
+              disabled={actionBusy || importBusy}
+              title="重新生成当前课程的总总结和总脑图"
+            >
+              {actionBusy ? (
+                <RefreshCw className="animate-spin" />
+              ) : (
+                <Sparkles />
+              )}{' '}
+              重新生成课程成果
+            </Button>
+          ) : null}
+          {canManage ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="destructive"
+              onClick={onRemoveCourse}
+              disabled={actionBusy || importBusy}
+              title="删除当前课程及其中的 PDF"
+            >
+              <Trash2 /> 删除课程
+            </Button>
+          ) : null}
+        </div>
+      </div>
       <TabsList className="mx-5 mt-4 sm:mx-7">
         <TabsTrigger value="summary">
           <FileText /> 课程总结
@@ -461,13 +908,29 @@ function SharedCourseDetail({
           manifest={detail.manifest}
           digests={detail.digests}
           onOpenDocument={onOpenDocument}
+          onRemoveDocument={onRemoveDocument}
+          onRegenerateDocument={onRegenerateDocument}
           canImportPdf={canImportPdf}
           canTriggerAi={canTriggerAi}
+          canManage={canManage}
           importBusy={importBusy}
           importFeedback={importFeedback}
+          actionBusy={actionBusy}
           onImportDocument={onImportDocument}
         />
       </TabsContent>
+      {canManage ? (
+        <div className="border-t border-slate-200 bg-slate-50 px-5 py-4 sm:px-7">
+          <SharedGlossaryEditor
+            key={detail.manifest.id}
+            courseName={detail.manifest.name}
+            canManage={canManage}
+            disabled={actionBusy || importBusy}
+            onLoad={onLoadGlossary}
+            onSave={onSaveGlossary}
+          />
+        </div>
+      ) : null}
     </Tabs>
   );
 }
@@ -491,8 +954,13 @@ export function SharedCourseViewer() {
     useState<SharedSessionCapabilities | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [importFeedback, setImportFeedback] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
   const requestVersionRef = useRef(0);
   const importRequestRef = useRef(0);
+  const importBusyRef = useRef(false);
+  const actionBusyRef = useRef(false);
+  const actionAbortRef = useRef<AbortController | null>(null);
 
   const signedOut = useCallback((message?: string) => {
     requestVersionRef.current += 1;
@@ -505,6 +973,12 @@ export function SharedCourseViewer() {
     setCapabilities(null);
     setImportBusy(false);
     setImportFeedback(null);
+    setActionBusy(null);
+    setActionFeedback(null);
+    importBusyRef.current = false;
+    actionBusyRef.current = false;
+    actionAbortRef.current?.abort();
+    actionAbortRef.current = null;
     importRequestRef.current += 1;
     if (message) setError(message);
   }, []);
@@ -513,12 +987,44 @@ export function SharedCourseViewer() {
     [signedOut],
   );
 
-  const handleRequestError = (requestError: unknown) => {
-    if (requestError instanceof SharedApiError && requestError.status === 401) {
-      signedOut('登录已过期或共享服务已停止，请重新登录。');
-      return;
+  const handleRequestError = useCallback(
+    (requestError: unknown) => {
+      if (
+        requestError instanceof SharedApiError &&
+        requestError.status === 401
+      ) {
+        signedOut('登录已过期或共享服务已停止，请重新登录。');
+        return;
+      }
+      setError(describeApiError(requestError));
+    },
+    [signedOut],
+  );
+
+  const runSharedMutation = async <T,>(
+    name: string,
+    task: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T | undefined> => {
+    if (actionBusyRef.current || importBusyRef.current) return undefined;
+    actionBusyRef.current = true;
+    setActionBusy(name);
+    setActionFeedback(null);
+    setError(null);
+    try {
+      return await task();
+    } catch (requestError) {
+      if (signal?.aborted) {
+        setActionFeedback('任务已取消，主电脑不会保存未完成的 AI 结果。');
+        return undefined;
+      }
+      setActionFeedback(null);
+      handleRequestError(requestError);
+      return undefined;
+    } finally {
+      actionBusyRef.current = false;
+      setActionBusy(null);
     }
-    setError(describeApiError(requestError));
   };
 
   const refresh = async (
@@ -529,6 +1035,7 @@ export function SharedCourseViewer() {
     setRefreshing(true);
     setError(null);
     if (!preserveImportFeedback) setImportFeedback(null);
+    if (!preserveImportFeedback) setActionFeedback(null);
     setDetail(null);
     setReader(null);
     try {
@@ -584,8 +1091,36 @@ export function SharedCourseViewer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (
+      !authenticated ||
+      !selectedId ||
+      !detail?.manifest.documents.some(
+        (document) =>
+          document.processing && document.processing.status !== 'failed',
+      )
+    ) {
+      return;
+    }
+    const courseId = selectedId;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void loadSharedCourse(courseId)
+        .then((nextDetail) => {
+          if (!cancelled && selectedId === courseId) setDetail(nextDetail);
+        })
+        .catch((requestError: unknown) => {
+          if (!cancelled) handleRequestError(requestError);
+        });
+    }, 2500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [authenticated, detail, handleRequestError, selectedId]);
+
   const openDocument = async (document: DocumentRecord, initialPage = 1) => {
-    if (!selectedId) return;
+    if (!selectedId || actionBusyRef.current || importBusyRef.current) return;
     const courseId = selectedId;
     const requestVersion = ++requestVersionRef.current;
     setRefreshing(true);
@@ -608,6 +1143,7 @@ export function SharedCourseViewer() {
   };
 
   const selectCourse = async (course: SharedCourseListItem) => {
+    if (actionBusyRef.current || importBusyRef.current) return;
     const requestVersion = ++requestVersionRef.current;
     setSelectedId(course.id);
     setDetail(null);
@@ -615,6 +1151,7 @@ export function SharedCourseViewer() {
     setRefreshing(true);
     setError(null);
     setImportFeedback(null);
+    setActionFeedback(null);
     try {
       const nextDetail = await loadSharedCourse(course.id);
       if (requestVersion !== requestVersionRef.current) return;
@@ -631,12 +1168,14 @@ export function SharedCourseViewer() {
     file: File,
     options: ImportSharedPdfOptions,
   ) => {
-    if (!selectedId || importBusy) return;
+    if (!selectedId || importBusyRef.current || actionBusyRef.current) return;
     const courseId = selectedId;
     const requestVersion = ++requestVersionRef.current;
     const importRequest = ++importRequestRef.current;
+    importBusyRef.current = true;
     setImportBusy(true);
     setImportFeedback(null);
+    setActionFeedback(null);
     setError(null);
     try {
       const result = await importSharedPdf(courseId, file, options);
@@ -657,8 +1196,151 @@ export function SharedCourseViewer() {
       if (requestVersion !== requestVersionRef.current) return;
       handleRequestError(importError);
     } finally {
-      if (importRequest === importRequestRef.current) setImportBusy(false);
+      if (importRequest === importRequestRef.current) {
+        importBusyRef.current = false;
+        setImportBusy(false);
+      }
     }
+  };
+
+  const createCourse = async (name: string): Promise<boolean> => {
+    if (capabilities?.manage !== true) return false;
+    const validationError = validateSharedCourseName(name);
+    if (validationError) {
+      setError(validationError);
+      return false;
+    }
+    const created = await runSharedMutation('create-course', async () => {
+      setActionFeedback(`正在创建课程“${name}”…`);
+      const result = await createSharedCourse(name);
+      await refresh(result.id, true);
+      setActionFeedback(`课程“${result.name || name}”已创建。`);
+      return true;
+    });
+    return created === true;
+  };
+
+  const removeCourse = async (course: SharedCourseListItem) => {
+    if (capabilities?.manage !== true || actionBusyRef.current) return;
+    if (
+      !window.confirm(
+        `确定删除课程“${course.name}”吗？课程中的 PDF、总结、脑图和术语表都会被删除。`,
+      )
+    ) {
+      return;
+    }
+    const preferredId = selectedId === course.id ? null : selectedId;
+    await runSharedMutation('remove-course', async () => {
+      setActionFeedback(`正在删除课程“${course.name}”…`);
+      await removeSharedCourse(course.id);
+      await refresh(preferredId, true);
+      setActionFeedback(`课程“${course.name}”已删除。`);
+    });
+  };
+
+  const removeCurrentCourse = async () => {
+    const course = courses.find((item) => item.id === selectedId);
+    if (course) await removeCourse(course);
+  };
+
+  const regenerateDocument = async (document: DocumentRecord) => {
+    if (capabilities?.ai !== true || !selectedId || actionBusyRef.current) {
+      return;
+    }
+    const courseId = selectedId;
+    const controller = new AbortController();
+    actionAbortRef.current = controller;
+    try {
+      await runSharedMutation(
+        'regenerate-document',
+        async () => {
+          setActionFeedback(
+            `正在重新生成“${document.fileName}”的总结和脑图…`,
+          );
+          await regenerateSharedDocument(
+            courseId,
+            document.id,
+            controller.signal,
+          );
+          await refresh(courseId, true);
+          setActionFeedback(
+            `“${document.fileName}”的总结和脑图已重新生成。`,
+          );
+        },
+        controller.signal,
+      );
+    } finally {
+      if (actionAbortRef.current === controller) actionAbortRef.current = null;
+    }
+  };
+
+  const regenerateCourse = async () => {
+    if (capabilities?.ai !== true || !selectedId || actionBusyRef.current) {
+      return;
+    }
+    const courseId = selectedId;
+    const courseName = detail?.manifest.name ?? '当前课程';
+    const controller = new AbortController();
+    actionAbortRef.current = controller;
+    try {
+      await runSharedMutation(
+        'regenerate-course',
+        async () => {
+          setActionFeedback(`正在重新生成“${courseName}”的课程总成果…`);
+          await regenerateSharedCourse(courseId, controller.signal);
+          await refresh(courseId, true);
+          setActionFeedback(
+            `“${courseName}”的课程总总结和总脑图已重新生成。`,
+          );
+        },
+        controller.signal,
+      );
+    } finally {
+      if (actionAbortRef.current === controller) actionAbortRef.current = null;
+    }
+  };
+
+  const deletePdf = async (document: DocumentRecord) => {
+    if (capabilities?.manage !== true || !selectedId || actionBusyRef.current) {
+      return;
+    }
+    if (
+      !window.confirm(
+        `确定删除 PDF“${document.fileName}”吗？这份 PDF 的总结和脑图也会被删除。`,
+      )
+    ) {
+      return;
+    }
+    const courseId = selectedId;
+    await runSharedMutation('remove-document', async () => {
+      setActionFeedback(`正在删除“${document.fileName}”…`);
+      await removeSharedDocument(courseId, document.id);
+      await refresh(courseId, true);
+      setActionFeedback(`“${document.fileName}”及其成果已删除。`);
+    });
+  };
+
+  const loadGlossary = async (courseId: string): Promise<Glossary> => {
+    try {
+      const result = await loadSharedGlossary(courseId);
+      return parseGlossary(result.glossary);
+    } catch (requestError) {
+      handleRequestError(requestError);
+      throw requestError;
+    }
+  };
+
+  const saveGlossary = async (
+    courseId: string,
+    glossary: Glossary,
+  ): Promise<Glossary | null> => {
+    const next = await runSharedMutation('save-glossary', async () => {
+      const parsed = parseGlossary(glossary);
+      const result = await saveSharedGlossary(courseId, parsed);
+      setActionFeedback(`术语表已保存为版本 ${parsed.version}。`);
+      return parseGlossary(result.glossary);
+    });
+    return next ?? null;
   };
 
   const login = async (event: React.FormEvent) => {
@@ -688,6 +1370,11 @@ export function SharedCourseViewer() {
     }
     signedOut();
   };
+
+  const canImportPdf = capabilities?.importPdf === true;
+  const canUseAi = capabilities?.ai === true;
+  const canManage = capabilities?.manage === true;
+  const sharedActionsBusy = Boolean(actionBusy) || importBusy || refreshing;
 
   if (loading) {
     return (
@@ -769,6 +1456,7 @@ export function SharedCourseViewer() {
         digest={detail?.digests[reader.document.id]}
         hasSummary={reader.document.hasSummary}
         hasMindmap={reader.document.hasMindmap}
+        canUseAi={canUseAi}
         initialPage={reader.initialPage}
         onBack={() => setReader(null)}
         onSessionExpired={sessionExpired}
@@ -787,7 +1475,12 @@ export function SharedCourseViewer() {
             页语 · 局域网共享
           </span>
           <span className="hidden items-center gap-1 rounded-full bg-white/10 px-2 py-1 text-[10px] text-slate-200 sm:flex">
-            <Wifi className="size-3" /> 已有资料只读 · 新 PDF 可导入
+            <Wifi className="size-3" />
+            {canManage
+              ? '课程可管理'
+              : canImportPdf
+                ? '已有资料只读 · 新 PDF 可导入'
+                : '已有资料只读'}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -796,7 +1489,7 @@ export function SharedCourseViewer() {
             size="sm"
             className="text-white hover:bg-white/10 hover:text-white"
             onClick={() => void refresh()}
-            disabled={refreshing}
+            disabled={refreshing || sharedActionsBusy}
           >
             <RefreshCw className={refreshing ? 'animate-spin' : ''} /> 刷新
           </Button>
@@ -816,6 +1509,30 @@ export function SharedCourseViewer() {
           {error}
         </div>
       ) : null}
+      {actionFeedback ? (
+        <output
+          className="flex shrink-0 items-center gap-2 border-b border-emerald-200 bg-emerald-50 px-5 py-2.5 text-xs text-emerald-700"
+          aria-live="polite"
+        >
+          {actionBusy ? (
+            <RefreshCw className="size-4 animate-spin" />
+          ) : (
+            <CheckCircle2 className="size-4" />
+          )}
+          {actionFeedback}
+          {actionBusy && actionAbortRef.current ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="ml-auto"
+              onClick={() => actionAbortRef.current?.abort()}
+            >
+              <Square /> 取消任务
+            </Button>
+          ) : null}
+        </output>
+      ) : null}
       <div className="flex min-h-0 flex-1">
         <aside className="hidden w-64 shrink-0 border-r border-slate-200 bg-[#fafbfc] p-4 md:block">
           <p className="px-2 py-2 text-[11px] font-bold tracking-[0.13em] text-slate-500 uppercase">
@@ -823,19 +1540,38 @@ export function SharedCourseViewer() {
           </p>
           <div className="mt-2 space-y-1">
             {courses.map((course) => (
-              <button
+              <div
                 key={course.id}
-                type="button"
-                className={`w-full rounded-xl border px-3 py-3 text-left transition ${course.id === selectedId ? 'border-slate-200 bg-white shadow-sm' : 'border-transparent hover:bg-white'}`}
-                onClick={() => void selectCourse(course)}
+                className={`flex w-full items-center gap-2 rounded-xl border px-3 py-2 transition ${course.id === selectedId ? 'border-slate-200 bg-white shadow-sm' : 'border-transparent hover:bg-white'}`}
               >
-                <span className="block truncate text-sm font-semibold">
-                  {course.name}
-                </span>
-                <span className="mt-1 block text-[10px] text-slate-500">
-                  {course.documentCount} 份 PDF · {updatedAt(course.updatedAt)}
-                </span>
-              </button>
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 text-left"
+                  onClick={() => void selectCourse(course)}
+                  disabled={sharedActionsBusy}
+                >
+                  <span className="block truncate text-sm font-semibold">
+                    {course.name}
+                  </span>
+                  <span className="mt-1 block text-[10px] text-slate-500">
+                    {course.documentCount} 份 PDF ·{' '}
+                    {updatedAt(course.updatedAt)}
+                  </span>
+                </button>
+                {canManage ? (
+                  <Button
+                    type="button"
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label={`删除课程 ${course.name}`}
+                    title="删除课程"
+                    onClick={() => void removeCourse(course)}
+                    disabled={sharedActionsBusy}
+                  >
+                    <Trash2 />
+                  </Button>
+                ) : null}
+              </div>
             ))}
           </div>
           {courses.length === 0 ? (
@@ -846,11 +1582,12 @@ export function SharedCourseViewer() {
           <div className="mt-8 rounded-xl border border-slate-200 bg-white p-4 text-[11px] leading-5 text-slate-500">
             <p className="flex items-center gap-2 font-semibold text-slate-700">
               <ShieldCheck className="size-4 text-emerald-600" />
-              已有资料只读
+              {canManage ? '共享课程管理' : '已有资料只读'}
             </p>
             <p className="mt-2">
-              查看端不会删除或任意编辑；新增 PDF 会由主电脑保存并处理。AI
-              也在主电脑执行，Windows 端不会接触 API Key。阅读页码和缩放会保存到主电脑。
+              {canManage
+                ? '当前已开放课程管理、PDF 删除和术语表编辑；AI 生成仍在主电脑执行，Windows 端不会接触 API Key。'
+                : '查看端不会删除或任意编辑；新增 PDF 会由主电脑保存并处理。AI 也在主电脑执行，Windows 端不会接触 API Key。阅读页码和缩放会保存到主电脑.'}
             </p>
           </div>
         </aside>
@@ -863,29 +1600,38 @@ export function SharedCourseViewer() {
                   {detail?.manifest.name ?? '暂无课程'}
                 </h1>
               </div>
-              <select
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs md:hidden"
-                value={selectedId ?? ''}
-                onChange={(event) => {
-                  const course = courses.find(
-                    (item) => item.id === event.target.value,
-                  );
-                  if (course) void selectCourse(course);
-                }}
-              >
-                <option value="" disabled>
-                  选择课程
-                </option>
-                {courses.map((course) => (
-                  <option key={course.id} value={course.id}>
-                    {course.name}
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <SharedCourseCreateControl
+                  canManage={canManage}
+                  busy={sharedActionsBusy}
+                  onCreate={createCourse}
+                />
+                <select
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs md:hidden"
+                  value={selectedId ?? ''}
+                  disabled={sharedActionsBusy}
+                  onChange={(event) => {
+                    const course = courses.find(
+                      (item) => item.id === event.target.value,
+                    );
+                    if (course) void selectCourse(course);
+                  }}
+                >
+                  <option value="" disabled>
+                    选择课程
                   </option>
-                ))}
-              </select>
+                  {courses.map((course) => (
+                    <option key={course.id} value={course.id}>
+                      {course.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
           {detail ? (
             <SharedCourseDetail
+              key={detail.manifest.id}
               detail={detail}
               onOpenSource={(documentId, page) => {
                 const document = detail.manifest.documents.find(
@@ -895,10 +1641,22 @@ export function SharedCourseViewer() {
                 else setError('来源 PDF 已被删除，请刷新课程列表。');
               }}
               onOpenDocument={(document) => void openDocument(document)}
-              canImportPdf={capabilities?.importPdf === true}
-              canTriggerAi={capabilities?.ai === true}
+              onRemoveDocument={(document) => void deletePdf(document)}
+              onRegenerateDocument={(document) =>
+                void regenerateDocument(document)
+              }
+              onRegenerateCourse={() => void regenerateCourse()}
+              onRemoveCourse={() => void removeCurrentCourse()}
+              onLoadGlossary={() => loadGlossary(detail.manifest.id)}
+              onSaveGlossary={(glossary) =>
+                saveGlossary(detail.manifest.id, glossary)
+              }
+              canImportPdf={canImportPdf}
+              canTriggerAi={canUseAi}
+              canManage={canManage}
               importBusy={importBusy}
               importFeedback={importFeedback}
+              actionBusy={sharedActionsBusy}
               onImportDocument={(file, options) => {
                 void importDocument(file, options);
               }}

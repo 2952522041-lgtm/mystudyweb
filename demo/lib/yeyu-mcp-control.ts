@@ -1,5 +1,6 @@
 import type { ReaderRightModeName } from './reader-shortcuts.ts';
 import type { DocumentProcessing, ImportStage } from './course-storage/types.ts';
+import type { YeyuMcpCommandName } from '../electron/api.ts';
 
 export interface EntityLocator {
   id?: string;
@@ -71,6 +72,21 @@ export interface CourseLibraryControl {
     documentId?: string;
     processing?: DocumentProcessing;
   }>;
+  runSharedAction(
+    name: Exclude<
+      YeyuMcpCommandName,
+      | 'get_state'
+      | 'show_courses'
+      | 'open_course'
+      | 'open_document'
+      | 'import_pdf'
+      | 'go_to_page'
+      | 'set_reader_panel'
+      | 'cancel_shared_action'
+    >,
+    args: Record<string, unknown>,
+  ): Promise<unknown>;
+  cancelSharedAction(args: Record<string, unknown>): { cancelled: boolean };
 }
 
 export interface ReaderControlState {

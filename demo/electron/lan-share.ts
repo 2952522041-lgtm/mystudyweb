@@ -4,7 +4,11 @@ import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 
-import type { LanShareStatus } from './api.ts';
+import type {
+  LanSharePermissions,
+  LanShareStatus,
+  YeyuMcpCommandName,
+} from './api.ts';
 import { listCourseFiles, readCourseFile, scanCourses } from './workspace.ts';
 import type { DesktopCourseManifest, DesktopCourseSummary } from './api.ts';
 import {
@@ -28,6 +32,33 @@ const MAX_TRANSLATION_FILES = 2000;
 const MAX_TRANSLATION_RESPONSE_BYTES = 4 * 1024 * 1024;
 const SHARED_TRANSLATION_MAX_BYTES = 512 * 1024;
 const SESSION_COOKIE = 'yeyu_share_session';
+const MAX_ACTION_BODY_BYTES = 64 * 1024;
+
+const DEFAULT_LAN_SHARE_PERMISSIONS: LanSharePermissions = {
+  importPdf: true,
+  ai: true,
+  manage: false,
+};
+
+const AI_ACTIONS = new Set<YeyuMcpCommandName>([
+  'translate_page',
+  'ask_document',
+  'get_conversation',
+  'clear_conversation',
+  'regenerate_document',
+  'regenerate_course',
+]);
+const MANAGE_ACTIONS = new Set<YeyuMcpCommandName>([
+  'create_course',
+  'remove_document',
+  'remove_course',
+  'get_glossary',
+  'save_glossary',
+]);
+const SHARE_ACTIONS = new Set<YeyuMcpCommandName>([
+  ...AI_ACTIONS,
+  ...MANAGE_ACTIONS,
+]);
 
 interface LoginAttempt {
   failures: number;
@@ -63,7 +94,19 @@ interface LanShareOptions {
   readingStateStore?: ReadingStateStore;
   /** Runs the existing renderer-owned import pipeline on the host computer. */
   importPdf?: LanSharePdfImporter;
+  /** Runs a strictly allow-listed renderer action on the host computer. */
+  action?: LanShareActionRunner;
 }
+
+export interface LanShareActionRequest {
+  name: YeyuMcpCommandName;
+  args: Record<string, unknown>;
+  signal?: AbortSignal;
+}
+
+export type LanShareActionRunner = (
+  request: LanShareActionRequest,
+) => Promise<unknown>;
 
 export interface LanSharePdfImportRequest {
   courseId: string;
@@ -106,13 +149,39 @@ function jsonHeaders(): Record<string, string> {
   };
 }
 
-function shareCapabilities(canImportPdf: boolean) {
+function shareCapabilities(
+  canImportPdf: boolean,
+  canRunActions: boolean,
+  permissions: LanSharePermissions,
+) {
   return {
     readingState: true,
-    courseContent: canImportPdf ? ('write' as const) : ('read' as const),
-    importPdf: canImportPdf,
-    ai: canImportPdf,
-    manage: false,
+    courseContent:
+      (canImportPdf && permissions.importPdf) ||
+      (canRunActions && permissions.manage)
+        ? ('write' as const)
+        : ('read' as const),
+    importPdf: canImportPdf && permissions.importPdf,
+    ai: (canRunActions || canImportPdf) && permissions.ai,
+    manage: canRunActions && permissions.manage,
+  };
+}
+
+function normalizedPermissions(value: unknown): LanSharePermissions {
+  if (value === undefined) return { ...DEFAULT_LAN_SHARE_PERMISSIONS };
+  if (!isRecord(value)) throw new Error('局域网共享权限参数不合法。');
+  const keys: Array<keyof LanSharePermissions> = [
+    'importPdf',
+    'ai',
+    'manage',
+  ];
+  if (keys.some((key) => typeof value[key] !== 'boolean')) {
+    throw new Error('局域网共享权限参数不合法。');
+  }
+  return {
+    importPdf: value.importPdf as boolean,
+    ai: value.ai as boolean,
+    manage: value.manage as boolean,
   };
 }
 
@@ -293,6 +362,155 @@ function publicImportResult(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function publicConversation(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value) || !Array.isArray(value.messages)) return null;
+  return {
+    fingerprint: stringValue(value.fingerprint),
+    pageNumber: integerValue(value.pageNumber),
+    ...(value.scope === 'document' ? { scope: 'document' } : {}),
+    messages: value.messages.slice(-50).flatMap((message) => {
+      if (
+        !isRecord(message) ||
+        (message.role !== 'user' && message.role !== 'assistant')
+      ) {
+        return [];
+      }
+      return [
+        {
+          id: stringValue(message.id).slice(0, 255),
+          role: message.role,
+          content: stringValue(message.content).slice(0, 100_000),
+          createdAt: stringValue(message.createdAt).slice(0, 64),
+          ...(message.allowWebSearch === false
+            ? { allowWebSearch: false }
+            : {}),
+        },
+      ];
+    }),
+    createdAt: stringValue(value.createdAt).slice(0, 64),
+    updatedAt: stringValue(value.updatedAt).slice(0, 64),
+  };
+}
+
+function publicControlDocument(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  return {
+    id: stringValue(value.id).slice(0, 255),
+    fileName: stringValue(value.fileName).slice(0, 255),
+    pageCount: integerValue(value.pageCount),
+    ...(typeof value.status === 'string'
+      ? { status: value.status.slice(0, 64) }
+      : {}),
+    ...(typeof value.hasSummary === 'boolean'
+      ? { hasSummary: value.hasSummary }
+      : {}),
+    ...(typeof value.hasMindmap === 'boolean'
+      ? { hasMindmap: value.hasMindmap }
+      : {}),
+    ...(typeof value.includedInCourse === 'boolean'
+      ? { includedInCourse: value.includedInCourse }
+      : {}),
+  };
+}
+
+function publicControlCourse(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  return {
+    id: stringValue(value.id).slice(0, 255),
+    name: stringValue(value.name).slice(0, 255),
+    documents: Array.isArray(value.documents)
+      ? value.documents.flatMap((item) => {
+          const document = publicControlDocument(item);
+          return document ? [document] : [];
+        })
+      : [],
+  };
+}
+
+function publicGlossary(value: unknown): Record<string, unknown> {
+  if (!isRecord(value) || !Array.isArray(value.entries)) {
+    return { schemaVersion: 1, version: 0, entries: [] };
+  }
+  return {
+    schemaVersion: 1,
+    version: Math.max(0, integerValue(value.version)),
+    entries: value.entries.slice(0, 1000).flatMap((entry) => {
+      if (!isRecord(entry)) return [];
+      return [
+        {
+          source: stringValue(entry.source).slice(0, 200),
+          target: stringValue(entry.target).slice(0, 200),
+          forbidden: Array.isArray(entry.forbidden)
+            ? entry.forbidden
+                .filter((item): item is string => typeof item === 'string')
+                .slice(0, 20)
+                .map((item) => item.slice(0, 200))
+            : [],
+          note: stringValue(entry.note).slice(0, 1000),
+        },
+      ];
+    }),
+  };
+}
+
+function publicActionResult(
+  name: YeyuMcpCommandName,
+  value: unknown,
+): Record<string, unknown> {
+  const result = isRecord(value) ? value : {};
+  if (name === 'translate_page') {
+    const translation = isRecord(result.translation)
+      ? result.translation
+      : {};
+    return {
+      translation: {
+        pageNumber: integerValue(translation.pageNumber, 1),
+        targetLanguage: stringValue(translation.targetLanguage).slice(0, 128),
+        paragraphs: Array.isArray(translation.paragraphs)
+          ? translation.paragraphs
+              .slice(0, 500)
+              .filter((item): item is string => typeof item === 'string')
+              .map((item) => item.slice(0, 10_000))
+          : [],
+        provider: stringValue(translation.provider).slice(0, 255),
+        model: stringValue(translation.model).slice(0, 255),
+        updatedAt: stringValue(translation.updatedAt).slice(0, 64),
+      },
+    };
+  }
+  if (name === 'ask_document' || name === 'get_conversation') {
+    return { conversation: publicConversation(result.conversation) };
+  }
+  if (name === 'get_glossary' || name === 'save_glossary') {
+    return { glossary: publicGlossary(result.glossary) };
+  }
+  if (name === 'create_course') {
+    return publicControlCourse(result) ?? { id: '', name: '', documents: [] };
+  }
+  if (name === 'regenerate_document') {
+    return { document: publicControlDocument(result.document) };
+  }
+  if (name === 'regenerate_course') {
+    return { course: publicControlCourse(result.course) };
+  }
+  if (name === 'clear_conversation') {
+    return { cleared: result.cleared === true };
+  }
+  if (name === 'remove_document') {
+    return {
+      removed: result.removed === true,
+      documentId: stringValue(result.documentId).slice(0, 255),
+    };
+  }
+  if (name === 'remove_course') {
+    return {
+      removed: result.removed === true,
+      courseId: stringValue(result.courseId).slice(0, 255),
+    };
+  }
+  return {};
 }
 
 function stringValue(value: unknown, fallback = ''): string {
@@ -596,6 +814,10 @@ export class LanShareServer {
   private loginAttempts = new Map<string, LoginAttempt>();
   private readonly readingStates: ReadingStateStore;
   private readonly importPdf: LanSharePdfImporter | null;
+  private readonly action: LanShareActionRunner | null;
+  private permissions: LanSharePermissions = {
+    ...DEFAULT_LAN_SHARE_PERMISSIONS,
+  };
 
   constructor(
     layout: WorkspaceLayout,
@@ -611,6 +833,7 @@ export class LanShareServer {
       options.readingStateStore ??
       new ReadingStateStore(layout.settingsRoot, this.now);
     this.importPdf = options.importPdf ?? null;
+    this.action = options.action ?? null;
   }
 
   getStatus(): LanShareStatus {
@@ -627,6 +850,7 @@ export class LanShareServer {
   async start(
     password: string,
     requestedPort = DEFAULT_LAN_SHARE_PORT,
+    permissions?: LanSharePermissions,
   ): Promise<LanShareStatus> {
     if (this.server) throw new Error('局域网共享已经开启。');
     if (typeof password !== 'string' || password.length < 6) {
@@ -640,6 +864,7 @@ export class LanShareServer {
     ) {
       throw new Error('端口必须是 1024–65535 之间的整数。');
     }
+    const nextPermissions = normalizedPermissions(permissions);
     const clientIndex = await fs
       .stat(path.join(this.clientDirectory, 'index.html'))
       .catch(() => null);
@@ -687,6 +912,7 @@ export class LanShareServer {
     this.server = server;
     this.passwordSalt = salt;
     this.passwordHash = hash;
+    this.permissions = nextPermissions;
     this.port = actualPort;
     return this.getStatus();
   }
@@ -841,7 +1067,11 @@ export class LanShareServer {
         authenticated: true,
         expiresAt,
         csrfToken,
-        capabilities: shareCapabilities(this.importPdf !== null),
+        capabilities: shareCapabilities(
+          this.importPdf !== null,
+          this.action !== null,
+          this.permissions,
+        ),
       },
       {
         'Set-Cookie': sessionCookie(token, this.sessionTtlMs / 1000),
@@ -1060,6 +1290,10 @@ export class LanShareServer {
         return;
       }
       if (!this.requireCsrf(request, response)) return;
+      if (!this.permissions.importPdf) {
+        sendJson(response, 403, { error: '主电脑没有开放 PDF 导入权限。' });
+        return;
+      }
       if (!this.importPdf) {
         sendJson(response, 503, {
           error: '主电脑当前未启用 PDF 导入桥接，请重启页语后重试。',
@@ -1307,6 +1541,82 @@ export class LanShareServer {
     sendJson(response, 404, { error: '资料接口不存在。' });
   }
 
+  private async handleActionApi(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+  ): Promise<void> {
+    if (request.method !== 'POST') {
+      sendText(response, 405, '只支持 POST。');
+      return;
+    }
+    if (!this.requireCsrf(request, response)) return;
+    const rawName = decodePathSegment(
+      url.pathname.split('/').filter(Boolean).at(3),
+    );
+    const name = rawName as YeyuMcpCommandName | null;
+    if (!name || !SHARE_ACTIONS.has(name)) {
+      sendJson(response, 404, { error: '共享操作不存在。' });
+      return;
+    }
+    if (!this.action) {
+      sendJson(response, 503, {
+        error: '主电脑当前未启用共享操作桥接，请重启页语后重试。',
+      });
+      return;
+    }
+    if (AI_ACTIONS.has(name) && !this.permissions.ai) {
+      sendJson(response, 403, { error: '主电脑没有开放 AI 功能权限。' });
+      return;
+    }
+    if (MANAGE_ACTIONS.has(name) && !this.permissions.manage) {
+      sendJson(response, 403, { error: '主电脑没有开放课程管理权限。' });
+      return;
+    }
+    let body: unknown;
+    try {
+      body = JSON.parse(
+        (await this.requestBody(request, MAX_ACTION_BODY_BYTES)).toString(
+          'utf8',
+        ),
+      ) as unknown;
+    } catch {
+      sendJson(response, 400, { error: '共享操作参数格式不正确。' });
+      return;
+    }
+    if (!isRecord(body) || !isRecord(body.args)) {
+      sendJson(response, 400, { error: '共享操作参数格式不正确。' });
+      return;
+    }
+    try {
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      request.once('aborted', abort);
+      response.once('close', abort);
+      let result: unknown;
+      try {
+        result = await this.action({
+          name,
+          args: body.args,
+          signal: controller.signal,
+        });
+      } finally {
+        request.off('aborted', abort);
+        response.off('close', abort);
+      }
+      if (!response.destroyed) {
+        sendJson(response, 200, { result: publicActionResult(name, result) });
+      }
+    } catch (error) {
+      if (response.destroyed) return;
+      const message =
+        error instanceof Error && error.message.trim()
+          ? error.message.trim().slice(0, 1000)
+          : '主电脑未能完成共享操作。';
+      sendJson(response, 422, { error: message });
+    }
+  }
+
   private async serveClient(
     request: IncomingMessage,
     response: ServerResponse,
@@ -1400,8 +1710,17 @@ export class LanShareServer {
         authenticated: true,
         expiresAt: session.expiresAt,
         csrfToken: session.csrfToken,
-        capabilities: shareCapabilities(this.importPdf !== null),
+        capabilities: shareCapabilities(
+          this.importPdf !== null,
+          this.action !== null,
+          this.permissions,
+        ),
       });
+      return;
+    }
+    if (url.pathname.startsWith('/api/share/actions/')) {
+      if (!this.requireAuth(request, response)) return;
+      await this.handleActionApi(request, response, url);
       return;
     }
     if (url.pathname.startsWith('/api/share/courses')) {

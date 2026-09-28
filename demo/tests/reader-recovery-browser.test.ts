@@ -110,7 +110,15 @@ void test('storage recovery failure permits reading, retry and ignore while corr
   try {
     const electron = require('electron') as string;
     const useXvfb = process.platform === 'linux' && !process.env.DISPLAY;
-    const args = ['--no-sandbox', '--disable-gpu', `--user-data-dir=${directory}/profile`, main];
+    const args = [
+      ...(process.platform === 'linux' && process.env.DISPLAY && process.env.WAYLAND_DISPLAY
+        ? ['--ozone-platform=x11']
+        : []),
+      '--no-sandbox',
+      '--disable-gpu',
+      `--user-data-dir=${directory}/profile`,
+      main,
+    ];
     const output = await new Promise<string>((resolve, reject) => {
       const child = spawn(useXvfb ? 'xvfb-run' : electron, useXvfb ? ['-a', electron, ...args] : args,
         { env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }, stdio: ['ignore', 'pipe', 'pipe'] });

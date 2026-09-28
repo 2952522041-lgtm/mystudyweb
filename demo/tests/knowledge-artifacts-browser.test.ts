@@ -127,6 +127,9 @@ void test(
       const electron = require('electron') as string;
       const useXvfb = process.platform === 'linux' && !process.env.DISPLAY;
       const args = [
+        ...(process.platform === 'linux' && process.env.DISPLAY && process.env.WAYLAND_DISPLAY
+          ? ['--ozone-platform=x11']
+          : []),
         '--no-sandbox',
         '--disable-gpu',
         `--user-data-dir=${directory}/profile`,

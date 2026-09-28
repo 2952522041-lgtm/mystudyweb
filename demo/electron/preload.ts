@@ -49,8 +49,13 @@ const api: YeyuDesktopApi = {
     ipcRenderer.invoke(DESKTOP_CHANNELS.deleteCourse, courseDirectory),
   revealWorkspace: () => ipcRenderer.invoke(DESKTOP_CHANNELS.revealWorkspace),
   getLanShareStatus: () => ipcRenderer.invoke(DESKTOP_CHANNELS.lanShareStatus),
-  startLanShare: (password, port) =>
-    ipcRenderer.invoke(DESKTOP_CHANNELS.lanShareStart, password, port),
+  startLanShare: (password, port, permissions) =>
+    ipcRenderer.invoke(
+      DESKTOP_CHANNELS.lanShareStart,
+      password,
+      port,
+      permissions,
+    ),
   stopLanShare: () => ipcRenderer.invoke(DESKTOP_CHANNELS.lanShareStop),
   getReadingState: (courseId, documentId) =>
     ipcRenderer.invoke(DESKTOP_CHANNELS.readingStateGet, courseId, documentId),

@@ -3,6 +3,8 @@ import type {
   CourseManifest,
   DocumentDigest,
 } from './course-storage/types.ts';
+import type { Glossary } from './glossary.ts';
+import type { ChatScope, PageConversation } from './chat-cache.ts';
 import type { SharedTranslationRecord } from './shared-translation.ts';
 
 export interface SharedReadingState {
@@ -48,6 +50,28 @@ export interface SharedPdfImportResult {
     message?: string;
   };
 }
+
+export interface SharedGeneratedTranslation {
+  pageNumber: number;
+  targetLanguage: string;
+  paragraphs: string[];
+  provider: string;
+  model: string;
+  updatedAt: string;
+}
+
+export type SharedActionName =
+  | 'translate_page'
+  | 'ask_document'
+  | 'get_conversation'
+  | 'clear_conversation'
+  | 'create_course'
+  | 'regenerate_document'
+  | 'regenerate_course'
+  | 'remove_document'
+  | 'remove_course'
+  | 'get_glossary'
+  | 'save_glossary';
 
 export interface SharedCourseListItem {
   id: string;
@@ -288,6 +312,146 @@ export async function importSharedPdf(
       body: file,
     },
   );
+}
+
+export async function runSharedAction<T>(
+  name: SharedActionName,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const csrfToken = await getSharedCsrfToken();
+  const headers = new Headers({ 'Content-Type': 'application/json' });
+  if (csrfToken) headers.set('X-Yeyu-CSRF', csrfToken);
+  const payload = await requestJson<{ result: T }>(
+    `/api/share/actions/${encodeURIComponent(name)}`,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ args }),
+      signal,
+    },
+  );
+  return payload.result;
+}
+
+function documentArgs(
+  courseId: string,
+  documentId: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return { courseId, documentId, ...extra };
+}
+
+export function translateSharedPage(
+  courseId: string,
+  documentId: string,
+  page: number,
+  targetLanguage: string,
+  bypassCache = false,
+  signal?: AbortSignal,
+) {
+  return runSharedAction<{
+    translation: SharedGeneratedTranslation;
+  }>(
+    'translate_page',
+    documentArgs(courseId, documentId, {
+      page,
+      targetLanguage,
+      bypassCache,
+    }),
+    signal,
+  );
+}
+
+export function loadSharedConversation(
+  courseId: string,
+  documentId: string,
+  page: number,
+  scope: ChatScope,
+) {
+  return runSharedAction<{ conversation: PageConversation | null }>(
+    'get_conversation',
+    documentArgs(courseId, documentId, { page, scope }),
+  );
+}
+
+export function askSharedDocument(
+  courseId: string,
+  documentId: string,
+  page: number,
+  scope: ChatScope,
+  question: string,
+  signal?: AbortSignal,
+) {
+  return runSharedAction<{ conversation: PageConversation }>(
+    'ask_document',
+    documentArgs(courseId, documentId, {
+      page,
+      scope,
+      question,
+    }),
+    signal,
+  );
+}
+
+export function clearSharedConversation(
+  courseId: string,
+  documentId: string,
+  page: number,
+  scope: ChatScope,
+) {
+  return runSharedAction<{ cleared: true }>(
+    'clear_conversation',
+    documentArgs(courseId, documentId, { page, scope }),
+  );
+}
+
+export function createSharedCourse(name: string) {
+  return runSharedAction<{ id: string; name: string }>('create_course', {
+    name,
+  });
+}
+
+export function regenerateSharedDocument(
+  courseId: string,
+  documentId: string,
+  signal?: AbortSignal,
+) {
+  return runSharedAction(
+    'regenerate_document',
+    documentArgs(courseId, documentId),
+    signal,
+  );
+}
+
+export function regenerateSharedCourse(
+  courseId: string,
+  signal?: AbortSignal,
+) {
+  return runSharedAction('regenerate_course', { courseId }, signal);
+}
+
+export function removeSharedDocument(
+  courseId: string,
+  documentId: string,
+) {
+  return runSharedAction('remove_document',
+    documentArgs(courseId, documentId));
+}
+
+export function removeSharedCourse(courseId: string) {
+  return runSharedAction('remove_course', { courseId });
+}
+
+export function loadSharedGlossary(courseId: string) {
+  return runSharedAction<{ glossary: Glossary }>('get_glossary', { courseId });
+}
+
+export function saveSharedGlossary(courseId: string, glossary: Glossary) {
+  return runSharedAction<{ glossary: Glossary }>('save_glossary', {
+    courseId,
+    glossary,
+  });
 }
 
 export function isSharedView(): boolean {

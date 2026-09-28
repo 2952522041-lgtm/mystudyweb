@@ -839,6 +839,224 @@ void test('LAN share imports a validated PDF through the host renderer bridge', 
   }
 });
 
+void test('LAN share actions enforce CSRF and per-session permissions without leaking host fields', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-lan-share-'));
+  const client = await mkdtemp(path.join(os.tmpdir(), 'yeyu-share-client-'));
+  const fixture = await createFixture(root);
+  await writeFile(path.join(client, 'index.html'), 'share');
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const server = new LanShareServer(fixture.layout, client, {
+    host: '127.0.0.1',
+    action: async (action) => {
+      calls.push(action);
+      if (action.name === 'translate_page') {
+        return {
+          translation: {
+            pageNumber: 1,
+            targetLanguage: '简体中文',
+            paragraphs: ['译文'],
+            provider: 'host-provider',
+            model: 'host-model',
+            updatedAt: '2026-09-28T00:00:00.000Z',
+            apiKey: 'sk-never-return',
+          },
+          workspacePath: '/private/path',
+        };
+      }
+      return {
+        removed: true,
+        courseId: fixture.manifest.id,
+        apiKey: 'sk-never-return',
+      };
+    },
+  });
+  try {
+    let started = await server.start('动作权限-abcdef', 0, {
+      importPdf: false,
+      ai: true,
+      manage: false,
+    });
+    let login = await request(started.port!, '/api/share/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: '动作权限-abcdef' }),
+    });
+    let session = json<{
+      csrfToken: string;
+      capabilities: {
+        importPdf: boolean;
+        ai: boolean;
+        manage: boolean;
+      };
+    }>(login);
+    let cookie = cookieFrom(login);
+    assert.deepEqual(session.capabilities, {
+      readingState: true,
+      courseContent: 'read',
+      importPdf: false,
+      ai: true,
+      manage: false,
+    });
+    const translationPath = '/api/share/actions/translate_page';
+    const translationBody = JSON.stringify({
+      args: {
+        courseId: fixture.manifest.id,
+        documentId: fixture.document.id,
+        page: 1,
+        targetLanguage: '简体中文',
+      },
+    });
+    assert.equal(
+      (
+        await request(started.port!, translationPath, {
+          method: 'POST',
+          cookie,
+          body: translationBody,
+        })
+      ).status,
+      403,
+    );
+    const translated = await request(started.port!, translationPath, {
+      method: 'POST',
+      cookie,
+      headers: { 'X-Yeyu-CSRF': session.csrfToken },
+      body: translationBody,
+    });
+    assert.equal(translated.status, 200);
+    assert.match(translated.body.toString('utf8'), /译文/);
+    assert.doesNotMatch(
+      translated.body.toString('utf8'),
+      /sk-never|private\/path/,
+    );
+    assert.equal(
+      (
+        await request(started.port!, '/api/share/actions/remove_course', {
+          method: 'POST',
+          cookie,
+          headers: { 'X-Yeyu-CSRF': session.csrfToken },
+          body: JSON.stringify({ args: { courseId: fixture.manifest.id } }),
+        })
+      ).status,
+      403,
+    );
+    assert.equal(calls.length, 1);
+
+    await server.stop();
+    started = await server.start('管理权限-abcdef', started.port!, {
+      importPdf: false,
+      ai: false,
+      manage: true,
+    });
+    login = await request(started.port!, '/api/share/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: '管理权限-abcdef' }),
+    });
+    session = json<typeof session>(login);
+    cookie = cookieFrom(login);
+    assert.equal(session.capabilities.ai, false);
+    assert.equal(session.capabilities.manage, true);
+    assert.equal(
+      (
+        await request(started.port!, translationPath, {
+          method: 'POST',
+          cookie,
+          headers: { 'X-Yeyu-CSRF': session.csrfToken },
+          body: translationBody,
+        })
+      ).status,
+      403,
+    );
+    const removed = await request(
+      started.port!,
+      '/api/share/actions/remove_course',
+      {
+        method: 'POST',
+        cookie,
+        headers: { 'X-Yeyu-CSRF': session.csrfToken },
+        body: JSON.stringify({ args: { courseId: fixture.manifest.id } }),
+      },
+    );
+    assert.equal(removed.status, 200);
+    assert.doesNotMatch(removed.body.toString('utf8'), /sk-never/);
+    assert.equal(calls.at(-1)?.name, 'remove_course');
+  } finally {
+    await server.stop();
+    await rm(root, { recursive: true, force: true });
+    await rm(client, { recursive: true, force: true });
+  }
+});
+
+void test('disconnecting an AI action aborts the corresponding host task', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-lan-share-'));
+  const client = await mkdtemp(path.join(os.tmpdir(), 'yeyu-share-client-'));
+  const fixture = await createFixture(root);
+  await writeFile(path.join(client, 'index.html'), 'share');
+  let markStarted!: () => void;
+  let markAborted!: () => void;
+  const startedAction = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const abortedAction = new Promise<void>((resolve) => {
+    markAborted = resolve;
+  });
+  const server = new LanShareServer(fixture.layout, client, {
+    host: '127.0.0.1',
+    action: (action) =>
+      new Promise((_resolve, reject) => {
+        markStarted();
+        action.signal?.addEventListener(
+          'abort',
+          () => {
+            markAborted();
+            reject(new DOMException('Aborted', 'AbortError'));
+          },
+          { once: true },
+        );
+      }),
+  });
+  try {
+    const running = await server.start('取消任务-abcdef', 0);
+    const login = await request(running.port!, '/api/share/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: '取消任务-abcdef' }),
+    });
+    const session = json<{ csrfToken: string }>(login);
+    const body = JSON.stringify({
+      args: {
+        courseId: fixture.manifest.id,
+        documentId: fixture.document.id,
+        page: 1,
+        targetLanguage: '简体中文',
+      },
+    });
+    const pending = httpRequest({
+      host: '127.0.0.1',
+      port: running.port!,
+      path: '/api/share/actions/translate_page',
+      method: 'POST',
+      headers: {
+        Cookie: cookieFrom(login),
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        'X-Yeyu-CSRF': session.csrfToken,
+      },
+    });
+    pending.on('error', () => undefined);
+    pending.end(body);
+    await startedAction;
+    pending.destroy();
+    await Promise.race([
+      abortedAction,
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error('主电脑任务未收到取消信号。')), 2000),
+      ),
+    ]);
+  } finally {
+    await server.stop();
+    await rm(root, { recursive: true, force: true });
+    await rm(client, { recursive: true, force: true });
+  }
+});
+
 void test('LAN share sessions expire, logout, stop, and restart safely', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-lan-share-'));
   const client = await mkdtemp(path.join(os.tmpdir(), 'yeyu-share-client-'));

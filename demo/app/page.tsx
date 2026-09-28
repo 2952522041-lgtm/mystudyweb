@@ -2569,6 +2569,24 @@ function DesktopHome() {
           setView('courses');
           return courses.importPdf(command.args);
         }
+        case 'translate_page':
+        case 'ask_document':
+        case 'get_conversation':
+        case 'clear_conversation':
+        case 'create_course':
+        case 'regenerate_document':
+        case 'regenerate_course':
+        case 'remove_document':
+        case 'remove_course':
+        case 'get_glossary':
+        case 'save_glossary': {
+          if (!courses) throw new Error('课程知识库尚未就绪。');
+          return courses.runSharedAction(command.name, command.args);
+        }
+        case 'cancel_shared_action': {
+          if (!courses) throw new Error('课程知识库尚未就绪。');
+          return courses.cancelSharedAction(command.args);
+        }
         case 'go_to_page': {
           if (!reader) throw new Error('PDF 阅读器尚未就绪。');
           const result = reader.goToPage(command.args);

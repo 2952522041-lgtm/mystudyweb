@@ -51,6 +51,11 @@ void test('production app exposes the course workspace and reader handoff', asyn
     'loadSharedPdf',
     'onOpenSource',
     '不会发起生成',
+    'canUseAi',
+    'createSharedCourse',
+    'regenerateSharedDocument',
+    'removeSharedCourse',
+    'saveSharedGlossary',
   ]) {
     assert.match(sharedViewer + sharedReader, new RegExp(requirement));
   }
@@ -66,7 +71,7 @@ void test('production app exposes the course workspace and reader handoff', asyn
   }
   assert.doesNotMatch(
     sharedViewer,
-    /startLanShare|deleteCourse|removeDocument|synthesizeCourse/,
+    /startLanShare|synthesizeCourse|apiKey\s*[:=]/i,
   );
 });
 
