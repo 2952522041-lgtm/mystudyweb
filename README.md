@@ -175,6 +175,12 @@ node scripts/yeyu-tool.mjs import --wait <课程名称> /absolute/path/to/lectur
 
 CLI 默认只提交导入并明确报告排队状态，不把入队误报为整理完成；`--wait` 会使用返回的 `documentId` 只读轮询 `yeyu_get_state`，直到 `processing` 消失，并在输出中附带独立的 `completion.status`。若后台整理失败，CLI 会以非零状态退出并报告“PDF已保存，后台整理失败”；轮询异常或 30 分钟超时也不会重新导入。轮询过程中不会输出或重新使用控制文件中的令牌。
 
+## Blackboard 定时同步
+
+固定同步程序位于 `demo/scripts/blackboard/`，由现有定时任务调用。课程范围、preview 排除、内容哈希去重、PPT/PPTX 转换、MCP 导入与磁盘成果核验由代码执行，不依赖模型每轮重新设计流程。登录过期时明确停止并通知，不导出浏览器凭据。
+
+具体执行步骤与异常处理见 [Blackboard 自动化操作规程](docs/BLACKBOARD-AUTOMATION.md)。当前使用 Codex 浏览器登录，仍需 Codex 运行；尚不属于独立于 Codex 的常驻系统服务。
+
 ## 部署为公开网站
 
 两种方式任选：

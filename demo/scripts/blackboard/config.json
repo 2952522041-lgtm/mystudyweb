@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "site": "https://bb.cuhk.edu.cn",
+  "semester": "2610UG",
+  "courses": [
+    {
+      "code": "ECE3060",
+      "blackboardId": "_17870_1",
+      "yeyuName": "ece3060",
+      "enabled": true,
+      "roots": [{ "contentId": "_642863_1", "label": "Content" }]
+    },
+    {
+      "code": "ECE3080",
+      "blackboardId": "_17869_1",
+      "yeyuName": "ece3080",
+      "enabled": true,
+      "roots": [{ "contentId": "_642860_1", "label": "Content" }]
+    },
+    {
+      "code": "ECE3250",
+      "blackboardId": "_17866_1",
+      "yeyuName": "ece3250",
+      "enabled": true,
+      "roots": [{ "contentId": "_642851_1", "label": "Content" }]
+    },
+    {
+      "code": "CSC3002",
+      "blackboardId": "_17929_1",
+      "yeyuName": "csc3002",
+      "enabled": false,
+      "roots": []
+    }
+  ]
+}
