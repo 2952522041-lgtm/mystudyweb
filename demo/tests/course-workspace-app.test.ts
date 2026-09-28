@@ -22,6 +22,8 @@ void test('production app exposes the course workspace and reader handoff', asyn
     'PDF 脑图',
     'initialPage',
     'onOpenCourses',
+    'getReadingState',
+    'saveReadingState',
   ]) {
     assert.match(page, new RegExp(requirement));
   }
@@ -34,6 +36,7 @@ void test('production app exposes the course workspace and reader handoff', asyn
     'openPdf',
     'resolvePageOcr',
     '视觉模型识别',
+    'courseId',
   ]) {
     assert.match(library, new RegExp(requirement));
   }
@@ -56,6 +59,8 @@ void test('production app exposes the course workspace and reader handoff', asyn
     '/api/share/login',
     '/api/share/courses',
     "credentials: 'same-origin'",
+    '/reading-state',
+    'X-Yeyu-CSRF',
   ]) {
     assert.match(shareApi, new RegExp(requirement.replaceAll('/', '\\/')));
   }

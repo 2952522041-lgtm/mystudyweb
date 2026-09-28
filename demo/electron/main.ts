@@ -39,6 +39,10 @@ import {
 import { isSmokeRun, probePreloadBridge } from './smoke.ts';
 import { handleSquirrelStartup } from './squirrel.ts';
 import { LanShareServer } from './lan-share.ts';
+import {
+  ReadingStateConflictError,
+  ReadingStateStore,
+} from './reading-state-store.ts';
 import { McpControlServer, type McpControlRequest } from './mcp-control.ts';
 import { prepareMcpRendererArgs } from './mcp-import.ts';
 
@@ -272,6 +276,7 @@ function assertString(value: unknown, message: string): string {
 function registerDesktopIpc(
   layout: WorkspaceLayout,
   lanShareServer: LanShareServer,
+  readingStateStore: ReadingStateStore,
 ): void {
   ipcMain.handle(
     DESKTOP_CHANNELS.workspaceInfo,
@@ -421,6 +426,71 @@ function registerDesktopIpc(
     },
   );
   ipcMain.handle(DESKTOP_CHANNELS.lanShareStop, () => lanShareServer.stop());
+  const findReadingDocument = async (
+    courseIdValue: unknown,
+    documentIdValue: unknown,
+  ): Promise<{ courseId: string; documentId: string; pageCount: number }> => {
+    const courseId = assertString(courseIdValue, '课程 ID 不合法。');
+    const documentId = assertString(documentIdValue, 'PDF ID 不合法。');
+    const course = (await scanCourses(layout.coursesRoot)).find(
+      (item) => item.manifest.id === courseId,
+    );
+    const document = course?.manifest.documents.find(
+      (item): item is Record<string, unknown> =>
+        typeof item === 'object' &&
+        item !== null &&
+        (item as Record<string, unknown>).id === documentId,
+    );
+    const pageCount = document?.pageCount;
+    if (
+      !course ||
+      !document ||
+      !Number.isInteger(pageCount) ||
+      (pageCount as number) < 1
+    ) {
+      throw new Error('课程或 PDF 不存在，可能已被删除。');
+    }
+    return { courseId, documentId, pageCount: pageCount as number };
+  };
+  ipcMain.handle(
+    DESKTOP_CHANNELS.readingStateGet,
+    async (_event, courseIdValue, documentIdValue) => {
+      const target = await findReadingDocument(courseIdValue, documentIdValue);
+      return readingStateStore.get(target.courseId, target.documentId);
+    },
+  );
+  ipcMain.handle(
+    DESKTOP_CHANNELS.readingStatePut,
+    async (_event, courseIdValue, documentIdValue, value) => {
+      const target = await findReadingDocument(courseIdValue, documentIdValue);
+      if (
+        typeof value !== 'object' ||
+        value === null ||
+        !Number.isInteger(value.page) ||
+        value.page < 1 ||
+        value.page > target.pageCount ||
+        !Number.isInteger(value.zoom) ||
+        value.zoom < 50 ||
+        value.zoom > 200 ||
+        !Number.isInteger(value.expectedVersion) ||
+        value.expectedVersion < 0
+      ) {
+        throw new Error('页码、缩放比例或阅读进度版本不合法。');
+      }
+      try {
+        return await readingStateStore.put(target.courseId, target.documentId, {
+          page: value.page,
+          zoom: value.zoom,
+          expectedVersion: value.expectedVersion,
+        });
+      } catch (error) {
+        if (error instanceof ReadingStateConflictError) {
+          throw new Error(`[YEYU-READING-STATE-CONFLICT] ${error.message}`);
+        }
+        throw error;
+      }
+    },
+  );
 }
 
 async function createWindow(): Promise<BrowserWindow> {
@@ -475,9 +545,11 @@ if (!hasSingleInstanceLock) {
         app.getPath('documents'),
         process.env.YEYU_WORKSPACE_ROOT,
       );
+      const readingStateStore = new ReadingStateStore(layout.settingsRoot);
       const lanShareServer = new LanShareServer(
         layout,
         staticClientDirectory(),
+        { readingStateStore },
       );
       const mcpBridge = createMcpRendererBridge();
       const mcpControlServer = new McpControlServer({
@@ -485,7 +557,7 @@ if (!hasSingleInstanceLock) {
         dispatch: mcpBridge.dispatch,
       });
       await ensureWorkspace(layout);
-      registerDesktopIpc(layout, lanShareServer);
+      registerDesktopIpc(layout, lanShareServer, readingStateStore);
       app.on('before-quit', () => {
         void lanShareServer.stop();
         void mcpControlServer.stop();

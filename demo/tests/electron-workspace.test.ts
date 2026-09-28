@@ -31,6 +31,10 @@ import {
   writeCourseFile,
 } from '../electron/workspace.ts';
 import { handleSquirrelStartup } from '../electron/squirrel.ts';
+import {
+  ReadingStateConflictError,
+  ReadingStateStore,
+} from '../electron/reading-state-store.ts';
 
 function temporaryDirectory(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'yeyu-workspace-'));
@@ -129,6 +133,46 @@ void test('workspace creation is idempotent', async () => {
     await ensureWorkspace(layout);
     const entries = await readdir(layout.root);
     assert.deepEqual([...entries].sort(), ['Cache', 'Courses', 'Settings']);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('shared reading state serializes concurrent writes and survives restart', async () => {
+  const root = await temporaryDirectory();
+  try {
+    const layout = resolveWorkspaceLayout(root);
+    await ensureWorkspace(layout);
+    const store = new ReadingStateStore(layout.settingsRoot, () =>
+      Date.parse('2026-09-28T02:00:00.000Z'),
+    );
+    const results = await Promise.allSettled([
+      store.put('course-1', 'document-1', {
+        page: 2,
+        zoom: 100,
+        expectedVersion: 0,
+      }),
+      store.put('course-1', 'document-1', {
+        page: 3,
+        zoom: 110,
+        expectedVersion: 0,
+      }),
+    ]);
+    assert.equal(
+      results.filter((result) => result.status === 'fulfilled').length,
+      1,
+    );
+    const rejected = results.find((result) => result.status === 'rejected');
+    assert.ok(rejected && rejected.status === 'rejected');
+    assert.ok(rejected.reason instanceof ReadingStateConflictError);
+
+    const restored = await new ReadingStateStore(layout.settingsRoot).get(
+      'course-1',
+      'document-1',
+    );
+    assert.equal(restored?.version, 1);
+    assert.ok(restored?.page === 2 || restored?.page === 3);
+    assert.ok(restored?.zoom === 100 || restored?.zoom === 110);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

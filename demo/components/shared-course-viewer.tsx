@@ -489,7 +489,8 @@ export function SharedCourseViewer() {
             </div>
           </div>
           <p className="mt-7 text-sm leading-6 text-slate-600">
-            请输入主电脑设置的访问密码。登录后只能查看课程、PDF 和已有成果。
+            请输入主电脑设置的访问密码。课程资料保持只读，PDF
+            页码和缩放进度会与主电脑同步。
           </p>
           <form className="mt-6 space-y-4" onSubmit={login}>
             <label className="block space-y-2">
@@ -561,7 +562,7 @@ export function SharedCourseViewer() {
             页语 · 局域网共享
           </span>
           <span className="hidden items-center gap-1 rounded-full bg-white/10 px-2 py-1 text-[10px] text-slate-200 sm:flex">
-            <Wifi className="size-3" /> 只读
+            <Wifi className="size-3" /> 资料只读 · 进度同步
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -620,11 +621,11 @@ export function SharedCourseViewer() {
           <div className="mt-8 rounded-xl border border-slate-200 bg-white p-4 text-[11px] leading-5 text-slate-500">
             <p className="flex items-center gap-2 font-semibold text-slate-700">
               <ShieldCheck className="size-4 text-emerald-600" />
-              只读访问
+              资料只读
             </p>
             <p className="mt-2">
               查看端不会上传、编辑、删除或调用
-              AI。主电脑更新资料后，点击右上角刷新。
+              AI；阅读页码和缩放会保存到主电脑，并在两端恢复。
             </p>
           </div>
         </aside>

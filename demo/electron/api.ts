@@ -32,6 +32,8 @@ export const DESKTOP_CHANNELS = {
   lanShareStatus: 'yeyu:lan-share-status',
   lanShareStart: 'yeyu:lan-share-start',
   lanShareStop: 'yeyu:lan-share-stop',
+  readingStateGet: 'yeyu:reading-state-get',
+  readingStatePut: 'yeyu:reading-state-put',
   mcpCommand: 'yeyu:mcp-command',
   mcpResponse: 'yeyu:mcp-response',
 } as const;
@@ -68,6 +70,8 @@ export const DESKTOP_METHOD_NAMES = [
   'listCourses',
   'onMcpCommand',
   'readFile',
+  'getReadingState',
+  'saveReadingState',
   'revealWorkspace',
   'startLanShare',
   'stopLanShare',
@@ -88,6 +92,13 @@ export interface LanShareStatus {
   running: boolean;
   port: number | null;
   addresses: string[];
+}
+
+export interface SharedReadingState {
+  page: number;
+  zoom: number;
+  version: number;
+  updatedAt: string;
 }
 
 /** 主进程暴露给 renderer 的唯一文件入口；绝不暴露 ipcRenderer 或 fs 本身。 */
@@ -122,6 +133,15 @@ export interface YeyuDesktopApi {
   getLanShareStatus?(): Promise<LanShareStatus>;
   startLanShare?(password: string, port: number): Promise<LanShareStatus>;
   stopLanShare?(): Promise<void>;
+  getReadingState?(
+    courseId: string,
+    documentId: string,
+  ): Promise<SharedReadingState | null>;
+  saveReadingState?(
+    courseId: string,
+    documentId: string,
+    value: { page: number; zoom: number; expectedVersion: number },
+  ): Promise<SharedReadingState>;
   /**
    * 接收 Electron 主进程转发的本机 MCP 命令。preload 只把结构化命令交给
    * renderer，并把处理结果回传；不会向页面暴露端口、令牌或 ipcRenderer。

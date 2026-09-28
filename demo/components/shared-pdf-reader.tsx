@@ -34,7 +34,13 @@ import {
 } from '@/lib/pdfjs';
 import { itemsFromPdfJs } from '@/lib/pdf-text';
 import { shouldBuildTextLayer, textLayerScale } from '@/lib/pdf-text-layer';
-import { loadSharedTranslations, SharedApiError } from '@/lib/lan-share-api';
+import {
+  loadSharedReadingState,
+  loadSharedTranslations,
+  saveSharedReadingState,
+  SharedApiError,
+  type SharedReadingState,
+} from '@/lib/lan-share-api';
 import type { SharedTranslationRecord } from '@/lib/shared-translation';
 
 interface PageSize {
@@ -365,35 +371,227 @@ export function SharedPdfReader({
   onBack: () => void;
   onSessionExpired?: () => void;
 }) {
+  const initialPageTarget = Number.isFinite(initialPage)
+    ? Math.max(1, Math.floor(initialPage))
+    : 1;
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [pageSizes, setPageSizes] = useState<PageSize[]>([]);
-  const [page, setPage] = useState(initialPage);
+  const [page, setPage] = useState(initialPageTarget);
   const [zoom, setZoom] = useState(95);
   const [stageWidth, setStageWidth] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [visiblePages, setVisiblePages] = useState<Set<number>>(
-    () => new Set([initialPage]),
+    () => new Set([initialPageTarget]),
   );
   const [panel, setPanel] = useState<'summary' | 'mindmap' | 'translation'>(
     hasSummary ? 'summary' : hasMindmap ? 'mindmap' : 'translation',
   );
   const stageRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLElement>());
-  const pendingPageRef = useRef<number | null>(initialPage);
+  const pendingPageRef = useRef<number | null>(initialPageTarget);
+  const currentPageRef = useRef(initialPageTarget);
+  const currentZoomRef = useRef(95);
+  const pageCountRef = useRef(0);
+  const hostReadingStateRef = useRef<SharedReadingState | null>(null);
+  const readingGenerationRef = useRef(0);
+  const readingStateReadyRef = useRef(false);
+  const readingSyncDisabledRef = useRef(false);
+  const readingVersionRef = useRef(0);
+  const readingPageDirtyRef = useRef(false);
+  const readingZoomDirtyRef = useRef(false);
+  const readingSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const readingSaveInFlightRef = useRef(false);
+  const scheduleReadingSaveRef = useRef<(generation: number) => void>(
+    () => undefined,
+  );
+
+  const persistReadingState = useCallback(
+    async (generation: number) => {
+      if (
+        generation !== readingGenerationRef.current ||
+        !readingStateReadyRef.current ||
+        readingSyncDisabledRef.current ||
+        readingSaveInFlightRef.current ||
+        (!readingPageDirtyRef.current && !readingZoomDirtyRef.current)
+      ) {
+        return;
+      }
+
+      const savedPage = currentPageRef.current;
+      const savedZoom = currentZoomRef.current;
+      const expectedVersion = readingVersionRef.current;
+      readingPageDirtyRef.current = false;
+      readingZoomDirtyRef.current = false;
+      readingSaveInFlightRef.current = true;
+      try {
+        const result = await saveSharedReadingState(courseId, documentId, {
+          page: savedPage,
+          zoom: savedZoom,
+          expectedVersion,
+        });
+        if (generation === readingGenerationRef.current) {
+          readingVersionRef.current = result.state.version;
+        }
+      } catch (saveError) {
+        if (generation !== readingGenerationRef.current) return;
+        if (saveError instanceof SharedApiError) {
+          if (saveError.status === 409 && saveError.state !== undefined) {
+            // Keep the user's current page/zoom. The next actual change will
+            // use this newer version instead of retrying the same conflict.
+            readingVersionRef.current = saveError.state?.version ?? 0;
+          } else if (saveError.status === 401) {
+            readingSyncDisabledRef.current = true;
+            onSessionExpired?.();
+          }
+        }
+      } finally {
+        if (generation === readingGenerationRef.current) {
+          readingSaveInFlightRef.current = false;
+          if (currentPageRef.current !== savedPage) {
+            readingPageDirtyRef.current = true;
+          }
+          if (currentZoomRef.current !== savedZoom) {
+            readingZoomDirtyRef.current = true;
+          }
+          if (readingPageDirtyRef.current || readingZoomDirtyRef.current) {
+            scheduleReadingSaveRef.current(generation);
+          }
+        }
+      }
+    },
+    [courseId, documentId, onSessionExpired],
+  );
+
+  const scheduleReadingSave = useCallback(
+    (generation = readingGenerationRef.current) => {
+      if (
+        generation !== readingGenerationRef.current ||
+        !readingStateReadyRef.current ||
+        readingSyncDisabledRef.current ||
+        (!readingPageDirtyRef.current && !readingZoomDirtyRef.current)
+      ) {
+        return;
+      }
+      if (readingSaveTimerRef.current) {
+        clearTimeout(readingSaveTimerRef.current);
+      }
+      readingSaveTimerRef.current = setTimeout(() => {
+        readingSaveTimerRef.current = null;
+        void persistReadingState(generation);
+      }, 600);
+    },
+    [persistReadingState],
+  );
+  useEffect(() => {
+    scheduleReadingSaveRef.current = scheduleReadingSave;
+  }, [scheduleReadingSave]);
 
   useEffect(() => {
+    const generation = ++readingGenerationRef.current;
     let cancelled = false;
-    let loaded: PDFDocumentProxy | null = null;
+    const explicitPage = initialPageTarget > 1;
+    const clampPage = (value: number, pageCount = pageCountRef.current) => {
+      const normalized = Number.isFinite(value) ? Math.floor(value) : 1;
+      const atLeastOne = Math.max(normalized, 1);
+      return pageCount > 0 ? Math.min(atLeastOne, pageCount) : atLeastOne;
+    };
+    const clampZoom = (value: number) => {
+      const normalized = Number.isFinite(value) ? Math.round(value) : 95;
+      return Math.min(Math.max(normalized, 50), 200);
+    };
+    const applyReadingState = (state: SharedReadingState | null) => {
+      if (cancelled || generation !== readingGenerationRef.current) return;
+      hostReadingStateRef.current = state;
+      readingVersionRef.current =
+        state && Number.isInteger(state.version) && state.version >= 1
+          ? state.version
+          : 0;
+      readingStateReadyRef.current = true;
+      readingSyncDisabledRef.current = false;
+      if (!readingPageDirtyRef.current) {
+        const restoredPage = explicitPage
+          ? initialPageTarget
+          : (state?.page ?? 1);
+        const nextPage = clampPage(restoredPage);
+        currentPageRef.current = nextPage;
+        pendingPageRef.current = nextPage;
+        setPage(nextPage);
+        setVisiblePages(new Set([nextPage]));
+      }
+      if (!readingZoomDirtyRef.current) {
+        const nextZoom = clampZoom(state?.zoom ?? 95);
+        currentZoomRef.current = nextZoom;
+        setZoom(nextZoom);
+      }
+      scheduleReadingSave(generation);
+    };
+
+    const applyReadingDefaultsAfterFailure = (requestError: unknown) => {
+      if (cancelled || generation !== readingGenerationRef.current) return;
+      hostReadingStateRef.current = null;
+      readingVersionRef.current = 0;
+      readingStateReadyRef.current = true;
+      readingSyncDisabledRef.current =
+        requestError instanceof SharedApiError && requestError.status === 401;
+      if (!readingPageDirtyRef.current) {
+        const nextPage = clampPage(explicitPage ? initialPageTarget : 1);
+        currentPageRef.current = nextPage;
+        pendingPageRef.current = nextPage;
+        setPage(nextPage);
+        setVisiblePages(new Set([nextPage]));
+      }
+      if (!readingZoomDirtyRef.current) {
+        currentZoomRef.current = 95;
+        setZoom(95);
+      }
+      if (
+        requestError instanceof SharedApiError &&
+        requestError.status === 401
+      ) {
+        onSessionExpired?.();
+      }
+      scheduleReadingSave(generation);
+    };
+
     setError(null);
     setPdfDoc(null);
-    setPage(initialPage);
-    setVisiblePages(new Set([initialPage]));
-    pendingPageRef.current = initialPage;
+    setPageSizes([]);
+    currentPageRef.current = initialPageTarget;
+    currentZoomRef.current = 95;
+    pageCountRef.current = 0;
+    hostReadingStateRef.current = null;
+    readingStateReadyRef.current = false;
+    readingSyncDisabledRef.current = false;
+    readingVersionRef.current = 0;
+    // A source link is an explicit reading target. Preserve it over the host
+    // page and persist it once the host version is known; the ordinary page 1
+    // default remains clean and is never written during initialization.
+    readingPageDirtyRef.current = explicitPage;
+    readingZoomDirtyRef.current = false;
+    readingSaveInFlightRef.current = false;
+    if (readingSaveTimerRef.current) {
+      clearTimeout(readingSaveTimerRef.current);
+      readingSaveTimerRef.current = null;
+    }
+    setPage(initialPageTarget);
+    setZoom(95);
+    setVisiblePages(new Set([initialPageTarget]));
+    pendingPageRef.current = initialPageTarget;
+    pageRefs.current.clear();
+
+    void loadSharedReadingState(courseId, documentId)
+      .then((payload) => applyReadingState(payload.state ?? null))
+      .catch((requestError: unknown) => {
+        applyReadingDefaultsAfterFailure(requestError);
+      });
+
     void (async () => {
       try {
         const buffer = await file.arrayBuffer();
         const pdfjs = await loadPdfjs();
-        loaded = await pdfjs.getDocument({
+        const loaded = await pdfjs.getDocument({
           data: new Uint8Array(buffer.slice(0)),
         }).promise;
         const sizes: PageSize[] = [];
@@ -406,22 +604,56 @@ export function SharedPdfReader({
           const viewport = pdfPage.getViewport({ scale: 1 });
           sizes.push({ width: viewport.width, height: viewport.height });
         }
-        if (cancelled) return;
-        const firstPage = Math.min(Math.max(initialPage, 1), loaded.numPages);
+        if (cancelled || generation !== readingGenerationRef.current) return;
+        pageCountRef.current = loaded.numPages;
+        const firstPage = clampPage(
+          explicitPage
+            ? initialPageTarget
+            : (hostReadingStateRef.current?.page ?? 1),
+          loaded.numPages,
+        );
         setPageSizes(sizes);
-        setPage(firstPage);
-        setVisiblePages(new Set([firstPage]));
-        pendingPageRef.current = firstPage;
+        if (!readingPageDirtyRef.current) {
+          currentPageRef.current = firstPage;
+          setPage(firstPage);
+          setVisiblePages(new Set([firstPage]));
+          pendingPageRef.current = firstPage;
+        } else {
+          const currentPage = clampPage(
+            currentPageRef.current,
+            loaded.numPages,
+          );
+          currentPageRef.current = currentPage;
+          setPage(currentPage);
+          setVisiblePages(new Set([currentPage]));
+          pendingPageRef.current = currentPage;
+        }
         setPdfDoc(loaded);
       } catch {
-        if (!cancelled)
+        if (!cancelled && generation === readingGenerationRef.current)
           setError('PDF 文件暂时无法解析，可能正在更新或文件已损坏。');
       }
     })();
     return () => {
       cancelled = true;
+      if (readingGenerationRef.current === generation) {
+        readingGenerationRef.current += 1;
+      }
+      if (readingSaveTimerRef.current) {
+        clearTimeout(readingSaveTimerRef.current);
+        readingSaveTimerRef.current = null;
+      }
+      readingSaveInFlightRef.current = false;
     };
-  }, [file, fileKey, initialPage]);
+  }, [
+    courseId,
+    documentId,
+    file,
+    fileKey,
+    initialPageTarget,
+    onSessionExpired,
+    scheduleReadingSave,
+  ]);
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -495,19 +727,25 @@ export function SharedPdfReader({
 
   const goToPage = useCallback(
     (next: number) => {
-      const target = Math.min(Math.max(next, 1), pdfDoc?.numPages ?? 1);
+      const normalized = Number.isFinite(next) ? Math.floor(next) : 1;
+      const target = Math.min(Math.max(normalized, 1), pdfDoc?.numPages ?? 1);
+      if (target !== currentPageRef.current) {
+        readingPageDirtyRef.current = true;
+      }
+      currentPageRef.current = target;
       pendingPageRef.current = target;
       setPage(target);
       setVisiblePages((previous) => new Set([...previous, target]));
+      scheduleReadingSave();
     },
-    [pdfDoc?.numPages],
+    [pdfDoc?.numPages, scheduleReadingSave],
   );
 
   const updatePageFromScroll = () => {
     const stage = stageRef.current;
     if (!stage) return;
     const stageTop = stage.getBoundingClientRect().top;
-    let closest = page;
+    let closest = currentPageRef.current;
     let distance = Number.POSITIVE_INFINITY;
     for (const [number, element] of pageRefs.current) {
       const nextDistance = Math.abs(
@@ -518,8 +756,31 @@ export function SharedPdfReader({
         distance = nextDistance;
       }
     }
-    if (closest !== page) setPage(closest);
+    setVisiblePages((previous) =>
+      previous.has(closest) ? previous : new Set([...previous, closest]),
+    );
+    if (closest !== currentPageRef.current) {
+      currentPageRef.current = closest;
+      readingPageDirtyRef.current = true;
+      setPage(closest);
+      scheduleReadingSave();
+    }
   };
+
+  const changeZoom = useCallback(
+    (delta: number) => {
+      const target = Math.min(
+        Math.max(currentZoomRef.current + delta, 50),
+        200,
+      );
+      if (target === currentZoomRef.current) return;
+      currentZoomRef.current = target;
+      readingZoomDirtyRef.current = true;
+      setZoom(target);
+      scheduleReadingSave();
+    },
+    [scheduleReadingSave],
+  );
 
   const hasArtifactPanel = Boolean(digest && (hasSummary || hasMindmap));
   const hasTranslationPanel = Boolean(courseId && documentId);
@@ -542,7 +803,7 @@ export function SharedPdfReader({
           </div>
           <div className="min-w-0">
             <p className="text-[11px] font-semibold tracking-[0.18em] text-amber-700 uppercase">
-              局域网共享 · 只读
+              局域网共享 · 课程资料只读 · 进度同步
             </p>
             <p className="truncate text-sm font-medium text-slate-700">
               {file.name}
@@ -584,7 +845,7 @@ export function SharedPdfReader({
             variant="outline"
             size="icon-sm"
             aria-label="缩小"
-            onClick={() => setZoom((value) => Math.max(50, value - 10))}
+            onClick={() => changeZoom(-10)}
             disabled={zoom <= 50}
           >
             <Minus />
@@ -596,7 +857,7 @@ export function SharedPdfReader({
             variant="outline"
             size="icon-sm"
             aria-label="放大"
-            onClick={() => setZoom((value) => Math.min(200, value + 10))}
+            onClick={() => changeZoom(10)}
             disabled={zoom >= 200}
           >
             <Plus />
@@ -713,7 +974,7 @@ export function SharedPdfReader({
             <div className="border-b border-slate-200/80 px-5 py-4">
               <p className="text-xs font-semibold text-slate-800">已有成果</p>
               <p className="mt-1 text-[11px] text-slate-500">
-                只读查看，不会触发生成或上传。
+                课程资料只读，不会触发生成或上传；阅读进度会同步。
               </p>
             </div>
             {panelContent ? (
@@ -875,7 +1136,7 @@ export function SharedPdfReader({
         </aside>
       </section>
       <footer className="status-bar">
-        <span>局域网共享 · 只读 · {file.name}</span>
+        <span>局域网共享 · 课程资料只读 · 阅读进度同步 · {file.name}</span>
         <span className="hidden sm:inline">
           资料由主电脑实时读取，刷新后可获取更新
         </span>

@@ -9,6 +9,12 @@ import test from 'node:test';
 
 import { build } from 'esbuild';
 
+import {
+  loadSharedReadingState,
+  saveSharedReadingState,
+  SharedApiError,
+} from '../lib/lan-share-api.ts';
+
 const require = createRequire(import.meta.url);
 const demoRoot = path.resolve(import.meta.dirname, '..');
 const electronBinary = require('electron') as string;
@@ -504,6 +510,28 @@ function sendEmpty(response: http.ServerResponse, status: number): void {
   response.end();
 }
 
+const mockSharedSession = () => ({
+  expiresAt: Date.now() + 3600000,
+  csrfToken: 'browser-regression-csrf',
+  capabilities: {
+    readingState: true,
+    courseContent: 'read',
+    ai: false,
+    manage: false,
+  },
+});
+
+async function readJsonRequest(
+  request: http.IncomingMessage,
+): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<
+    string,
+    unknown
+  >;
+}
+
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -543,12 +571,12 @@ async function startMockShareServer(bundle: string) {
         sendJson(response, 401, { error: '请先登录。' });
         return;
       }
-      sendJson(response, 200, { expiresAt: Date.now() + 3600000 });
+      sendJson(response, 200, mockSharedSession());
       return;
     }
     if (url.pathname === '/api/share/login' && request.method === 'POST') {
       loggedIn = true;
-      sendJson(response, 200, { expiresAt: Date.now() + 3600000 });
+      sendJson(response, 200, mockSharedSession());
       return;
     }
     if (url.pathname === '/api/share/logout' && request.method === 'POST') {
@@ -601,6 +629,28 @@ async function startMockShareServer(bundle: string) {
       response.setHeader('Content-Length', String(body.byteLength));
       response.end(body);
       return;
+    }
+    if (
+      parts.length === 7 &&
+      parts[4] === 'documents' &&
+      parts[6] === 'reading-state'
+    ) {
+      if (request.method === 'GET') {
+        sendJson(response, 200, { state: null });
+        return;
+      }
+      if (request.method === 'PUT') {
+        const body = await readJsonRequest(request);
+        sendJson(response, 200, {
+          state: {
+            page: body.page,
+            zoom: body.zoom,
+            version: Number(body.expectedVersion) + 1,
+            updatedAt: '2026-09-28T03:00:00.000Z',
+          },
+        });
+        return;
+      }
     }
     if (
       parts.length === 7 &&
@@ -749,13 +799,13 @@ async function startFormalShareServer(publicDirectory: string, pdf: Buffer) {
         sendJson(response, 401, { error: '请先登录。' });
         return;
       }
-      sendJson(response, 200, { expiresAt: Date.now() + 3600000 });
+      sendJson(response, 200, mockSharedSession());
       return;
     }
     if (url.pathname === '/api/share/login' && request.method === 'POST') {
       request.resume();
       loggedIn = true;
-      sendJson(response, 200, { expiresAt: Date.now() + 3600000 });
+      sendJson(response, 200, mockSharedSession());
       return;
     }
     if (url.pathname === '/api/share/logout' && request.method === 'POST') {
@@ -816,6 +866,33 @@ async function startFormalShareServer(publicDirectory: string, pdf: Buffer) {
       parts[3] === course.id &&
       parts[4] === 'documents' &&
       parts[5] === course.documentId &&
+      parts[6] === 'reading-state'
+    ) {
+      if (request.method === 'GET') {
+        sendJson(response, 200, { state: null });
+        return;
+      }
+      if (request.method === 'PUT') {
+        const body = await readJsonRequest(request);
+        sendJson(response, 200, {
+          state: {
+            page: body.page,
+            zoom: body.zoom,
+            version: Number(body.expectedVersion) + 1,
+            updatedAt: '2026-09-28T03:00:00.000Z',
+          },
+        });
+        return;
+      }
+    }
+    if (
+      parts.length === 7 &&
+      parts[0] === 'api' &&
+      parts[1] === 'share' &&
+      parts[2] === 'courses' &&
+      parts[3] === course.id &&
+      parts[4] === 'documents' &&
+      parts[5] === course.documentId &&
       parts[6] === 'translations'
     ) {
       sendJson(response, 200, {
@@ -830,7 +907,9 @@ async function startFormalShareServer(publicDirectory: string, pdf: Buffer) {
             provider: 'formal-test-provider',
             model: 'formal-test-model',
             promptVersion: 4,
-            paragraphs: [`正式真实 PDF 第 6 页译文（响应版本 ${++translationRevision}）`],
+            paragraphs: [
+              `正式真实 PDF 第 6 页译文（响应版本 ${++translationRevision}）`,
+            ],
             updatedAt: '2026-09-10T02:02:00.000Z',
           },
         ],
@@ -1456,7 +1535,10 @@ function runCommand(
 }
 
 type FormalBrowserResult = {
-  diagnostics?: { events: Array<{ type: string }>; tabs: Array<{ hit: boolean }> };
+  diagnostics?: {
+    events: Array<{ type: string }>;
+    tabs: Array<{ hit: boolean }>;
+  };
   source?: {
     sourcePage?: number;
     realPdfRendered?: boolean;
@@ -1480,7 +1562,11 @@ type FormalBrowserResult = {
     zoom?: number;
     scrollPreserved?: boolean;
   };
-  mindmap?: { mindmapVisible?: boolean; contentVisible?: boolean; startedBeforeInput?: boolean };
+  mindmap?: {
+    mindmapVisible?: boolean;
+    contentVisible?: boolean;
+    startedBeforeInput?: boolean;
+  };
 };
 
 let formalBrowserPromise: Promise<FormalBrowserResult> | null = null;
@@ -1608,8 +1694,14 @@ void test(
     assert.equal(result.refreshedTranslation?.scrollPreserved, true);
     assert.equal(result.mindmap?.mindmapVisible, true);
     assert.equal(result.mindmap?.contentVisible, true);
-    assert.ok(result.diagnostics?.events.some((event) => event.type === 'click'), '原生点击诊断应记录真实事件');
-    assert.ok(result.diagnostics?.tabs.every((tab) => tab.hit), '窄窗口标签中心应命中对应标签');
+    assert.ok(
+      result.diagnostics?.events.some((event) => event.type === 'click'),
+      '原生点击诊断应记录真实事件',
+    );
+    assert.ok(
+      result.diagnostics?.tabs.every((tab) => tab.hit),
+      '窄窗口标签中心应命中对应标签',
+    );
   },
 );
 
@@ -1622,3 +1714,108 @@ void test(
     assert.equal(result.mindmap?.contentVisible, true);
   },
 );
+
+void test('shared reading-state client encodes the route, sends CSRF, and preserves conflicts', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  let conflict = false;
+  const state = {
+    page: 4,
+    zoom: 110,
+    version: 3,
+    updatedAt: '2026-09-28T03:00:00.000Z',
+  };
+  globalThis.fetch = (async (input, init) => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    calls.push({ url, init });
+    if (url.endsWith('/api/share/session')) {
+      return Response.json({
+        expiresAt: Date.now() + 3600000,
+        csrfToken: 'test-csrf-token',
+        capabilities: {
+          readingState: true,
+          courseContent: 'read',
+          ai: false,
+          manage: false,
+        },
+      });
+    }
+    if (url.endsWith('/reading-state') && init?.method === 'PUT') {
+      const headers = new Headers(init.headers);
+      assert.equal(headers.get('X-Yeyu-CSRF'), 'test-csrf-token');
+      assert.equal(typeof init.body, 'string');
+      assert.deepEqual(JSON.parse(init.body as string), {
+        page: 5,
+        zoom: 120,
+        expectedVersion: 3,
+      });
+      if (conflict) {
+        return Response.json(
+          { error: '阅读进度冲突。', state },
+          { status: 409 },
+        );
+      }
+      return Response.json({ state: { ...state, page: 5, zoom: 120 } });
+    }
+    if (url.endsWith('/reading-state')) {
+      return Response.json({ state });
+    }
+    throw new Error(`意外的共享 API 请求：${url}`);
+  }) as typeof fetch;
+  try {
+    const courseId = 'course/with slash';
+    const documentId = 'document with spaces';
+    const loaded = await loadSharedReadingState(courseId, documentId);
+    assert.deepEqual(loaded, { state });
+    assert.equal(
+      calls[0]?.url,
+      `/api/share/courses/${encodeURIComponent(courseId)}/documents/${encodeURIComponent(documentId)}/reading-state`,
+    );
+
+    const saved = await saveSharedReadingState(courseId, documentId, {
+      page: 5,
+      zoom: 120,
+      expectedVersion: 3,
+    });
+    assert.equal(saved.state.page, 5);
+    assert.equal(calls[1]?.url, '/api/share/session');
+    assert.equal(calls[2]?.init?.method, 'PUT');
+
+    conflict = true;
+    await assert.rejects(
+      saveSharedReadingState(courseId, documentId, {
+        page: 5,
+        zoom: 120,
+        expectedVersion: 3,
+      }),
+      (error: unknown) =>
+        error instanceof SharedApiError &&
+        error.status === 409 &&
+        error.state?.version === state.version,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+void test('shared reader restores host state without claiming full read-only access', async () => {
+  const source = await readFile(
+    new URL('../components/shared-pdf-reader.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /loadSharedReadingState\(courseId, documentId\)/);
+  assert.match(source, /hostReadingStateRef\.current\?\.page/);
+  assert.match(source, /const explicitPage = initialPageTarget > 1/);
+  assert.match(
+    source,
+    /readingVersionRef\.current = saveError\.state\?\.version \?\? 0/,
+  );
+  assert.match(source, /setTimeout\(\(\) => \{/);
+  assert.match(source, /\}, 600\);/);
+  assert.match(source, /课程资料只读 · 进度同步/);
+});

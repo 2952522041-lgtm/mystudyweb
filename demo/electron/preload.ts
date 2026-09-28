@@ -52,6 +52,15 @@ const api: YeyuDesktopApi = {
   startLanShare: (password, port) =>
     ipcRenderer.invoke(DESKTOP_CHANNELS.lanShareStart, password, port),
   stopLanShare: () => ipcRenderer.invoke(DESKTOP_CHANNELS.lanShareStop),
+  getReadingState: (courseId, documentId) =>
+    ipcRenderer.invoke(DESKTOP_CHANNELS.readingStateGet, courseId, documentId),
+  saveReadingState: (courseId, documentId, value) =>
+    ipcRenderer.invoke(
+      DESKTOP_CHANNELS.readingStatePut,
+      courseId,
+      documentId,
+      value,
+    ),
   onMcpCommand: (handler) => {
     const listener = (_event: Electron.IpcRendererEvent, value: unknown) => {
       const command = value as YeyuMcpCommand;

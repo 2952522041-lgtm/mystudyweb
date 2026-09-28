@@ -696,6 +696,13 @@ function PdfReader({
   const sizeLoaderRef = useRef<ReturnType<typeof createProgressivePageSizes> | null>(null);
   const importLifecycleRef = useRef(createPdfImportLifecycle<PDFDocumentProxy>());
   const consumedInitialFileRef = useRef<File | null>(null);
+  const hostReadingRef = useRef<{
+    key: string;
+    version: number;
+    page: number | null;
+    zoom: number | null;
+  } | null>(null);
+  const hostReadingSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
     const lifecycle = importLifecycleRef.current;
     return () => { lifecycle.dispose(); sizeLoaderRef.current?.cancel(); };
@@ -1165,6 +1172,23 @@ function PdfReader({
         const contextDocument = courseContext?.document;
         const courseDocument =
           contextDocument?.fingerprint === fingerprint ? contextDocument : null;
+        const hostReadingKey =
+          courseDocument && courseContext
+            ? `${courseContext.courseId}:${courseDocument.id}`
+            : null;
+        let hostReadingState:
+          | { page: number; zoom: number; version: number; updatedAt: string }
+          | null = null;
+        if (hostReadingKey && window.yeyuDesktop?.getReadingState) {
+          try {
+            hostReadingState = await window.yeyuDesktop.getReadingState(
+              courseContext!.courseId,
+              courseDocument!.id,
+            );
+          } catch {
+            // Host progress is additive; IndexedDB recovery still opens the PDF.
+          }
+        }
         if (
           origin !== 'dialog' &&
           courseDocument &&
@@ -1192,6 +1216,14 @@ function PdfReader({
         setPublishedTranslations(restoredTranslations);
         courseDocumentIdRef.current =
           origin !== 'dialog' ? (courseDocument?.id ?? null) : null;
+        hostReadingRef.current = hostReadingKey
+          ? {
+              key: hostReadingKey,
+              version: hostReadingState?.version ?? 0,
+              page: hostReadingState?.page ?? null,
+              zoom: hostReadingState?.zoom ?? null,
+            }
+          : null;
         prefetchedTranslationsRef.current.clear();
         setPrefetchedTranslationPage(null);
         pageElementsRef.current.clear();
@@ -1216,12 +1248,14 @@ function PdfReader({
           pageCount: doc.numPages,
           scanDetected,
           restoredPage:
-            restored && restored.lastPage > 1 ? restored.lastPage : null,
+            (hostReadingState?.page ?? restored?.lastPage ?? 1) > 1
+              ? (hostReadingState?.page ?? restored?.lastPage ?? null)
+              : null,
         });
-        setZoom(restored?.zoom ?? DEFAULT_ZOOM);
+        setZoom(hostReadingState?.zoom ?? restored?.zoom ?? DEFAULT_ZOOM);
         setTargetLanguage(restored?.targetLanguage ?? '简体中文');
         const openingPage = clampPage(
-          requestedPage ?? restored?.lastPage ?? 1,
+          requestedPage ?? hostReadingState?.page ?? restored?.lastPage ?? 1,
           doc.numPages,
         );
         sizeAnchorRef.current = { page: openingPage, fraction: 0 };
@@ -1294,6 +1328,90 @@ function PdfReader({
     }, PROGRESS_SAVE_DELAY);
     return () => clearTimeout(timer);
   }, [pdfDoc, docMeta, page, zoom, targetLanguage, progressRecovery]);
+
+  // Course PDFs use one host-owned progress record so the desktop reader and
+  // authenticated Windows viewer resume from the same page and zoom.
+  useEffect(() => {
+    const api = window.yeyuDesktop;
+    const document = courseContext?.document;
+    if (
+      !pdfDoc ||
+      !docMeta ||
+      !document ||
+      document.fingerprint !== docMeta.fingerprint ||
+      !api?.saveReadingState
+    ) {
+      return;
+    }
+    const key = `${courseContext.courseId}:${document.id}`;
+    const known = hostReadingRef.current;
+    if (
+      known?.key === key &&
+      known.page === page &&
+      known.zoom === zoom
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      hostReadingSaveQueueRef.current = hostReadingSaveQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const current = hostReadingRef.current;
+          if (current?.key !== key) return;
+          if (current.page === page && current.zoom === zoom) return;
+          try {
+            const saved = await api.saveReadingState!(
+              courseContext.courseId,
+              document.id,
+              { page, zoom, expectedVersion: current.version },
+            );
+            if (hostReadingRef.current?.key === key) {
+              hostReadingRef.current = {
+                key,
+                version: saved.version,
+                page: saved.page,
+                zoom: saved.zoom,
+              };
+            }
+            return;
+          } catch {
+            // Refresh the optimistic version once, then preserve the local
+            // target. Queue serialization prevents this reader's own writes
+            // from racing each other.
+          }
+          try {
+            const latest = await api.getReadingState?.(
+              courseContext.courseId,
+              document.id,
+            );
+            if (!latest || hostReadingRef.current?.key !== key) return;
+            hostReadingRef.current = {
+              key,
+              version: latest.version,
+              page: latest.page,
+              zoom: latest.zoom,
+            };
+            if (latest.page === page && latest.zoom === zoom) return;
+            const retried = await api.saveReadingState!(
+              courseContext.courseId,
+              document.id,
+              { page, zoom, expectedVersion: latest.version },
+            );
+            if (hostReadingRef.current?.key === key) {
+              hostReadingRef.current = {
+                key,
+                version: retried.version,
+                page: retried.page,
+                zoom: retried.zoom,
+              };
+            }
+          } catch {
+            // Local IndexedDB progress remains available when IPC is transient.
+          }
+        });
+    }, PROGRESS_SAVE_DELAY);
+    return () => clearTimeout(timer);
+  }, [courseContext, docMeta, page, pdfDoc, zoom]);
 
   // Per-page pipeline: extract a text layer, fall back to cached visual OCR,
   // then use the existing translation cache/provider.

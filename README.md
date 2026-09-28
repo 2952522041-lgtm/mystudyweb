@@ -117,7 +117,7 @@ sudo apt install ./out/make/deb/x64/yeyu_0.1.0_amd64.deb
 - 主窗口只允许唯一的应用 origin（本地回环上的只读静态产物服务器）；离开该 origin 的导航一律拒绝，外部 http/https 链接改用系统浏览器打开；`setWindowOpenHandler` 默认 deny；未知协议拒绝
 - renderer 只能通过 `window.yeyuDesktop` 的白名单方法访问课程文件；所有相对路径都做穿越/符号链接检查，写入采用「临时文件 → rename」
 - API Key 不写入工作区，也不出现在日志和安装包中
-- 局域网共享默认关闭；开启后单独绑定 `0.0.0.0` 的只读 HTTP 服务，课程、PDF 和成果接口都要通过密码会话认证，不暴露工作区任意路径或 AI/写入接口
+- 局域网共享默认关闭；开启后单独绑定 `0.0.0.0` 的 HTTP 服务，课程、PDF 和成果保持只读并通过密码会话认证；仅阅读页码和缩放可经 CSRF 防护及版本检查写回主机状态，不暴露工作区任意路径或 AI/课程写入接口
 - 局域网共享使用普通 HTTP，不提供加密传输；多网卡会列出多个非回环访问地址。完整的开启、Windows 访问与校园网连通性说明见 [`docs/LAN-SHARING.md`](docs/LAN-SHARING.md)
 
 ### 桌面开发与测试

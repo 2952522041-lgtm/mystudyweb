@@ -5,6 +5,32 @@ import type {
 } from './course-storage/types.ts';
 import type { SharedTranslationRecord } from './shared-translation.ts';
 
+export interface SharedReadingState {
+  page: number;
+  zoom: number;
+  version: number;
+  updatedAt: string;
+}
+
+export interface SharedSessionCapabilities {
+  readingState: boolean;
+  courseContent: 'read' | 'write';
+  ai: boolean;
+  manage: boolean;
+}
+
+export interface SharedSession {
+  expiresAt: number;
+  csrfToken: string;
+  capabilities: SharedSessionCapabilities;
+}
+
+export interface SaveSharedReadingStateInput {
+  page: number;
+  zoom: number;
+  expectedVersion: number;
+}
+
 export interface SharedCourseListItem {
   id: string;
   name: string;
@@ -20,12 +46,35 @@ export interface SharedCourseDetail {
 
 export class SharedApiError extends Error {
   readonly status: number;
+  readonly state?: SharedReadingState | null;
 
-  constructor(status: number, message: string) {
+  constructor(
+    status: number,
+    message: string,
+    state?: SharedReadingState | null,
+  ) {
     super(message);
     this.name = 'SharedApiError';
     this.status = status;
+    this.state = state;
   }
+}
+
+let sharedCsrfToken: string | null = null;
+
+function isSharedReadingState(value: unknown): value is SharedReadingState {
+  if (!value || typeof value !== 'object') return false;
+  const state = value as Record<string, unknown>;
+  return (
+    Number.isInteger(state.page) &&
+    Number(state.page) >= 1 &&
+    Number.isFinite(state.zoom) &&
+    Number(state.zoom) >= 50 &&
+    Number(state.zoom) <= 200 &&
+    Number.isInteger(state.version) &&
+    Number(state.version) >= 1 &&
+    typeof state.updatedAt === 'string'
+  );
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -46,32 +95,54 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const body = (await response.json().catch(() => ({}))) as {
     error?: string;
+    state?: unknown;
   };
   if (!response.ok) {
     throw new SharedApiError(
       response.status,
       body.error ?? '共享服务返回了无法理解的错误。',
+      response.status === 409
+        ? body.state === null
+          ? null
+          : isSharedReadingState(body.state)
+            ? body.state
+            : undefined
+        : undefined,
     );
   }
   return body as T;
 }
 
-export async function getSharedSession(): Promise<{ expiresAt: number }> {
-  return requestJson('/api/share/session');
+export async function getSharedSession(): Promise<SharedSession> {
+  const session = await requestJson<SharedSession>('/api/share/session');
+  sharedCsrfToken =
+    typeof session.csrfToken === 'string' && session.csrfToken.length > 0
+      ? session.csrfToken
+      : null;
+  return session;
 }
 
 export async function loginToSharedService(
   password: string,
-): Promise<{ expiresAt: number }> {
-  return requestJson('/api/share/login', {
+): Promise<SharedSession> {
+  const session = await requestJson<SharedSession>('/api/share/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password }),
   });
+  sharedCsrfToken =
+    typeof session.csrfToken === 'string' && session.csrfToken.length > 0
+      ? session.csrfToken
+      : null;
+  return session;
 }
 
 export async function logoutFromSharedService(): Promise<void> {
-  await requestJson('/api/share/logout', { method: 'POST' });
+  try {
+    await requestJson('/api/share/logout', { method: 'POST' });
+  } finally {
+    sharedCsrfToken = null;
+  }
 }
 
 export async function listSharedCourses(): Promise<{
@@ -124,6 +195,38 @@ export async function loadSharedTranslations(
   return requestJson(
     `/api/share/courses/${encodeURIComponent(courseId)}/documents/${encodeURIComponent(documentId)}/translations`,
   );
+}
+
+function sharedReadingStatePath(courseId: string, documentId: string): string {
+  return `/api/share/courses/${encodeURIComponent(courseId)}/documents/${encodeURIComponent(documentId)}/reading-state`;
+}
+
+export async function loadSharedReadingState(
+  courseId: string,
+  documentId: string,
+): Promise<{ state: SharedReadingState | null }> {
+  return requestJson(sharedReadingStatePath(courseId, documentId));
+}
+
+async function getSharedCsrfToken(): Promise<string | null> {
+  if (sharedCsrfToken) return sharedCsrfToken;
+  const session = await getSharedSession();
+  return sharedCsrfToken ?? session.csrfToken ?? null;
+}
+
+export async function saveSharedReadingState(
+  courseId: string,
+  documentId: string,
+  input: SaveSharedReadingStateInput,
+): Promise<{ state: SharedReadingState }> {
+  const csrfToken = await getSharedCsrfToken();
+  const headers = new Headers({ 'Content-Type': 'application/json' });
+  if (csrfToken) headers.set('X-Yeyu-CSRF', csrfToken);
+  return requestJson(sharedReadingStatePath(courseId, documentId), {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(input),
+  });
 }
 
 export function isSharedView(): boolean {

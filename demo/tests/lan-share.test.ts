@@ -31,7 +31,12 @@ interface HttpResult {
 function request(
   port: number,
   pathname: string,
-  options: { method?: string; cookie?: string; body?: string } = {},
+  options: {
+    method?: string;
+    cookie?: string;
+    body?: string;
+    headers?: Record<string, string>;
+  } = {},
 ): Promise<HttpResult> {
   return new Promise((resolve, reject) => {
     const body = options.body ?? '';
@@ -42,6 +47,7 @@ function request(
         path: pathname,
         method: options.method ?? 'GET',
         headers: {
+          ...options.headers,
           ...(options.cookie ? { Cookie: options.cookie } : {}),
           ...(body
             ? {
@@ -531,6 +537,119 @@ void test('LAN share authenticates every data endpoint and reads Chinese files',
 
     await server.stop();
   } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(client, { recursive: true, force: true });
+  }
+});
+
+void test('LAN share persists versioned reading state and rejects stale writes', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-lan-share-'));
+  const client = await mkdtemp(path.join(os.tmpdir(), 'yeyu-share-client-'));
+  const fixture = await createFixture(root);
+  await writeFile(path.join(client, 'index.html'), 'share');
+  let now = Date.parse('2026-09-28T01:00:00.000Z');
+  const endpoint = `/api/share/courses/${encodeURIComponent(fixture.manifest.id)}/documents/${encodeURIComponent(fixture.document.id)}/reading-state`;
+  const createServer = () =>
+    new LanShareServer(fixture.layout, client, {
+      host: '127.0.0.1',
+      now: () => now,
+    });
+  let server = createServer();
+  try {
+    let started = await server.start('进度同步-abcdef', 0);
+    const login = await request(started.port!, '/api/share/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: '进度同步-abcdef' }),
+    });
+    assert.equal(login.status, 200);
+    const session = json<{
+      csrfToken: string;
+      capabilities: {
+        readingState: boolean;
+        courseContent: string;
+        ai: boolean;
+        manage: boolean;
+      };
+    }>(login);
+    assert.equal(session.capabilities.readingState, true);
+    assert.equal(session.capabilities.courseContent, 'read');
+    assert.equal(session.capabilities.ai, false);
+    const cookie = cookieFrom(login);
+
+    const empty = await request(started.port!, endpoint, { cookie });
+    assert.equal(empty.status, 200);
+    assert.deepEqual(json(empty), { state: null });
+
+    const noCsrf = await request(started.port!, endpoint, {
+      method: 'PUT',
+      cookie,
+      body: JSON.stringify({ page: 2, zoom: 110, expectedVersion: 0 }),
+    });
+    assert.equal(noCsrf.status, 403);
+
+    const first = await request(started.port!, endpoint, {
+      method: 'PUT',
+      cookie,
+      headers: { 'X-Yeyu-CSRF': session.csrfToken },
+      body: JSON.stringify({ page: 2, zoom: 110, expectedVersion: 0 }),
+    });
+    assert.equal(first.status, 200);
+    assert.deepEqual(json(first), {
+      state: {
+        page: 2,
+        zoom: 110,
+        version: 1,
+        updatedAt: '2026-09-28T01:00:00.000Z',
+      },
+    });
+
+    now += 1000;
+    const conflict = await request(started.port!, endpoint, {
+      method: 'PUT',
+      cookie,
+      headers: { 'X-Yeyu-CSRF': session.csrfToken },
+      body: JSON.stringify({ page: 1, zoom: 95, expectedVersion: 0 }),
+    });
+    assert.equal(conflict.status, 409);
+    assert.equal(
+      json<{ state: { version: number } }>(conflict).state.version,
+      1,
+    );
+
+    const invalidPage = await request(started.port!, endpoint, {
+      method: 'PUT',
+      cookie,
+      headers: { 'X-Yeyu-CSRF': session.csrfToken },
+      body: JSON.stringify({ page: 3, zoom: 110, expectedVersion: 1 }),
+    });
+    assert.equal(invalidPage.status, 400);
+
+    const previousPort = started.port!;
+    await server.stop();
+    server = createServer();
+    started = await server.start('进度同步-new-password', previousPort);
+    const relogin = await request(started.port!, '/api/share/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: '进度同步-new-password' }),
+    });
+    const restored = await request(started.port!, endpoint, {
+      cookie: cookieFrom(relogin),
+    });
+    assert.equal(restored.status, 200);
+    assert.equal(json<{ state: { page: number } }>(restored).state.page, 2);
+
+    const persisted = JSON.parse(
+      await readFile(
+        path.join(fixture.layout.settingsRoot, 'shared-reading-state.json'),
+        'utf8',
+      ),
+    ) as { states: Array<Record<string, unknown>> };
+    assert.equal(persisted.states.length, 1);
+    assert.equal(persisted.states[0]?.courseId, fixture.manifest.id);
+    assert.equal(persisted.states[0]?.documentId, fixture.document.id);
+    assert.equal('csrfToken' in persisted.states[0]!, false);
+  } finally {
+    await server.stop();
     await rm(root, { recursive: true, force: true });
     await rm(client, { recursive: true, force: true });
   }

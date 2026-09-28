@@ -94,6 +94,7 @@ import {
 export interface CourseReaderContext {
   glossary?: Glossary;
   glossaryFingerprint?: string;
+  courseId: string;
   courseName: string;
   document: DocumentRecord;
   digest?: DocumentDigest;
@@ -962,6 +963,7 @@ export function CourseLibrary({
       onOpenDocument(file, {
         glossary,
         glossaryFingerprint: await glossaryFingerprint(glossary),
+        courseId: entry.bundle.manifest.id,
         courseName: entry.bundle.manifest.name,
         document,
         digest: entry.bundle.digests[document.id],

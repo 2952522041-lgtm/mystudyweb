@@ -8,6 +8,10 @@ import type { LanShareStatus } from './api.ts';
 import { listCourseFiles, readCourseFile, scanCourses } from './workspace.ts';
 import type { DesktopCourseManifest, DesktopCourseSummary } from './api.ts';
 import {
+  ReadingStateConflictError,
+  ReadingStateStore,
+} from './reading-state-store.ts';
+import {
   assertSafeRelativeSegments,
   WorkspacePathError,
   type WorkspaceLayout,
@@ -32,6 +36,7 @@ interface LoginAttempt {
 
 interface ShareSession {
   expiresAt: number;
+  csrfToken: string;
 }
 
 interface PublishedTranslationRecord {
@@ -53,6 +58,8 @@ interface LanShareOptions {
   now?: () => number;
   /** Tests can use loopback; production leaves this at the LAN-facing default. */
   host?: string;
+  /** Desktop IPC and the HTTP listener must share one mutation queue. */
+  readingStateStore?: ReadingStateStore;
 }
 
 interface ShareDocument {
@@ -79,6 +86,15 @@ function jsonHeaders(): Record<string, string> {
   return {
     'Cache-Control': 'no-store',
     'Content-Type': 'application/json; charset=utf-8',
+  };
+}
+
+function shareCapabilities() {
+  return {
+    readingState: true,
+    courseContent: 'read' as const,
+    ai: false,
+    manage: false,
   };
 }
 
@@ -483,6 +499,7 @@ export class LanShareServer {
   private port: number | null = null;
   private sessions = new Map<string, ShareSession>();
   private loginAttempts = new Map<string, LoginAttempt>();
+  private readonly readingStates: ReadingStateStore;
 
   constructor(
     layout: WorkspaceLayout,
@@ -494,6 +511,9 @@ export class LanShareServer {
     this.sessionTtlMs = options.sessionTtlMs ?? LAN_SHARE_SESSION_TTL_MS;
     this.now = options.now ?? Date.now;
     this.host = options.host ?? '0.0.0.0';
+    this.readingStates =
+      options.readingStateStore ??
+      new ReadingStateStore(layout.settingsRoot, this.now);
   }
 
   getStatus(): LanShareStatus {
@@ -712,11 +732,17 @@ export class LanShareServer {
     this.loginAttempts.delete(address);
     const token = randomBytes(32).toString('hex');
     const expiresAt = this.now() + this.sessionTtlMs;
-    this.sessions.set(token, { expiresAt });
+    const csrfToken = randomBytes(32).toString('hex');
+    this.sessions.set(token, { expiresAt, csrfToken });
     sendJson(
       response,
       200,
-      { authenticated: true, expiresAt },
+      {
+        authenticated: true,
+        expiresAt,
+        csrfToken,
+        capabilities: shareCapabilities(),
+      },
       {
         'Set-Cookie': sessionCookie(token, this.sessionTtlMs / 1000),
       },
@@ -742,6 +768,32 @@ export class LanShareServer {
   ): boolean {
     if (this.isAuthenticated(request)) return true;
     sendJson(response, 401, { error: '请先登录局域网共享。' });
+    return false;
+  }
+
+  private requireCsrf(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): boolean {
+    const token = parseCookie(request.headers.cookie, SESSION_COOKIE);
+    const session = token ? this.sessions.get(token) : null;
+    const submitted = request.headers['x-yeyu-csrf'];
+    const expectedBuffer = session
+      ? Buffer.from(session.csrfToken, 'utf8')
+      : Buffer.alloc(0);
+    const submittedBuffer =
+      typeof submitted === 'string'
+        ? Buffer.from(submitted, 'utf8')
+        : Buffer.alloc(0);
+    if (
+      session &&
+      typeof submitted === 'string' &&
+      submittedBuffer.byteLength === expectedBuffer.byteLength &&
+      timingSafeEqual(submittedBuffer, expectedBuffer)
+    ) {
+      return true;
+    }
+    sendJson(response, 403, { error: '安全校验失败，请刷新页面后重试。' });
     return false;
   }
 
@@ -852,10 +904,6 @@ export class LanShareServer {
     response: ServerResponse,
     url: URL,
   ): Promise<void> {
-    if (request.method !== 'GET') {
-      sendText(response, 405, '只支持 GET。');
-      return;
-    }
     const parts = url.pathname.split('/').filter(Boolean).slice(3);
     const courseId = decodePathSegment(parts[0]);
     if (!courseId) {
@@ -863,6 +911,10 @@ export class LanShareServer {
       return;
     }
     if (parts.length === 1) {
+      if (request.method !== 'GET') {
+        sendText(response, 405, '只支持 GET。');
+        return;
+      }
       const course = await this.findCourse(courseId);
       if (!course) {
         sendJson(response, 404, { error: '课程不存在，可能已被删除。' });
@@ -885,6 +937,10 @@ export class LanShareServer {
       parts[1] === 'artifacts' &&
       (parts[2] === 'course-summary' || parts[2] === 'course-mindmap')
     ) {
+      if (request.method !== 'GET') {
+        sendText(response, 405, '只支持 GET。');
+        return;
+      }
       const course = await this.findCourse(courseId);
       if (!course) {
         sendJson(response, 404, { error: '课程不存在，可能已被删除。' });
@@ -911,6 +967,70 @@ export class LanShareServer {
     const document = course.documents.find((item) => item.id === documentId);
     if (!document) {
       sendJson(response, 404, { error: '这份 PDF 不存在，可能已被删除。' });
+      return;
+    }
+    if (parts[3] === 'reading-state' && parts.length === 4) {
+      if (request.method === 'GET') {
+        sendJson(response, 200, {
+          state: await this.readingStates.get(courseId, documentId),
+        });
+        return;
+      }
+      if (request.method !== 'PUT') {
+        sendText(response, 405, '只支持 GET 或 PUT。');
+        return;
+      }
+      if (!this.requireCsrf(request, response)) return;
+      let body: unknown;
+      try {
+        body = JSON.parse((await this.requestBody(request)).toString('utf8'));
+      } catch {
+        sendJson(response, 400, { error: '阅读进度请求格式不正确。' });
+        return;
+      }
+      if (!isRecord(body)) {
+        sendJson(response, 400, { error: '阅读进度请求格式不正确。' });
+        return;
+      }
+      const page = body.page;
+      const zoom = body.zoom;
+      const expectedVersion = body.expectedVersion;
+      if (
+        !Number.isInteger(page) ||
+        (page as number) < 1 ||
+        (page as number) > document.pageCount ||
+        !Number.isInteger(zoom) ||
+        (zoom as number) < 50 ||
+        (zoom as number) > 200 ||
+        !Number.isInteger(expectedVersion) ||
+        (expectedVersion as number) < 0
+      ) {
+        sendJson(response, 400, {
+          error: '页码、缩放比例或阅读进度版本不合法。',
+        });
+        return;
+      }
+      try {
+        const state = await this.readingStates.put(courseId, documentId, {
+          page: page as number,
+          zoom: zoom as number,
+          expectedVersion: expectedVersion as number,
+        });
+        sendJson(response, 200, { state });
+      } catch (error) {
+        if (error instanceof ReadingStateConflictError) {
+          sendJson(response, 409, {
+            error: error.message,
+            state: error.current,
+          });
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+    if (request.method !== 'GET') {
+      sendText(response, 405, '只支持 GET。');
       return;
     }
     if (parts[3] === 'translations') {
@@ -1093,6 +1213,8 @@ export class LanShareServer {
       sendJson(response, 200, {
         authenticated: true,
         expiresAt: session.expiresAt,
+        csrfToken: session.csrfToken,
+        capabilities: shareCapabilities(),
       });
       return;
     }
