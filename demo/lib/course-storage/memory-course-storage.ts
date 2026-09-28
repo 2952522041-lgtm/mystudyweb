@@ -1,4 +1,6 @@
 import { EMPTY_GLOSSARY, parseGlossary, type Glossary } from '../glossary.ts';
+import { rawPdfRecord, artifactsReady, processingBundle } from './background-records.ts';
+import type { DocumentProcessing, PdfMetadata } from './types.ts';
 import { createCourseId, sanitizeFileName } from './file-utils.ts';
 import type {
   AiCourseKnowledge,
@@ -51,6 +53,33 @@ export class MemoryCourseStorage implements CourseStorage {
   async load(): Promise<CourseBundle> {
     if (!this.bundle) throw new Error('课程不存在。');
     return structuredClone(this.bundle);
+  }
+
+  async savePdf(file: File, metadata: PdfMetadata, options: ImportOptions, expectedRevision: number): Promise<ImportResult> {
+    const current = await this.load();
+    this.assertRevision(current, expectedRevision);
+    const document = rawPdfRecord(current, file, metadata, options);
+    this.files.set(document.id, file);
+    this.bundle = {...current, manifest:{...current.manifest, revision:current.manifest.revision+1, updatedAt:document.updatedAt, documents:[...current.manifest.documents, document]}};
+    return {bundle:await this.load(), document};
+  }
+
+  async setDocumentProcessing(documentId: string, processing: DocumentProcessing | undefined, expectedRevision: number): Promise<CourseBundle> {
+    const current = await this.load();
+    this.assertRevision(current, expectedRevision);
+    this.bundle = processingBundle(current, documentId, processing);
+    return this.load();
+  }
+
+  async mergeDocuments(documentIds: string[], expectedRevision: number, aiKnowledge: AiCourseKnowledge): Promise<CourseBundle> {
+    const current = await this.load();
+    this.assertRevision(current, expectedRevision);
+    if (!documentIds.length || documentIds.some(id => !current.digests[id] || !current.manifest.documents.some(doc => doc.id === id))) throw new Error('文档摘要不存在。');
+    const now = new Date().toISOString();
+    const knowledge = applyAiCourseKnowledge(current.knowledge, aiKnowledge, now);
+    this.bundle = {...current, knowledge, manifest:{...current.manifest, revision:current.manifest.revision+1, activeKnowledgeVersion:knowledge.version, updatedAt:now,
+      documents:current.manifest.documents.map(doc => documentIds.includes(doc.id) ? {...doc, processing:undefined, includedInCourse:true, status:'course-merged', updatedAt:now} : doc)}};
+    return this.load();
   }
 
   async importDocument(
@@ -112,11 +141,8 @@ export class MemoryCourseStorage implements CourseStorage {
     );
     if (!document) throw new Error('文档不存在。');
     if (digest) current.digests[documentId] = digest;
-    document.hasSummary = true;
-    document.hasMindmap = true;
-    document.status = document.includedInCourse
-      ? 'course-merged'
-      : 'document-artifacts-ready';
+    if (!current.digests[documentId]) throw new Error('文档摘要不存在。');
+    Object.assign(document, artifactsReady(document));
     current.manifest.revision += 1;
     this.bundle = current;
     return this.load();

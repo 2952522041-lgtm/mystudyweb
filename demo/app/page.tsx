@@ -2515,6 +2515,11 @@ function DesktopHome() {
             </header>
             <CourseLibrary
               onControlReady={registerCourseControl}
+              onBundleUpdated={(bundle) => setReaderContext(previous => {
+                if (!previous || previous.courseName !== bundle.manifest.name) return previous;
+                const document = bundle.manifest.documents.find(item => item.id === previous.document.id);
+                return document ? {...previous, document, digest:bundle.digests[document.id]} : previous;
+              })}
               onOpenDocument={(file, context) => {
                 setReaderFile(file);
                 setReaderContext({

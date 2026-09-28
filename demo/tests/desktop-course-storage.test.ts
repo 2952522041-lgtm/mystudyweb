@@ -481,12 +481,115 @@ void test('desktop glossary lives in course directory and survives adapter recre
     const storage = new DesktopCourseStorage(api, directoryName);
     await storage.initialize('术语课程');
     assert.deepEqual(await storage.loadGlossary(), EMPTY_GLOSSARY);
-    const glossary = reviseGlossary(EMPTY_GLOSSARY, [{ source: 'mass', target: '质量', forbidden: ['群众'], note: '' }]);
+    const glossary = reviseGlossary(EMPTY_GLOSSARY, [
+      { source: 'mass', target: '质量', forbidden: ['群众'], note: '' },
+    ]);
     const before = await storage.load();
     await storage.saveGlossary(glossary);
-    assert.deepEqual(await new DesktopCourseStorage(api, directoryName).loadGlossary(), glossary);
+    assert.deepEqual(
+      await new DesktopCourseStorage(api, directoryName).loadGlossary(),
+      glossary,
+    );
     assert.deepEqual(await storage.load(), before);
-    await api.writeFile(directoryName, ['glossary.json'], new TextEncoder().encode('{bad'));
+    await api.writeFile(
+      directoryName,
+      ['glossary.json'],
+      new TextEncoder().encode('{bad'),
+    );
     await assert.rejects(storage.loadGlossary());
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('desktop raw save survives restart, persists processing, and writes a digest later without touching knowledge or notes', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-background-import-'));
+  try {
+    const api = new FakeWorkspaceApi(root);
+    await api.getWorkspaceInfo();
+    const { directoryName } = await api.createCourseDirectory('后台课程');
+    const storage = new DesktopCourseStorage(api, directoryName);
+    const initial = await storage.initialize('后台课程');
+    const note = '# 后台课程笔记\n\n用户手写内容，不应被后台导入覆盖。\n';
+    await api.writeFile(
+      directoryName,
+      ['我的课程笔记.md'],
+      new TextEncoder().encode(note),
+    );
+    const knowledgeBefore = await api.readFile(directoryName, [
+      'Knowledge',
+      'knowledge-v0.json',
+    ]);
+    const noteBefore = await api.readFile(directoryName, ['我的课程笔记.md']);
+    const fingerprint = 'a'.repeat(64);
+    const raw = await storage.savePdf(
+      pdfFile('queued.pdf', 'durable raw pdf'),
+      { fingerprint, pageCount: 3 },
+      {
+        generateSummary: true,
+        generateMindmap: true,
+        mergeIntoCourse: true,
+        includeConversationInsights: false,
+      },
+      initial.manifest.revision,
+    );
+    assert.equal(raw.document.status, 'copied');
+    assert.equal(raw.document.processing?.status, 'queued');
+    assert.equal(raw.bundle.digests[raw.document.id], undefined);
+
+    const reopened = new DesktopCourseStorage(api, directoryName);
+    const persisted = await reopened.load();
+    assert.equal(persisted.manifest.documents[0]?.processing?.status, 'queued');
+    assert.equal(persisted.digests[raw.document.id], undefined);
+    const opened = await reopened.openPdf(raw.document.id);
+    assert.equal(await opened.text(), 'durable raw pdf');
+
+    const running = await reopened.setDocumentProcessing(
+      raw.document.id,
+      {
+        ...persisted.manifest.documents[0]!.processing!,
+        status: 'running',
+        updatedAt: new Date().toISOString(),
+      },
+      persisted.manifest.revision,
+    );
+    const afterRunningRestart = await new DesktopCourseStorage(
+      api,
+      directoryName,
+    ).load();
+    assert.equal(
+      afterRunningRestart.manifest.documents[0]?.processing?.status,
+      'running',
+    );
+
+    const digest = makeDigest({
+      documentId: raw.document.id,
+      fingerprint,
+      title: '后台生成的摘要',
+      sourcePages: [1, 2, 3],
+    });
+    const withDigest = await reopened.updateDocumentArtifacts(
+      raw.document.id,
+      running.manifest.revision,
+      digest,
+    );
+    assert.deepEqual(withDigest.digests[raw.document.id], digest);
+    assert.equal(withDigest.manifest.documents[0]?.processing?.phase, 'course');
+    assert.equal(
+      withDigest.manifest.documents[0]?.processing?.status,
+      'queued',
+    );
+    const restored = await new DesktopCourseStorage(api, directoryName).load();
+    assert.deepEqual(restored.digests[raw.document.id], digest);
+    assert.deepEqual(
+      await api.readFile(directoryName, ['Knowledge', 'knowledge-v0.json']),
+      knowledgeBefore,
+    );
+    assert.deepEqual(
+      await api.readFile(directoryName, ['我的课程笔记.md']),
+      noteBefore,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

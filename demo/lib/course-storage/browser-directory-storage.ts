@@ -1,4 +1,6 @@
 import { EMPTY_GLOSSARY, parseGlossary, type Glossary } from '../glossary.ts';
+import { rawPdfRecord, artifactsReady, processingBundle } from './background-records.ts';
+import type { DocumentProcessing, PdfMetadata } from './types.ts';
 import {
   assertSafeArtifactContent,
   createCourseId,
@@ -199,6 +201,38 @@ export class BrowserDirectoryStorage implements CourseStorage {
     return { manifest, knowledge, digests };
   }
 
+  async savePdf(file: File, metadata: PdfMetadata, options: ImportOptions, expectedRevision: number): Promise<ImportResult> {
+    const current = await this.load();
+    this.assertRevision(current.manifest, expectedRevision);
+    const document = rawPdfRecord(current, file, metadata, options);
+    await writeFile(this.root, ['PDFs', document.storedFileName], await file.arrayBuffer());
+    const bundle = {...current, manifest:{...current.manifest, revision:current.manifest.revision+1, updatedAt:document.updatedAt, documents:[...current.manifest.documents, document]}};
+    await this.createRevision(current);
+    await writeFile(this.root, ['course.json'], JSON.stringify(bundle.manifest, null, 2));
+    return {bundle, document};
+  }
+
+  async setDocumentProcessing(documentId: string, processing: DocumentProcessing | undefined, expectedRevision: number): Promise<CourseBundle> {
+    const current = await this.load();
+    this.assertRevision(current.manifest, expectedRevision);
+    const next = processingBundle(current, documentId, processing);
+    await writeFile(this.root, ['course.json'], JSON.stringify(next.manifest, null, 2));
+    return next;
+  }
+
+  async mergeDocuments(documentIds: string[], expectedRevision: number, aiKnowledge: AiCourseKnowledge): Promise<CourseBundle> {
+    const current = await this.load();
+    this.assertRevision(current.manifest, expectedRevision);
+    if (!documentIds.length || documentIds.some(id => !current.digests[id] || !current.manifest.documents.some(doc => doc.id === id))) throw new Error('文档摘要不存在。');
+    const now = new Date().toISOString();
+    const knowledge = applyAiCourseKnowledge(current.knowledge, aiKnowledge, now);
+    const bundle: CourseBundle = {...current, knowledge, manifest:{...current.manifest, revision:current.manifest.revision+1, activeKnowledgeVersion:knowledge.version, updatedAt:now,
+      documents:current.manifest.documents.map(doc => documentIds.includes(doc.id) ? {...doc, processing:undefined, includedInCourse:true, status:'course-merged', updatedAt:now} : doc)}};
+    await this.createRevision(current);
+    await this.writeBundle(bundle, true);
+    return bundle;
+  }
+
   async importDocument(
     file: File,
     digest: DocumentDigest,
@@ -284,15 +318,7 @@ export class BrowserDirectoryStorage implements CourseStorage {
     const now = new Date().toISOString();
     const documents = current.manifest.documents.map((document) =>
       document.id === documentId
-        ? {
-            ...document,
-            hasSummary: true,
-            hasMindmap: true,
-            status: document.includedInCourse
-              ? ('course-merged' as const)
-              : ('document-artifacts-ready' as const),
-            updatedAt: now,
-          }
+        ? artifactsReady(document)
         : document,
     );
     const target = documents.find((document) => document.id === documentId)!;

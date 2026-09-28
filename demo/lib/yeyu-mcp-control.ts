@@ -1,4 +1,5 @@
 import type { ReaderRightModeName } from './reader-shortcuts.ts';
+import type { DocumentProcessing, ImportStage } from './course-storage/types.ts';
 
 export interface EntityLocator {
   id?: string;
@@ -9,6 +10,11 @@ export interface CourseControlDocument {
   id: string;
   fileName: string;
   pageCount: number;
+  status?: ImportStage;
+  hasSummary?: boolean;
+  hasMindmap?: boolean;
+  includedInCourse?: boolean;
+  processing?: DocumentProcessing;
 }
 
 export interface CourseControlItem {
@@ -62,6 +68,8 @@ export interface CourseLibraryControl {
     courseName: string;
     fileName: string;
     message: string;
+    documentId?: string;
+    processing?: DocumentProcessing;
   }>;
 }
 

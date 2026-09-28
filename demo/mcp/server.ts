@@ -565,14 +565,14 @@ export function createYeyuMcpServer(
       invokeElectronCommand(name, args, options));
   const server = new McpServer(YEYU_MCP_SERVER_INFO, {
     instructions:
-      '页语本地课程阅读器控制工具。命令会通过本机已认证的页语桌面端执行。',
+      '页语本地课程阅读器控制工具。命令会通过本机已认证的页语桌面端执行；PDF 导入保存成功后会立即返回，后台整理状态请通过 get_state 查询。',
   });
 
   registerCommandTool(
     server,
     'yeyu_get_state',
     YEYU_TOOL_COMMANDS.yeyu_get_state,
-    '获取页语当前课程、文档、阅读页码和右侧阅读面板状态。',
+    '获取页语当前课程、文档、阅读页码和右侧阅读面板状态。每个 course.documents 项包含 status、hasSummary、hasMindmap、includedInCourse；后台整理期间还会提供 processing（phase 为 document/course，status 为 queued/running/failed，另含 options、updatedAt），缺少 processing 表示当前没有后台任务。',
     yeyuGetStateArgsSchema,
     yeyuGetStateArgsSchema,
     invokeCommand,
@@ -626,7 +626,7 @@ export function createYeyuMcpServer(
     server,
     'yeyu_import_pdf',
     YEYU_TOOL_COMMANDS.yeyu_import_pdf,
-    '读取本机 PDF 并写入页语课程，课程必须用 courseId 或 courseName 定位。每份新 PDF 都会调用已配置的知识库 AI 建立内部摘要，扫描件还可能调用 OCR，因此可能产生费用；默认另行生成可见总结和脑图并合并课程。',
+    '读取本机 PDF 并保存到页语课程后立即排队后台整理，课程必须用 courseId 或 courseName 定位。返回 courseId、courseName、fileName、documentId、message 及可选 processing；调用返回表示 PDF 已保存/任务已接受，不表示 AI 摘要、脑图或课程合并已经完成。使用 yeyu_get_state 按 documentId 查看 queued/running/failed 状态；processing 缺少时表示没有后台任务。后台整理可能调用知识库 AI 或 OCR 并产生费用，generateSummary、generateMindmap、mergeIntoCourse 仍控制对应成果。',
     importPdfInputSchema,
     yeyuImportPdfArgsSchema,
     invokeCommand,

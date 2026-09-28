@@ -308,3 +308,26 @@ void test('registered tools return command results as MCP text and dispatch impo
     /courseId 或 courseName/,
   );
 });
+
+void test('MCP descriptions document queued import and state polling semantics', () => {
+  const server = createYeyuMcpServer({
+    invokeCommand: async () => ({ accepted: true }),
+  });
+  const registeredTools = (
+    server as unknown as {
+      _registeredTools: Record<string, { description?: string }>;
+    }
+  )._registeredTools;
+  assert.match(
+    registeredTools.yeyu_import_pdf.description ?? '',
+    /立即排队后台整理/,
+  );
+  assert.match(
+    registeredTools.yeyu_import_pdf.description ?? '',
+    /不表示 AI 摘要、脑图或课程合并已经完成/,
+  );
+  assert.match(
+    registeredTools.yeyu_get_state.description ?? '',
+    /processing.*queued\/running\/failed/,
+  );
+});

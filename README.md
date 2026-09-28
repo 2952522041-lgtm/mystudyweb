@@ -161,9 +161,19 @@ pnpm mcp:build
 
 默认从系统“文档”目录下的 `页语工作区/Settings/mcp-control.json` 连接；Linux 会读取 `XDG_CONFIG_HOME`（未设置时为 `~/.config`）下 `user-dirs.dirs` 的 `XDG_DOCUMENTS_DIR`，未配置时回退到 `~/Documents`，Windows/macOS 默认使用 `~/Documents`。自定义工作区时给 MCP 进程设置 `YEYU_WORKSPACE_ROOT`；也可用 `YEYU_MCP_CONTROL_FILE` 直接指定控制文件（优先级：`YEYU_MCP_CONTROL_FILE` > `YEYU_WORKSPACE_ROOT` > 系统文档目录）。
 
-PDF 导入可能持续 30 分钟；调用超时不代表桌面端已经停止，重试前请先用 `yeyu_get_state` 或 `yeyu_show_courses` 确认结果，避免重复导入。
+`yeyu_import_pdf` 会先保存 PDF 并将后台整理任务加入队列，然后立即返回 `courseId`、`courseName`、`fileName`、`documentId`、`message` 和可选的 `processing`。这表示 PDF 已保存/任务已接受，不表示 AI 摘要、脑图或课程合并已经完成；后台任务可能持续 30 分钟，调用超时或断开时不要重复提交。用 `yeyu_get_state` 查看对应 `course.documents` 的 `status`、`hasSummary`、`hasMindmap`、`includedInCourse` 和可选 `processing`（`queued`/`running`/`failed`）；没有 `processing` 表示当前没有后台任务。
 
-当前工具包括读取应用状态、显示课程库、打开课程、打开课程 PDF、跳页、切换阅读面板，以及 `yeyu_import_pdf`。导入工具只接受本机绝对路径下的普通 PDF（拒绝符号链接、非 PDF 和超过 128 MiB 的文件），然后复用页语现有导入事务写入课程。每份新 PDF 都需要知识库 AI 建立内部摘要，扫描件还可能使用 OCR，因此可能产生服务费用；总结、脑图和课程合并选项控制额外的可见成果，默认开启。MCP 不提供任意文件读写、删除课程或读取 API Key 的能力。
+当前工具包括读取应用状态、显示课程库、打开课程、打开课程 PDF、跳页、切换阅读面板，以及 `yeyu_import_pdf`。导入工具只接受本机绝对路径下的普通 PDF（拒绝符号链接、非 PDF 和超过 128 MiB 的文件），然后复用页语现有导入事务写入课程。知识库 AI 和扫描件 OCR 可能产生服务费用；`generateSummary`、`generateMindmap` 和 `mergeIntoCourse` 仍控制对应的后台成果，默认开启。MCP 不提供任意文件读写、删除课程或读取 API Key 的能力。
+
+也可以使用仓库内的 stdio CLI（先执行上面的 `pnpm mcp:build`，并保持页语桌面端运行）：
+
+```bash
+node scripts/yeyu-tool.mjs state
+node scripts/yeyu-tool.mjs import <课程名称> /absolute/path/to/lecture.pdf
+node scripts/yeyu-tool.mjs import --wait <课程名称> /absolute/path/to/lecture.pdf
+```
+
+CLI 默认只提交导入并明确报告排队状态，不把入队误报为整理完成；`--wait` 会使用返回的 `documentId` 只读轮询 `yeyu_get_state`，直到 `processing` 消失，并在输出中附带独立的 `completion.status`。若后台整理失败，CLI 会以非零状态退出并报告“PDF已保存，后台整理失败”；轮询异常或 30 分钟超时也不会重新导入。轮询过程中不会输出或重新使用控制文件中的令牌。
 
 ## 部署为公开网站
 

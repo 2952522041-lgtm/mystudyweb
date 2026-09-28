@@ -29,6 +29,8 @@ import type { SynthesisDiagnostic } from '@/lib/knowledge/hierarchical-synthesis
 import { CourseGlossary } from '@/components/course-glossary';
 import { EMPTY_GLOSSARY, glossaryFingerprint, type Glossary } from '@/lib/glossary';
 import { CourseImportDialog } from '@/components/course-import-dialog';
+import { DocumentProcessingStatus } from '@/components/document-processing-status';
+import { BackgroundImports } from '@/lib/background-imports';
 import { KnowledgeMarkdown, KnowledgeSection } from '@/components/knowledge-section';
 import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
 import { Button } from '@/components/ui/button';
@@ -71,7 +73,7 @@ import {
   createKnowledgeProviderForSettings,
   describeKnowledgeError,
 } from '@/lib/knowledge/ai-knowledge-provider';
-import { extractPdfPages } from '@/lib/knowledge/document-digest';
+import { extractPdfPages, inspectPdf } from '@/lib/knowledge/document-digest';
 import {
   createOcrProviderForSettings,
   createOcrService,
@@ -186,9 +188,11 @@ function Metric({
 export function CourseLibrary({
   onOpenDocument,
   onControlReady,
+  onBundleUpdated,
 }: {
   onOpenDocument: (file: File, context: CourseReaderContext) => void;
   onControlReady?: (control: CourseLibraryControl | null) => void;
+  onBundleUpdated?: (bundle: CourseBundle) => void;
 }) {
   const [entries, setEntries] = useState<CourseEntry[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -226,6 +230,46 @@ export function CourseLibrary({
     CourseImportProgress | undefined
   >(undefined);
   const importProgressRef = useRef<ImportProgressRuntime | null>(null);
+  const backgroundRef = useRef<BackgroundImports | null>(null);
+  if (!backgroundRef.current) backgroundRef.current = new BackgroundImports({
+    onBundle: (id, next) => setEntryBundle(id, next),
+    onProgress: message => setMessage(message),
+    onError: message => setError(message),
+    analyze: async (storage, document, signal, progress) => {
+      const provider = createKnowledgeProviderForSettings(loadKnowledgeSettings());
+      const glossary = await storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
+      const file = await storage.openPdf(document.id);
+      const extracted = await extractPdfPages(file, {signal,
+        recognizePage: makeOcrRecognizer(loadChatSettings()),
+        onProgress: (page, count, stage) => progress(`${stage === 'ocr' ? 'OCR' : '提取文字'} ${page}/${count}`),
+      });
+      if (extracted.fingerprint !== document.fingerprint) throw new Error('课程中的 PDF 已被外部替换；请重新导入新文件，原任务未覆盖已有成果。');
+      return provider.analyzeDocument({signal, glossary, fingerprint:document.fingerprint,
+        documentId:document.id, fileName:document.fileName, pages:extracted.pages,
+        onStage: (stage, detail) => progress(knowledgeStageMessage(stage, detail)),
+      });
+    },
+    synthesize: async (current, ids, storage, signal) => {
+      const provider = createKnowledgeProviderForSettings(loadKnowledgeSettings());
+      return provider.synthesizeCourseKnowledge({signal,
+        glossary:await storage.loadGlossary?.() ?? EMPTY_GLOSSARY,
+        courseId:current.manifest.id, courseName:current.manifest.name,
+        digests:current.manifest.documents.filter(doc => doc.includedInCourse || ids.includes(doc.id))
+          .map(doc => current.digests[doc.id]).filter((digest): digest is DocumentDigest => Boolean(digest)),
+        userNodeLabels:current.knowledge.nodes.filter(node => node.ownership === 'user').map(node => node.label),
+      });
+    },
+  });
+  useEffect(() => {
+    const worker = backgroundRef.current!;
+    worker.resume();
+    return () => worker.stop();
+  }, []);
+  useEffect(() => {
+    const worker = backgroundRef.current!;
+    for (const entry of entries) if (entry.bundle && entry.permission === 'granted') worker.register(entry.id, entry.storage);
+    worker.wake();
+  }, [entries]);
 
   const beginImportProgress = (fileName: string) => {
     const now = Date.now();
@@ -420,6 +464,7 @@ export function CourseLibrary({
 
   const active = entries.find((entry) => entry.id === activeId) ?? null;
   const bundle = active?.bundle ?? null;
+  const backgroundBusy = Boolean(bundle?.manifest.documents.some(doc => doc.processing && doc.processing.status !== 'failed'));
   const includedCount =
     bundle?.manifest.documents.filter((document) => document.includedInCourse)
       .length ?? 0;
@@ -428,6 +473,7 @@ export function CourseLibrary({
     0;
 
   const setEntryBundle = (id: string, nextBundle: CourseBundle) => {
+    onBundleUpdated?.(nextBundle);
     setEntries((previous) =>
       previous.map((entry) =>
         entry.id === id
@@ -713,145 +759,53 @@ export function CourseLibrary({
     options: ImportOptions,
     onProgress: (message: string, percent: number) => void,
     signal?: AbortSignal,
-    onImportDiagnostic?: (diagnostic: SynthesisDiagnostic) => void,
+    _onImportDiagnostic?: (diagnostic: SynthesisDiagnostic) => void,
   ) => {
     if (!entry.bundle) throw new Error('目标课程当前无法读取。');
+    const worker = backgroundRef.current!;
+    worker.register(entry.id, entry.storage);
+    worker.hold();
     beginImportProgress(file.name);
     setError(null);
-    setMessage(null);
-    setGenerationDiagnostics([]);
-    setGenerationCourseId(entry.id);
-    const reportProgress = (
-      message: string,
-      percent: number,
-      stage: CourseImportStage,
-    ) => {
+    const report = (message: string, percent: number, stage: CourseImportStage) => {
       updateImportProgress(message, percent, stage);
-      onProgress(
-        message,
-        importProgressRef.current?.progress.percent ?? percent,
-      );
-    };
-    const reportDiagnostic = (diagnostic: SynthesisDiagnostic) => {
-      onDiagnostic(diagnostic);
-      onImportDiagnostic?.(diagnostic);
+      onProgress(message, percent);
     };
     try {
-      reportProgress('正在检查 PDF 内容是否已存在', 3, 'checking');
+      report('检查 PDF 内容指纹', 5, 'checking');
       const fingerprint = await sha256Hex(await file.arrayBuffer());
-      // 读取当前清单，避免课程在其他窗口更新后仍按旧界面状态启动 AI。
-      const bundle = await entry.storage.load();
-      const existing = bundle.manifest.documents.find(
-        (document) => document.fingerprint === fingerprint,
-      );
+      const initial = await entry.storage.load();
+      const existing = initial.manifest.documents.find(doc => doc.fingerprint === fingerprint);
       if (existing) {
-        const message = `“${file.name}”已存在，已跳过（课程文件：${existing.fileName}）；未进行文字提取或 AI 分析。`;
-        setEntryBundle(entry.id, bundle);
+        setEntryBundle(entry.id, initial);
+        const message = existing.processing
+          ? 'PDF 已存在，未重复保存；后台整理状态保留，可在资料列表查看或重试。'
+          : 'PDF 已存在，已跳过；未进行文字提取或 AI 分析。';
         setMessage(message);
         finishImportProgress('completed', message, 100);
         return message;
       }
-      // 知识库成果完全由 AI 生成，使用独立的「知识库 AI」配置；未配置时明确报错，不回退本地规则。
-      // 扫描页 OCR 是视觉任务，仍使用「AI 答疑」的视觉模型配置。
-      const glossary = await entry.storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
-      const provider = createKnowledgeProviderForSettings(
-        loadKnowledgeSettings(),
-      );
-      const chatSettings = loadChatSettings();
-
-      reportProgress('正在提取 PDF 文字', 6, 'extracting');
-      const recognizePage = makeOcrRecognizer(chatSettings);
-      const extracted = await extractPdfPages(file, {
-        signal,
-        onProgress: (page, count, stage) => {
-          reportProgress(
-            stage === 'ocr'
-              ? `正在用视觉模型识别第 ${page} / ${count} 页（OCR）`
-              : `正在提取第 ${page} / ${count} 页文字`,
-            6 + Math.round((page / count) * 14),
-            'extracting',
-          );
-        },
-        recognizePage,
+      report('读取 PDF 页数（不进行 OCR 或 AI 分析）', 25, 'checking');
+      const metadata = await inspectPdf(file, signal);
+      if (signal?.aborted) throw new Error('保存已取消。');
+      report('保存 PDF 到课程文件夹', 90, 'saving');
+      const result = await worker.mutate(entry.id, async (storage, current) => {
+        const duplicate = current.manifest.documents.find(doc => doc.fingerprint === metadata.fingerprint);
+        if (duplicate) return {bundle:current, document:duplicate};
+        if (signal?.aborted) throw new Error('保存已取消。');
+        return storage.savePdf(file, metadata, options, current.manifest.revision);
       });
-
-      reportProgress('AI 正在分析 PDF 内容', 20, 'analyzing');
-      const digest = await provider.analyzeDocument({
-        signal,
-        onDiagnostic: reportDiagnostic,
-        glossary,
-        fingerprint: extracted.fingerprint,
-        fileName: file.name,
-        documentId: stableDocumentId(extracted.fingerprint),
-        pages: extracted.pages,
-        onStage: (stage, detail) =>
-          reportProgress(
-            knowledgeStageMessage(stage, detail),
-            stage === 'chunk-analysis' ? 40 : 66,
-            'analyzing',
-          ),
-      });
-
-      let aiKnowledge: AiCourseKnowledge | undefined;
-      if (options.mergeIntoCourse) {
-        reportProgress('AI 正在综合课程总总结与总脑图', 78, 'synthesizing');
-        const includedDigests = [
-          ...bundle.manifest.documents
-            .filter((document) => document.includedInCourse)
-            .map((document) => bundle.digests[document.id])
-            .filter((item): item is DocumentDigest => Boolean(item)),
-          digest,
-        ];
-        aiKnowledge = await provider.synthesizeCourseKnowledge({
-          signal,
-          onDiagnostic: reportDiagnostic,
-          onStage: (stage, detail) =>
-            reportProgress(
-              knowledgeStageMessage(stage, detail),
-              78,
-              'synthesizing',
-            ),
-          glossary,
-          courseId: bundle.manifest.id,
-          courseName: bundle.manifest.name,
-          digests: includedDigests,
-          userNodeLabels: bundle.knowledge.nodes
-            .filter((node) => node.ownership === 'user')
-            .map((node) => node.label),
-        });
-      }
-
-      if (signal?.aborted)
-        throw new Error('生成已取消；已完成层缓存保留，课程旧成果未变。');
-      reportProgress('正在保存课程成果', 90, 'saving');
-      const result = await entry.storage.importDocument(
-        file,
-        digest,
-        options,
-        bundle.manifest.revision,
-        aiKnowledge,
-      );
-      reportProgress('正在提交课程新版本', 96, 'committing');
       setEntryBundle(entry.id, result.bundle);
-      if (entry.handle) {
-        await saveRecentCourse({
-          id: entry.id,
-          name: result.bundle.manifest.name,
-          handle: entry.handle,
-          updatedAt: result.bundle.manifest.updatedAt,
-        });
-      }
-      const completionMessage = options.mergeIntoCourse
-        ? 'AI 已生成 PDF 总结和脑图，并更新课程总总结和总脑图。'
-        : options.generateSummary || options.generateMindmap
-          ? 'AI 已生成这份 PDF 的总结和脑图，暂未纳入课程知识库。'
-          : 'PDF 已导入，AI 内部摘要已建立，暂未生成可见成果。';
-      setMessage(completionMessage);
-      finishImportProgress('completed', completionMessage, 100);
-    } catch (importError) {
-      finishImportProgress('failed', '导入失败');
-      throw importError;
-    }
+      const message = result.document.processing
+        ? 'PDF 已保存，可立即阅读；AI 整理已加入后台队列。'
+        : 'PDF 已保存，可立即阅读；未安排 AI 整理。';
+      setMessage(message);
+      finishImportProgress('completed', message, 100);
+      return message;
+    } catch (error) {
+      finishImportProgress('failed', 'PDF 保存失败');
+      throw error;
+    } finally { worker.release(); }
   };
 
   const importPdf = async (
@@ -862,7 +816,7 @@ export function CourseLibrary({
     onImportDiagnostic?: (diagnostic: SynthesisDiagnostic) => void,
   ) => {
     if (!active) throw new Error('请先连接课程文件夹。');
-    if (controlTaskRef.current) {
+    if (busy || controlTaskRef.current) {
       throw new Error('页语正在执行另一项课程任务，请稍后重试。');
     }
     controlTaskRef.current = true;
@@ -882,6 +836,7 @@ export function CourseLibrary({
 
   const regenerateDocument = async (document: DocumentRecord, retry = false) => {
     if (!active?.bundle) return;
+    if (backgroundBusy) { setError('本课程正在后台整理，可继续阅读；完成后可手动重新生成。'); return; }
     setBusy(true);
     setError(null);
     setRetryGeneration(null);
@@ -941,6 +896,7 @@ export function CourseLibrary({
 
   const mergeDocumentWithAi = async (document: DocumentRecord) => {
     if (!active?.bundle) return;
+    if (backgroundBusy) { setError('本课程正在后台整理，将自动统一汇总。'); return; }
     setBusy(true);
     setError(null);
     setRetryGeneration(null);
@@ -1033,6 +989,7 @@ export function CourseLibrary({
 
   const deleteDocument = async (document: DocumentRecord) => {
     if (!active?.bundle) return;
+    if (backgroundBusy) { setError('请在本课程后台整理结束后删除，避免正在生成的成果覆盖删除结果。'); return; }
     setBusy(true);
     setError(null);
     try {
@@ -1097,10 +1054,14 @@ export function CourseLibrary({
   };
 
   const deleteCourseEntry = async (entry: CourseEntry) => {
+    if (entry.bundle?.manifest.documents.some(doc => doc.processing && doc.processing.status !== 'failed')) {
+      setError('请在本课程后台整理结束后删除课程。'); return;
+    }
     setBusy(true);
     setError(null);
     try {
       await entry.storage.deleteCourse();
+      backgroundRef.current!.unregister(entry.id);
       if (!isDesktop && entry.handle) await removeRecentCourse(entry.id);
       const remaining = entries.filter((item) => item.id !== entry.id);
       setEntries(remaining);
@@ -1133,6 +1094,11 @@ export function CourseLibrary({
         id: document.id,
         fileName: document.fileName,
         pageCount: document.pageCount,
+        status: document.status,
+        hasSummary: document.hasSummary,
+        hasMindmap: document.hasMindmap,
+        includedInCourse: document.includedInCourse,
+        processing: document.processing,
       })) ?? [],
     });
     const selectCourse = (
@@ -1253,10 +1219,14 @@ export function CourseLibrary({
             },
             controller.signal,
           );
+          const awaitFingerprint = await sha256Hex(await file.arrayBuffer());
+          const saved = (await entry.storage.load()).manifest.documents.find(doc => doc.fingerprint === awaitFingerprint);
           return {
             courseId: entry.id,
             courseName: entry.name,
             fileName,
+            documentId: saved?.id,
+            processing: saved?.processing,
             message: completion ?? `${latestMessage}；处理完成。`,
           };
         } finally {
@@ -1769,14 +1739,17 @@ export function CourseLibrary({
                             <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-rose-50 text-[10px] font-bold text-rose-700">
                               PDF
                             </span>
-                            <span className="min-w-0">
+                            <div className="min-w-0">
                               <span className="block truncate text-sm font-semibold">
                                 {document.fileName}
                               </span>
                               <span className="mt-1 block text-[10px] text-slate-500">
                                 {document.pageCount} 页 · 已复制到课程文件夹
                               </span>
-                            </span>
+                              <DocumentProcessingStatus processing={document.processing} onRetry={() => {
+                                if (!busy && active) void backgroundRef.current!.retry(active.id, document.id).catch(error => setError(String(error)));
+                              }} />
+                            </div>
                           </div>
                           <span
                             className={`flex items-center gap-2 text-xs ${document.includedInCourse ? 'text-emerald-700' : 'text-amber-700'}`}
@@ -1808,13 +1781,13 @@ export function CourseLibrary({
                             >
                               <BookOpen /> 打开
                             </Button>
-                            {!document.includedInCourse ? (
+                            {!document.includedInCourse && !document.processing ? (
                               <Button
                                 size="xs"
                                 onClick={() =>
                                   void mergeDocumentWithAi(document)
                                 }
-                                disabled={busy}
+                                disabled={busy || backgroundBusy || Boolean(document.processing)}
                               >
                                 <GitMerge /> AI 并入课程
                               </Button>
@@ -1826,7 +1799,7 @@ export function CourseLibrary({
                                 onClick={() =>
                                   void regenerateDocument(document)
                                 }
-                                disabled={busy}
+                                disabled={busy || backgroundBusy || Boolean(document.processing)}
                               >
                                 AI 生成成果
                               </Button>
@@ -1837,7 +1810,7 @@ export function CourseLibrary({
                                 onClick={() =>
                                   void regenerateDocument(document)
                                 }
-                                disabled={busy}
+                                disabled={busy || backgroundBusy || Boolean(document.processing)}
                               >
                                 重新生成
                               </Button>
@@ -1852,7 +1825,7 @@ export function CourseLibrary({
                                   document,
                                 })
                               }
-                              disabled={busy}
+                              disabled={busy || backgroundBusy || Boolean(document.processing)}
                             >
                               <Trash2 /> 删除
                             </Button>
@@ -2140,6 +2113,8 @@ export function CourseLibrary({
         open={importOpen}
         onOpenChange={setImportOpen}
         onImport={importPdf}
+        onBatchStart={() => backgroundRef.current!.hold()}
+        onBatchEnd={() => backgroundRef.current!.release()}
       />
     </div>
   );

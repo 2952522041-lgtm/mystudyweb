@@ -1,6 +1,15 @@
 # PDF 导入性能与同步排障
 
-导入包含内容指纹检查、逐页文字提取/OCR、AI 文档分析、AI 课程综合和本地事务提交。复制 PDF 本身不是完整导入；只有课程清单及成果提交成功后才算完成。
+导入分为“PDF 已保存”和“AI 整理完成”。前台只检查内容指纹、解析页数并保存 PDF 和课程清单，随后即可阅读；OCR、单篇成果和课程汇总作为独立后台任务处理。不能把“已保存”误报为“AI 成果已完成”。
+
+## 快速保存与后台队列
+
+- 可多选 PDF，先逐份保存原文件；没有配置 AI 也能保存、打开。关闭总结、脑图和课程汇总三个选项时，不创建 AI 任务。
+- 每份资料的 processing 写入 course.json，记录 document/course 阶段、queued/running/failed 状态、原始选项及错误。没有 processing 表示没有待执行任务；需结合成果标记判断是否生成过成果。
+- 单篇 digest 和选中的成果独立提交，随后才排队课程汇总。一批新文档先全部处理，课程统一汇总一次；汇总失败不撤销 PDF 或单篇成果，重试不会重新分析已经保存的单篇。
+- 阅读器与课程库保持挂载，后台整理不占用前台导入/阅读锁；短暂文件写入按课程串行，AI 请求期间可以保存其他 PDF。
+- 关闭 App 会中止当前请求，队列仍在磁盘；重开自动接续 queued/running，failed 需点击资料卡“重试”。浏览器目录权限失效时须重新授权。不会关机后继续运行，也不无限自动重试失败请求。
+- 课程列表与 MCP 文档状态显示后台阶段；MCP 导入返回只确认保存/排队，不保证 AI 成果已经完成。
 
 ## 本次改进
 
@@ -26,9 +35,10 @@
 pnpm mcp:build
 node scripts/yeyu-tool.mjs state
 node scripts/yeyu-tool.mjs import course-name /absolute/path/lecture.pdf
+node scripts/yeyu-tool.mjs import --wait course-name /absolute/path/lecture.pdf
 ```
 
-脚本使用 stdio MCP，不直接写课程数据库。导入默认生成总结、脑图并纳入课程综合，每 15 秒读取一次进度。自定义工作区可设置 `YEYU_WORKSPACE_ROOT` 或 `YEYU_MCP_CONTROL_FILE`；不要把控制文件中的令牌复制到日志或仓库。
+脚本使用 stdio MCP，不直接写课程数据库。默认快速保存并排队；`--wait` 每 15 秒按 documentId 查询后台任务，失败退出但不重复提交导入。自定义工作区可设置 `YEYU_WORKSPACE_ROOT` 或 `YEYU_MCP_CONTROL_FILE`；不要把控制文件中的令牌复制到日志或仓库。
 
 如果导入调用断开或超时，先查 `importProgress.active`、课程清单和文件哈希。运行中的导入不能重复提交；已提交的 PDF 应通过指纹去重。尚未完成的资料不能仅凭下载成功就标记为同步成功。
 

@@ -73,6 +73,8 @@ export interface DocumentDigest {
 }
 
 export interface DocumentRecord {
+  /** Durable background work; absent on legacy/completed or PDF-only imports. */
+  processing?: DocumentProcessing;
   id: string;
   fingerprint: string;
   fileName: string;
@@ -173,6 +175,19 @@ export interface ImportOptions {
   includeConversationInsights: boolean;
 }
 
+export interface DocumentProcessing {
+  phase: 'document' | 'course';
+  status: 'queued' | 'running' | 'failed';
+  options: ImportOptions;
+  updatedAt: string;
+  error?: string;
+}
+
+export interface PdfMetadata {
+  fingerprint: string;
+  pageCount: number;
+}
+
 export interface ImportResult {
   bundle: CourseBundle;
   document: DocumentRecord;
@@ -184,6 +199,11 @@ export interface CourseStorage {
   saveGlossary?(glossary: Glossary): Promise<void>;
   initialize(name: string): Promise<CourseBundle>;
   load(): Promise<CourseBundle>;
+  /** Save a readable PDF and its queue record without creating a fake digest. */
+  savePdf(file: File, metadata: PdfMetadata, options: ImportOptions, expectedRevision: number): Promise<ImportResult>;
+  setDocumentProcessing(documentId: string, processing: DocumentProcessing | undefined, expectedRevision: number): Promise<CourseBundle>;
+  /** Publish one course synthesis covering all listed ready documents. */
+  mergeDocuments(documentIds: string[], expectedRevision: number, aiKnowledge: AiCourseKnowledge): Promise<CourseBundle>;
   /**
    * aiKnowledge 是预先用 AI 综合好的课程知识库内容；
    * 提供时不再走本地名称匹配合并，但 user 节点仍由存储层强制保留。

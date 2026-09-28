@@ -134,6 +134,23 @@ export interface ExtractedPdfPages {
   pages: string[];
 }
 
+/** Parse only the PDF container/page tree: no page extraction, rendering or AI. */
+export async function inspectPdf(file: File, signal?: AbortSignal) {
+  if (signal?.aborted) throw new Error('导入已取消。');
+  const buffer = await file.arrayBuffer();
+  const fingerprint = await sha256Hex(buffer);
+  const pdfjs = await loadPdfjs();
+  const task = pdfjs.getDocument({data:new Uint8Array(buffer)});
+  const cancel = () => { void task.destroy(); };
+  signal?.addEventListener('abort', cancel, {once:true});
+  try {
+    if (signal?.aborted) throw new Error('导入已取消。');
+    const pdf = await task.promise;
+    if (signal?.aborted) throw new Error('导入已取消。');
+    return {fingerprint, pageCount:pdf.numPages};
+  } finally { signal?.removeEventListener('abort', cancel); await task.destroy(); }
+}
+
 // Two concurrent OCR requests keep the vision provider responsive while
 // cutting the all-pages serial wait substantially for scanned documents.
 const DEFAULT_PAGE_CONCURRENCY = 2;

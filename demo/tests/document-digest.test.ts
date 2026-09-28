@@ -28,7 +28,7 @@ const hooks = registerHooks({
             return {
               getDocument() {
                 const fixture = getFixture();
-                return { promise: Promise.resolve({
+                return { destroy: async () => { getFixture().pdfCleanupCalls += 1; }, promise: Promise.resolve({
                   numPages: fixture.pages.length,
                   getPage: async (pageNumber) => ({
                     getViewport: () => ({height: 1000}),
@@ -85,7 +85,7 @@ const hooks = registerHooks({
   },
 });
 
-const { extractPdfPages } = await import('../lib/knowledge/document-digest.ts');
+const { extractPdfPages, inspectPdf } = await import('../lib/knowledge/document-digest.ts');
 hooks.deregister();
 
 function setFixture(pages: string[], delay = 5): DigestFixture {
@@ -102,6 +102,18 @@ function setFixture(pages: string[], delay = 5): DigestFixture {
   (globalThis as unknown as Record<string, unknown>)[FIXTURE_KEY] = fixture;
   return fixture;
 }
+
+void test('quick PDF inspection reads only page metadata and destroys its parser', async () => {
+  const fixture = setFixture(['first', 'second']);
+  const result = await inspectPdf(new File(['pdf'], 'lecture.pdf'));
+  assert.equal(result.pageCount, 2);
+  assert.match(result.fingerprint, /^[a-f0-9]{64}$/);
+  assert.deepEqual(fixture.startedPages, []);
+  assert.deepEqual(fixture.renderedPages, []);
+  assert.equal(fixture.pdfCleanupCalls, 1);
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(inspectPdf(new File(['pdf'], 'lecture.pdf'), controller.signal), /取消/);
+});
 
 void test('PDF pages extract in bounded parallelism while retaining page order', async () => {
   const sourcePages = [
