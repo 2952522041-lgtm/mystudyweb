@@ -214,7 +214,7 @@ void test('limits GLM intermediate output to 8192, retries one length response, 
   }
 });
 
-void test('rejects after two intermediate length responses for one identity without producing a final digest', async () => {
+void test('persistent intermediate truncation stops after bounded smaller-batch recovery without publishing', async () => {
   const mock = createCourseMock('same-intermediate-length');
   await assert.rejects(
     mock.provider.synthesizeCourseKnowledge(courseInput()),
@@ -222,15 +222,21 @@ void test('rejects after two intermediate length responses for one identity with
   );
 
   const truncated = mock.requests.filter((request) => request.finishReason === 'length' && request.intermediate);
-  assert.equal(truncated.length, 2);
-  assert.equal(new Set(truncated.map((request) => request.messages?.[1]?.content)).size, 1);
+  assert.ok(truncated.length > 2 && truncated.length <= 12);
+  const attemptsByInput = new Map<string, number>();
+  for (const request of truncated) {
+    const prompt = request.messages?.[1]?.content ?? '';
+    attemptsByInput.set(prompt, (attemptsByInput.get(prompt) ?? 0) + 1);
+  }
+  assert.ok(attemptsByInput.size > 1, 'recovery must actually split the input');
+  assert.ok([...attemptsByInput.values()].every(count => count === 2));
   assert.equal(mock.finalCalls, 0);
   for (const key of await mock.intermediateStore.keys()) {
     assert.doesNotMatch(JSON.stringify(await mock.intermediateStore.get(key)), /partial intermediate output/);
   }
 });
 
-void test('final GLM truncation is rejected without an additional final retry', async () => {
+void test('persistent final truncation tries a smaller merged input but never publishes partial output', async () => {
   const mock = createCourseMock('final-length');
   await assert.rejects(
     mock.provider.synthesizeCourseKnowledge(courseInput()),
@@ -238,9 +244,13 @@ void test('final GLM truncation is rejected without an additional final retry', 
   );
 
   const final = mock.requests.filter((request) => request.final);
-  assert.equal(final.length, 1);
+  assert.equal(final.length, 2);
+  assert.notEqual(final[0]?.messages?.[1]?.content, final[1]?.messages?.[1]?.content);
   assert.equal(final[0]?.max_tokens, 32768);
   assert.equal(final[0]?.finishReason, 'length');
   assert.equal(final[0]?.messages?.some((message) => message.role === 'assistant'), false);
-  assert.equal(mock.finalCalls, 1);
+  assert.equal(mock.finalCalls, 2);
+  for (const key of await mock.intermediateStore.keys()) {
+    assert.doesNotMatch(JSON.stringify(await mock.intermediateStore.get(key)), /partial final output/);
+  }
 });

@@ -168,8 +168,10 @@ export async function reduceWithinBudget(options: {
       }
       if (batch.length) batches.push(batch);
       if (batches.length < 2) throw error;
+      const reason = error instanceof Error && 'code' in error && error.code === 'truncated'
+        ? '模型输出被截断' : '服务商上下文不足';
       options.report({ layer: options.layer, action: 'split', identity, inputBytes: utf8Size(records), limit,
-        droppedItems: 0, droppedBytes: 0, detail: `服务商上下文不足，自动缩小为 ${batches.length} 批综合；全部结构项保留。` });
+        droppedItems: 0, droppedBytes: 0, detail: `${reason}，自动缩小为 ${batches.length} 批综合；全部结构项保留。` });
       const next: unknown[] = [];
       for (const [index, part] of batches.entries())
         next.push(await reduceSafely(part, `${identity}/smaller-${index}`, true, signal, depth + 1));

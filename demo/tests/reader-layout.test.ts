@@ -78,9 +78,9 @@ void test('knowledge settings expose generation modes and explain their scope', 
   assert.match(settingsSource, /value=\{knowledgeDraft\.generationMode \?\? 'fast'\}/);
   assert.match(settingsSource, /快速整理/);
   assert.match(settingsSource, /深入推理/);
-  assert.match(settingsSource, /GLM-4\.6V 官方接口/);
+  assert.match(settingsSource, /GLM-4\.6V 和 DeepSeek Flash \/ V4 Pro 官方接口/);
   assert.match(settingsSource, /内容、来源和结构校验/);
-  assert.match(settingsSource, /其他模型不会发送私有参数/);
+  assert.match(settingsSource, /其他模型和代理接口不会发送私有参数/);
   assert.match(settingsSource, /复杂结构修复仍可深入推理/);
 });
 

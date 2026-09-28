@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   createKnowledgeProviderForSettings,
   createKnowledgeDigestCache,
+  knowledgeMaxOutputTokens,
 } from '../lib/knowledge/ai-knowledge-provider.ts';
 import { createMemoryStore, type KVStore } from '../lib/reader-cache.ts';
 import type { DocumentDigest } from '../lib/course-storage/types.ts';
@@ -10,6 +11,36 @@ import { synthesisSources } from '../lib/knowledge/hierarchical-synthesis.ts';
 import { legacyLongDigest, reply, source } from './fixtures/hierarchical-synthesis.ts';
 
 type GenerationMode = 'fast' | 'deep';
+
+void test('official DeepSeek fast mode disables thinking and reserves enough complete JSON output', async () => {
+  for (const model of ['deepseek-flash', 'deepseek-v4-pro']) {
+    const requests = await captureDocumentRequests({ baseUrl:'https://api.deepseek.com', model });
+    assert.equal(requests.length, 2);
+    for (const request of requests) {
+      assert.deepEqual(request.thinking, { type:'disabled' });
+      assert.deepEqual(request.response_format, { type:'json_object' });
+      assert.equal(request.max_tokens, 32768);
+    }
+  }
+});
+
+void test('DeepSeek deep mode keeps final thinking, while proxies and unknown models remain generic', async () => {
+  const deep = await captureDocumentRequests({ baseUrl:'https://api.deepseek.com/v1', model:'deepseek-flash', generationMode:'deep' });
+  assert.deepEqual(deep[0].thinking, { type:'disabled' });
+  assert.equal(deep[1].thinking, undefined);
+  for (const options of [
+    { baseUrl:'https://proxy.example/v1', model:'deepseek-flash' },
+    { baseUrl:'https://api.deepseek.com', model:'future-unknown-model' },
+  ]) {
+    const requests = await captureDocumentRequests(options);
+    for (const request of requests) {
+      assert.equal(request.thinking, undefined);
+      assert.equal(request.response_format, undefined);
+      assert.equal(request.max_tokens, 8192);
+    }
+  }
+  assert.equal(knowledgeMaxOutputTokens('deepseek-flash'), 8192);
+});
 
 function streamJson(value: unknown): Response {
   return new Response(

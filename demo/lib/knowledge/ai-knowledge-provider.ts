@@ -50,6 +50,21 @@ export const KNOWLEDGE_MAX_OUTPUT_TOKENS = 8192;
  * 依据：https://docs.bigmodel.cn/cn/guide/start/concept-param
  */
 export const KNOWLEDGE_MAX_OUTPUT_TOKENS_GLM_4_6V = 32768;
+// Application budget, not the model's maximum. Official DeepSeek supports a
+// larger output window; an 8K generic cap can be consumed entirely by thinking.
+// https://api-docs.deepseek.com/api/create-chat-completion/
+const KNOWLEDGE_MAX_OUTPUT_TOKENS_DEEPSEEK = 32768;
+
+function isOfficialDeepSeek(model: string, baseUrl?: string): boolean {
+  return Boolean(baseUrl && new URL(baseUrl).hostname === 'api.deepseek.com'
+    && ['deepseek-flash', 'deepseek-v4-pro'].includes(normalizeKnowledgeModel(model)));
+}
+
+function supportsThinkingControl(model: string, baseUrl: string): boolean {
+  return isOfficialDeepSeek(model, baseUrl)
+    || (normalizeKnowledgeModel(model) === 'glm-4.6v'
+      && new URL(baseUrl).hostname === 'open.bigmodel.cn');
+}
 
 /** 模型名归一化：只忽略首尾空格与大小写，其余字符保留，避免误匹配其他型号。 */
 export function normalizeKnowledgeModel(model: string): string {
@@ -57,7 +72,8 @@ export function normalizeKnowledgeModel(model: string): string {
 }
 
 /** 按模型选择本次知识库请求的输出上限；未收录的模型沿用通用上限。 */
-export function knowledgeMaxOutputTokens(model: string): number {
+export function knowledgeMaxOutputTokens(model: string, baseUrl?: string): number {
+  if (isOfficialDeepSeek(model, baseUrl)) return KNOWLEDGE_MAX_OUTPUT_TOKENS_DEEPSEEK;
   return normalizeKnowledgeModel(model) === 'glm-4.6v'
     ? KNOWLEDGE_MAX_OUTPUT_TOKENS_GLM_4_6V
     : KNOWLEDGE_MAX_OUTPUT_TOKENS;
@@ -283,7 +299,10 @@ function asContextOverflowError(
 }
 
 function isRecoverableSizeError(error: unknown): boolean {
-  return error instanceof KnowledgeError && error.code === 'context_overflow';
+  // A length-finished response is never usable, but the same input can be
+  // retried in smaller source-preserving units just like an oversized input.
+  return error instanceof KnowledgeError
+    && (error.code === 'context_overflow' || error.code === 'truncated');
 }
 
 async function completeJson(
@@ -328,13 +347,12 @@ async function completeJson(
               droppedItems: 0, droppedBytes: 0, timing,
               detail: `AI 请求${timing.status === 'success' ? '完成' : timing.status === 'cancelled' ? '取消' : '失败'}，耗时 ${Math.round(timing.totalMs)} ms。`,
             }),
-            ...(new URL(config.baseUrl).hostname === 'open.bigmodel.cn'
+            ...(new URL(config.baseUrl).hostname === 'open.bigmodel.cn' || isOfficialDeepSeek(config.model, config.baseUrl)
               ? { responseFormat: 'json_object' as const } : {}),
-            // GLM's automatic thinking adds latency to extraction work.
+            // Official GLM/DeepSeek automatic thinking adds latency to extraction.
             // Keep reasoning for opted-in deep synthesis/structural repair and don't send
             // vendor extensions to other compatible providers.
-            ...(normalizeKnowledgeModel(config.model) === 'glm-4.6v'
-              && new URL(config.baseUrl).hostname === 'open.bigmodel.cn'
+            ...(supportsThinkingControl(config.model, config.baseUrl)
               && (layer === 'chunk' || input.intermediate || input.fastSynthesis) && !hierarchyDraft
               ? { thinking: 'disabled' as const } : {}),
           });
@@ -370,7 +388,7 @@ async function completeJson(
       }
       throw new KnowledgeError(
         'truncated',
-        `${input.contextLabel}的 AI 输出达到本次请求的输出长度上限（max_tokens=${maxTokens}，模型 ${config.model}），属于输出被截断而不是输入上下文不足；为避免保存残缺内容已放弃本次结果。若该阶段反复截断，说明整份文档无法在一次输出内综合完，需要改为分批综合后再合并。`,
+        `${input.contextLabel}的 AI 输出达到本次请求的输出长度上限（max_tokens=${maxTokens}，模型 ${config.model}），属于输出被截断而不是输入上下文不足；为避免保存残缺内容已放弃本次结果。${layer === 'chunk' ? '该分块在自动拆分恢复范围内仍未获得完整输出；原 PDF 和已成功分块保留，可重试或改用输出容量更大的模型。' : '该层在分批归并恢复范围内仍未获得完整输出；旧成果保留，可重试或改用输出容量更大的模型。'}`,
       );
     }
     let raw: unknown;
@@ -1259,9 +1277,8 @@ export function createKnowledgeProviderForSettings(
   }
   const model = settings.model.trim();
   const fastSynthesis = settings.generationMode !== 'deep'
-    && normalizeKnowledgeModel(model) === 'glm-4.6v'
-    && new URL(settings.baseUrl).hostname === 'open.bigmodel.cn';
-  const maxOutputTokens = knowledgeMaxOutputTokens(model);
+    && supportsThinkingControl(model, settings.baseUrl);
+  const maxOutputTokens = knowledgeMaxOutputTokens(model, settings.baseUrl);
   const requestConfig: ChatCompletionConfig = {
     baseUrl: settings.baseUrl,
     apiKey: settings.apiKey.trim(),
@@ -1452,7 +1469,7 @@ export function createKnowledgeProviderForSettings(
           totalChunks += smaller.length - 1;
           run.report({ layer: 'chunk', action: 'split', identity, inputBytes: utf8Size(chunk.text),
             limit: Math.max(...smaller.map(part => utf8Size(part.text))), droppedItems: 0, droppedBytes: 0,
-            detail: `本分块超过服务容量，自动分为 ${smaller.length} 个小分块；全部文字和页码保留。` });
+            detail: `${error instanceof KnowledgeError && error.code === 'truncated' ? '本分块输出被截断' : '本分块超过输入容量'}，自动分为 ${smaller.length} 个小分块；全部文字和页码保留。` });
           const results: AnalyzedChunk[] = [];
           for (const [index, part] of smaller.entries()) {
             results.push(...await analyzeChunk({ chunk: part, identity: `${identity}/part-${index}`, depth: depth + 1 }, signal));
