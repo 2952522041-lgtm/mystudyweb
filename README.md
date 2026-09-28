@@ -105,7 +105,7 @@ sudo apt install ./out/make/deb/x64/yeyu_0.1.0_amd64.deb
 - 数据目录：`~/Documents/页语工作区/`；卸载：`sudo apt remove yeyu`
 - 包名/可执行名/图标名为 `yeyu`，图标安装到 hicolor 各尺寸
 
-仅构建不安装：`pnpm desktop:build` 产出打包目录 `out/Yeyu-linux-x64/`，可直接运行其中的 `yeyu`。ZIP 产物保留在 `out/make/zip/linux/x64/`。
+仅构建不安装：`pnpm desktop:build` 产出打包目录 `out/Yeyu-linux-x64/`，ZIP 产物保留在 `out/make/zip/linux/x64/`。打包目录不等于正确安装：Ubuntu 的用户命名空间限制可能导致普通用户复制的 `chrome-sandbox` 无法从桌面启动。优先安装 DEB；不要添加 `--no-sandbox`。发布前须验证沙箱权限，并在桌面会话中冷启动，不能只验证开发终端。详见 [Linux 桌面启动与沙箱验证](docs/LINUX-DESKTOP-SANDBOX.md)。
 
 ### Windows 安装包
 
