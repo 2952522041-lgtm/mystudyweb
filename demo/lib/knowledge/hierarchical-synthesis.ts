@@ -26,6 +26,7 @@ export interface SynthesisDiagnostic {
   action:
     | 'split'
     | 'request'
+    | 'request-timing'
     | 'completed'
     | 'cache-hit'
     | 'cache-unavailable'
@@ -34,6 +35,7 @@ export interface SynthesisDiagnostic {
   identity: string;
   inputBytes: number;
   outputBytes?: number;
+  timing?: import('../openai-client.ts').ChatCompletionTiming;
   limit: number;
   droppedItems: number;
   droppedBytes: number;

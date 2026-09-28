@@ -118,6 +118,7 @@ const KNOWLEDGE_SYSTEM_PROMPT = [
   'Reply in Simplified Chinese by default; technical terms may stay in their original language.',
   'Mindmaps must preserve source-supported parent/child hierarchy separately from dependency, contrast and causal links. Do not invent structure for genuinely flat material.',
   'Your output must be exactly one JSON value that matches the requested schema.',
+  'Serialize JSON compactly: no indentation, no whitespace outside string values. This only removes formatting overhead; keep all required facts, source ranges, formulas and tables inside strings unchanged.',
   'Do not output Markdown code fences, explanations, a preface, or a closing note.',
 ].join('\n');
 
@@ -320,6 +321,13 @@ async function completeJson(
         try {
           result = await requestChatCompletion(config, {
             messages, temperature: 0.1, maxTokens, signal: input.signal,
+            connectionTimeoutMs: 30_000,
+            streamStallTimeoutMs: 45_000,
+            onTiming: timing => input.report?.({ layer, action: 'request-timing',
+              identity: input.contextLabel, inputBytes: size, limit,
+              droppedItems: 0, droppedBytes: 0, timing,
+              detail: `AI 请求${timing.status === 'success' ? '完成' : timing.status === 'cancelled' ? '取消' : '失败'}，耗时 ${Math.round(timing.totalMs)} ms。`,
+            }),
             ...(new URL(config.baseUrl).hostname === 'open.bigmodel.cn'
               ? { responseFormat: 'json_object' as const } : {}),
             // GLM's automatic thinking adds latency to extraction work.
@@ -1463,7 +1471,10 @@ export function createKnowledgeProviderForSettings(
       const chunkResults = orderedChunks.map(item => item.data);
 
       const evidence = uniqueEvidence([...sourceLedger, ...chunkResults.flatMap(raw => collectEvidence(raw, { documentId, fileName:input.fileName, pageStart:1, pageEnd:pageCount, type:'pdf' }))]);
-      const records = utf8Size(chunkResults) <= SYNTHESIS_BUDGET.payload ? chunkResults : chunkResults.flatMap((raw, chunkIndex) => synthesisRecords(raw, { documentId, fileName:input.fileName, chunkIndex }));
+      // Keep complete chunk records when they fit a final request. Splitting at
+      // the smaller intermediate budget duplicates headers/provenance and can
+      // turn a valid final payload into several unnecessary model calls.
+      const records = utf8Size(chunkResults) <= SYNTHESIS_BUDGET.finalPayload ? chunkResults : chunkResults.flatMap((raw, chunkIndex) => synthesisRecords(raw, { documentId, fileName:input.fileName, chunkIndex }));
       const synthesisRaw = await reduceWithinBudget({ records, layer:'document', identity:documentId, report:run.report, signal:input.signal, shouldSplit: isRecoverableSizeError, reduce: async (batch, identity, intermediate, signal) => {
         input.onStage?.('synthesize', { chunkCount:totalChunks, identity });
         const raw = await run.request('document', identity, intermediate

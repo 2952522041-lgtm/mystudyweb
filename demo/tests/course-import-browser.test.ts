@@ -75,6 +75,14 @@ const mockSources: Record<string, string> = {
             await new Promise((resolve) => setTimeout(resolve, 80));
             throw new Error(f.asyncFailure);
           }
+          if (f.reusableDigest) return {
+            schemaVersion:3,documentId:input.documentId,fingerprint:input.fingerprint,
+            title:'单份课件',overview:'完整概述',sourcePages:[1],updatedAt:new Date().toISOString(),
+            provider:'openai-compatible-knowledge',model:'fixture',promptVersion:'ai-digest-v11',
+            sections:[{id:'s1',title:'主题',summary:'完整摘要',pageStart:1,pageEnd:1}],
+            concepts:[{id:'c1',parentId:null,label:'主题',description:'完整描述',sources:[{documentId:input.documentId,fileName:input.fileName,pageStart:1,pageEnd:1,type:'pdf'}]}],
+            relations:[],unresolvedQuestions:[],
+          };
           return {documentId: input.documentId, fingerprint: input.fingerprint, sourcePages: [1]};
         },
         async synthesizeCourseKnowledge() { f.calls.synthesize++; if(f.courseFailure)throw new Error(f.courseFailure); return {}; }
@@ -272,6 +280,14 @@ window.runImportRegression = async () => {
   await waitFor('batch AI finished',()=>f.calls.save===beforeBatch.save+2&&f.bundle.manifest.documents.every(doc=>!doc.processing));
   check(f.calls.analyze===beforeBatch.analyze+2,'batch did not analyze each document once');
   check(f.calls.synthesize===beforeBatch.synthesize+1,'batch synthesized the course more than once');
+  // A fresh single-PDF course must finish without a redundant course AI request.
+  f.bundle.manifest.documents=[];f.bundle.digests={};f.bundle.knowledge.nodes=[];
+  f.reusableDigest=true;
+  const beforeReuse={...f.calls};
+  const reused=await f.control.importPdf({courseName:'测试课程',fileName:'single.pdf',fileData:new TextEncoder().encode('single complete AI digest')});
+  await waitFor('single digest reused',()=>f.bundle.manifest.documents.some(doc=>doc.id===reused.documentId&&doc.includedInCourse&&!doc.processing));
+  check(f.calls.analyze===beforeReuse.analyze+1,'single document not analyzed');
+  check(f.calls.synthesize===beforeReuse.synthesize,'single document redundantly synthesized');
   return {...f.calls,quickImport:true,courseRetry:true,batchMergedOnce:true};
 };
 `;

@@ -85,6 +85,7 @@ import {
   createKnowledgeProviderForSettings,
   describeKnowledgeError,
 } from '@/lib/knowledge/ai-knowledge-provider';
+import { courseKnowledgeFromSingleDigest } from '@/lib/knowledge/single-document-course';
 import { extractPdfPages, inspectPdf } from '@/lib/knowledge/document-digest';
 import {
   createOcrProviderForSettings,
@@ -269,13 +270,18 @@ export function CourseLibrary({
       });
     },
     synthesize: async (current, ids, storage, signal) => {
+      const digests = current.manifest.documents.filter(doc => doc.includedInCourse || ids.includes(doc.id))
+        .map(doc => current.digests[doc.id]).filter((digest): digest is DocumentDigest => Boolean(digest));
+      const userNodeLabels = current.knowledge.nodes.filter(node => node.ownership === 'user').map(node => node.label);
+      // A single validated document already contains the full course hierarchy.
+      // Explicit regeneration still uses the AI provider; only initial import reuses it.
+      const reused = courseKnowledgeFromSingleDigest(digests, userNodeLabels);
+      if (reused) return reused;
       const provider = createKnowledgeProviderForSettings(loadKnowledgeSettings());
       return provider.synthesizeCourseKnowledge({signal,
         glossary:await storage.loadGlossary?.() ?? EMPTY_GLOSSARY,
         courseId:current.manifest.id, courseName:current.manifest.name,
-        digests:current.manifest.documents.filter(doc => doc.includedInCourse || ids.includes(doc.id))
-          .map(doc => current.digests[doc.id]).filter((digest): digest is DocumentDigest => Boolean(digest)),
-        userNodeLabels:current.knowledge.nodes.filter(node => node.ownership === 'user').map(node => node.label),
+        digests, userNodeLabels,
       });
     },
   });

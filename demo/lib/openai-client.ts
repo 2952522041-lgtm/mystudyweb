@@ -19,6 +19,25 @@ export interface ChatCompletionConfig {
   apiKey: string;
   model: string;
   fetchImpl?: typeof fetch;
+  /** Disabled when omitted; applies while waiting for the response headers. */
+  connectionTimeoutMs?: number;
+  /** Disabled when omitted; applies to the initial and subsequent stream reads. */
+  streamStallTimeoutMs?: number;
+}
+
+export type ChatCompletionTimingStatus = 'success' | 'failure' | 'cancelled';
+
+/** Timing-only request diagnostics; this intentionally contains no request or response data. */
+export interface ChatCompletionTiming {
+  /** Milliseconds from request start until fetch resolves with response headers. */
+  headersMs: number | null;
+  /** Milliseconds from request start until the first non-empty content delta. */
+  firstContentMs: number | null;
+  /** Milliseconds from request start until the request settles. */
+  totalMs: number;
+  /** JavaScript string length of the accumulated output. */
+  outputChars: number;
+  status: ChatCompletionTimingStatus;
 }
 
 export interface ChatCompletionInput {
@@ -29,6 +48,11 @@ export interface ChatCompletionInput {
   responseFormat?: 'json_object';
   signal?: AbortSignal;
   onPartial?: (content: string) => void;
+  onTiming?: (timing: ChatCompletionTiming) => void;
+  /** Optional per-request override; omitted means use the config value. */
+  connectionTimeoutMs?: number;
+  /** Optional per-request override; omitted means use the config value. */
+  streamStallTimeoutMs?: number;
 }
 
 export interface ChatCompletionResult {
@@ -44,59 +68,140 @@ export async function requestChatCompletion(
   config: ChatCompletionConfig,
   input: ChatCompletionInput,
 ): Promise<ChatCompletionResult> {
+  const startedAt = monotonicNow();
+  const timing: MutableChatCompletionTiming = {
+    headersMs: null,
+    firstContentMs: null,
+    totalMs: 0,
+    outputChars: 0,
+    status: 'failure',
+  };
+  const connectionTimeoutMs = normalizeTimeout(
+    input.connectionTimeoutMs ?? config.connectionTimeoutMs,
+  );
+  const streamStallTimeoutMs = normalizeTimeout(
+    input.streamStallTimeoutMs ?? config.streamStallTimeoutMs,
+  );
+  const abortRelay = createAbortRelay(
+    input.signal,
+    connectionTimeoutMs !== undefined || streamStallTimeoutMs !== undefined,
+  );
+  let connectionTimer: ReturnType<typeof setTimeout> | undefined;
+  const finishTiming = (status: ChatCompletionTimingStatus): void => {
+    timing.status = status;
+    timing.totalMs = elapsedMs(startedAt);
+    abortRelay.cleanup();
+    emitTiming(input.onTiming, timing);
+  };
+
   let response: Response;
   try {
-    response = await (config.fetchImpl ?? fetch)(
-      `${config.baseUrl.replace(/\/$/, '')}/chat/completions`,
-      {
-        method: 'POST',
-        signal: input.signal,
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${config.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: config.model,
-          stream: true,
-          temperature: input.temperature ?? 0.2,
-          max_tokens: input.maxTokens ?? 4096,
-          messages: input.messages,
-          ...(input.responseFormat ? { response_format: { type: input.responseFormat } } : {}),
-          ...(input.thinking === 'disabled'
-            ? { thinking: { type: 'disabled' } }
-            : {}),
-        }),
+    const fetchSignal = abortRelay.signal;
+    if (fetchSignal?.aborted) throw abortReason(fetchSignal);
+    const fetchInit: RequestInit = {
+      method: 'POST',
+      signal: fetchSignal,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${config.apiKey}`,
       },
+      body: JSON.stringify({
+        model: config.model,
+        stream: true,
+        temperature: input.temperature ?? 0.2,
+        max_tokens: input.maxTokens ?? 4096,
+        messages: input.messages,
+        ...(input.responseFormat
+          ? { response_format: { type: input.responseFormat } }
+          : {}),
+        ...(input.thinking === 'disabled'
+          ? { thinking: { type: 'disabled' } }
+          : {}),
+      }),
+    };
+
+    if (connectionTimeoutMs !== undefined) {
+      connectionTimer = setTimeout(
+        () => abortRelay.abortForTimeout('connection'),
+        connectionTimeoutMs,
+      );
+    }
+
+    const fetchPromise = Promise.resolve(
+      (config.fetchImpl ?? fetch)(
+        `${config.baseUrl.replace(/\/$/, '')}/chat/completions`,
+        fetchInit,
+      ),
     );
+    response = await waitForAbort(fetchPromise, fetchSignal);
   } catch (error) {
+    finishTiming(input.signal?.aborted ? 'cancelled' : 'failure');
     if (input.signal?.aborted) throw error;
+    if (abortRelay.timedOut) {
+      throw new ChatError('network', describeChatError('network'));
+    }
     throw new ChatError('network', describeChatError('network'));
+  } finally {
+    if (connectionTimer !== undefined) clearTimeout(connectionTimer);
   }
 
-  if (!response.ok) {
-    const detail = await extractErrorDetail(response);
-    const code = classifyChatHttpError(response.status);
-    throw new ChatError(
-      code,
-      detail
-        ? `AI 服务返回 ${response.status}：${detail}`
-        : describeChatError(code),
-      response.status,
+  timing.headersMs = elapsedMs(startedAt);
+
+  try {
+    if (!response.ok) {
+      const detail = await waitForStreamOperation(
+        () => extractErrorDetail(response),
+        streamStallTimeoutMs,
+        abortRelay,
+      );
+      const code = classifyChatHttpError(response.status);
+      throw new ChatError(
+        code,
+        detail
+          ? `AI 服务返回 ${response.status}：${detail}`
+          : describeChatError(code),
+        response.status,
+      );
+    }
+
+    const result = await readStreamingChatCompletion(
+      response,
+      input,
+      timing,
+      startedAt,
+      streamStallTimeoutMs,
+      abortRelay,
     );
+    timing.status = 'success';
+    return result;
+  } catch (error) {
+    timing.status = input.signal?.aborted ? 'cancelled' : 'failure';
+    if (abortRelay.timedOut) {
+      throw new ChatError('network', describeChatError('network'));
+    }
+    throw error;
+  } finally {
+    finishTiming(timing.status);
   }
-
-  return readStreamingChatCompletion(response, input);
 }
 
 async function readStreamingChatCompletion(
   response: Response,
   input: ChatCompletionInput,
+  timing: MutableChatCompletionTiming,
+  startedAt: number,
+  streamStallTimeoutMs: number | undefined,
+  abortRelay: AbortRelay,
 ): Promise<ChatCompletionResult> {
   if (!response.body) {
-    const payload = (await response.json()) as StreamedChatChunk;
+    const payload = (await waitForStreamOperation(
+      () => response.json(),
+      streamStallTimeoutMs,
+      abortRelay,
+    )) as StreamedChatChunk;
     const choice = payload.choices?.[0];
     const content = choice?.message?.content ?? '';
-    if (content) input.onPartial?.(content);
+    if (content) publishContent(content, input, timing, startedAt);
     return { content, finishReason: choice?.finish_reason ?? null };
   }
 
@@ -105,6 +210,7 @@ async function readStreamingChatCompletion(
   let buffer = '';
   let content = '';
   let finishReason: string | null = null;
+  let completed = false;
 
   const processLine = (line: string) => {
     const trimmed = line.trim();
@@ -115,8 +221,7 @@ async function readStreamingChatCompletion(
       const chunk = JSON.parse(data) as StreamedChatChunk;
       const delta = chunk.choices?.[0]?.delta?.content;
       if (delta) {
-        content += delta;
-        input.onPartial?.(content);
+        content = publishContent(delta, input, timing, startedAt, content);
       }
       const reason = chunk.choices?.[0]?.finish_reason;
       if (typeof reason === 'string') finishReason = reason;
@@ -125,17 +230,185 @@ async function readStreamingChatCompletion(
     }
   };
 
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-    for (const line of lines) processLine(line);
+  try {
+    for (;;) {
+      const { done, value } = await waitForStreamOperation(
+        () => reader.read(),
+        streamStallTimeoutMs,
+        abortRelay,
+      );
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) processLine(line);
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) processLine(buffer);
+    completed = true;
+    return { content, finishReason };
+  } finally {
+    if (!completed) {
+      try {
+        void reader.cancel().catch(() => {});
+      } catch {
+        // The reader may already be closed or cancelled by the provider.
+      }
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // Releasing a provider-owned reader is best effort cleanup.
+    }
   }
-  buffer += decoder.decode();
-  if (buffer.trim()) processLine(buffer);
-  return { content, finishReason };
+}
+
+interface MutableChatCompletionTiming extends ChatCompletionTiming {
+  status: ChatCompletionTimingStatus;
+}
+
+type TimeoutPhase = 'connection' | 'stream';
+
+interface AbortRelay {
+  signal?: AbortSignal;
+  timedOut: TimeoutPhase | null;
+  abortForTimeout(phase: TimeoutPhase): void;
+  cleanup(): void;
+}
+
+function monotonicNow(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.max(0, Math.round(monotonicNow() - startedAt));
+}
+
+function normalizeTimeout(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function createAbortRelay(
+  externalSignal: AbortSignal | undefined,
+  needsController: boolean,
+): AbortRelay {
+  if (!needsController) {
+    return {
+      signal: externalSignal,
+      timedOut: null,
+      abortForTimeout: () => {},
+      cleanup: () => {},
+    };
+  }
+
+  const controller = new AbortController();
+  let timedOut: TimeoutPhase | null = null;
+  let onExternalAbort: (() => void) | undefined;
+
+  if (externalSignal) {
+    onExternalAbort = () => {
+      if (!controller.signal.aborted) {
+        controller.abort(externalSignal.reason);
+      }
+    };
+    if (externalSignal.aborted) onExternalAbort();
+    else
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    get timedOut() {
+      return timedOut;
+    },
+    abortForTimeout(phase) {
+      if (controller.signal.aborted) return;
+      timedOut = phase;
+      controller.abort(new DOMException(`${phase} timeout`, 'TimeoutError'));
+    },
+    cleanup() {
+      if (externalSignal && onExternalAbort) {
+        externalSignal.removeEventListener('abort', onExternalAbort);
+      }
+    },
+  };
+}
+
+async function waitForAbort<T>(
+  operation: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) {
+    void operation.catch(() => {});
+    throw abortReason(signal);
+  }
+
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([operation, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return (
+    signal.reason ??
+    new DOMException('The operation was aborted.', 'AbortError')
+  );
+}
+
+async function waitForStreamOperation<T>(
+  start: () => Promise<T>,
+  timeoutMs: number | undefined,
+  abortRelay: AbortRelay,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (timeoutMs !== undefined) {
+    timer = setTimeout(() => abortRelay.abortForTimeout('stream'), timeoutMs);
+  }
+  try {
+    const operation = Promise.resolve(start());
+    return await waitForAbort(operation, abortRelay.signal);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function publishContent(
+  delta: string,
+  input: ChatCompletionInput,
+  timing: MutableChatCompletionTiming,
+  startedAt: number,
+  content = '',
+): string {
+  if (!delta) return content;
+  if (timing.firstContentMs === null) {
+    timing.firstContentMs = elapsedMs(startedAt);
+  }
+  const nextContent = content + delta;
+  timing.outputChars = nextContent.length;
+  input.onPartial?.(nextContent);
+  return nextContent;
+}
+
+function emitTiming(
+  onTiming: ChatCompletionInput['onTiming'],
+  timing: ChatCompletionTiming,
+): void {
+  if (!onTiming) return;
+  try {
+    onTiming({ ...timing });
+  } catch {
+    // Diagnostics must never alter the request result.
+  }
 }
 
 interface StreamedChatChunk {

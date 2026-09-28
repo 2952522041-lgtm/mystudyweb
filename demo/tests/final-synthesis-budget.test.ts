@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createKnowledgeProviderForSettings, createKnowledgeDigestCache } from '../lib/knowledge/ai-knowledge-provider.ts';
+import { createMemoryStore } from '../lib/reader-cache.ts';
+import { settings, reply } from './fixtures/hierarchical-synthesis.ts';
 
 import {
   reduceWithinBudget,
@@ -11,6 +14,41 @@ interface MarkerRecord {
   marker: string;
   content: string;
 }
+
+void test('document provider does not expand a final-sized chunk payload into extra AI rounds', async () => {
+  const chunkCalls: number[] = [];
+  const summaries = [1, 2, 3].map(page => `page-${page}-` + 'x'.repeat(8500));
+  const synthesisPrompts: string[] = [];
+  const provider = createKnowledgeProviderForSettings(settings, async (_url, init) => {
+    assert.equal(typeof init?.body, 'string');
+    const body = JSON.parse(init!.body as string);
+    assert.match(body.messages[0].content, /Serialize JSON compactly/);
+    assert.match(body.messages[0].content, /keep all required facts/);
+    const prompt: string = body.messages[1].content;
+    const page = Number(/<page number="(\d+)"/.exec(prompt)?.[1] ?? 0);
+    const output = reply('lecture', page || 1);
+    if (prompt.startsWith('分析以下 PDF 分块')) {
+      chunkCalls.push(page);
+      output.sections[0]!.summary = summaries[page - 1]!;
+    } else {
+      synthesisPrompts.push(prompt);
+    }
+    return new Response(`data: ${JSON.stringify({choices:[{delta:{content:JSON.stringify(output)},finish_reason:'stop'}]})}\n\ndata: [DONE]\n\n`);
+  }, createKnowledgeDigestCache(createMemoryStore()), createMemoryStore());
+  const digest = await provider.analyzeDocument({documentId:'lecture',fingerprint:'final-sized',fileName:'lecture.pdf',pages:[1,2,3].map(page => `page ${page}\n` + '页面内容。'.repeat(1400))});
+  assert.deepEqual(chunkCalls.sort((a,b) => a-b), [1,2,3]);
+  assert.equal(synthesisPrompts.length, 1);
+  for (const summary of summaries) assert.ok(synthesisPrompts[0]!.includes(summary));
+  assert.ok(!digest.diagnostics?.some(event => event.layer === 'document' && event.action === 'split'));
+  const timings = digest.diagnostics?.filter(event => event.action === 'request-timing') ?? [];
+  assert.equal(timings.length, 4);
+  for (const event of timings) {
+    assert.equal(event.timing?.status, 'success');
+    assert.ok((event.timing?.outputChars ?? 0) > 0);
+    assert.ok((event.timing?.totalMs ?? -1) >= 0);
+    assert.ok(!JSON.stringify(event.timing).includes(settings.apiKey));
+  }
+});
 
 interface ReduceCall {
   identity: string;
