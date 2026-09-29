@@ -51,4 +51,6 @@ DSH 是执行框架，不会提升模型本身的 token 生成速度，也不能
 
 当前部署目录为 `.local/opt/yeyu-20260929-all-ai-dsh`，同时更新桌面快捷方式及 `.local/bin/yeyu`；后者供 Blackboard 自动任务启动宿主使用。旧版目录保留用于回滚，课程目录不迁移、不覆盖。
 
+共享阅读器的页面翻译现在与桌面一致：打开翻译面板或翻页后先读取已发布译文，缺失时自动请求宿主，默认不绕过缓存。页面/语言稳定 350 ms 后才发起请求，隐藏的响应式面板和无 AI 权限的会话不自动生成；离开页面取消旧请求，迟到结果不覆盖当前页。失败或主动取消后不循环重试，保留手动重试；只有“重新翻译”已有译文才明确绕过缓存。已在共享网站的 `xid-12544620_1.pdf` 第 40 页验证无需点击生成即可显示 GLM 译文。
+
 参考：[官方项目](https://github.com/deepseek-ai/deepseek-harness)、[安全说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/SAFETY.md)。该项目仍为开发预览版。

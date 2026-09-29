@@ -193,39 +193,69 @@ function formatTranslationTime(value: string): string {
   }).format(date);
 }
 
-function SharedTranslationPanel({
+export function SharedTranslationPanel({
   courseId,
   documentId,
   page,
   canUseAi,
+  active = true,
   onSessionExpired,
 }: {
   courseId: string;
   documentId: string;
   page: number;
   canUseAi: boolean;
+  active?: boolean;
   onSessionExpired?: () => void;
 }) {
   const [records, setRecords] = useState<SharedTranslationRecord[]>([]);
   const [targetLanguage, setTargetLanguage] = useState('简体中文');
   const [loading, setLoading] = useState(true);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generatedTranslation, setGeneratedTranslation] = useState<{
+    courseId: string;
     documentId: string;
     record: SharedGeneratedTranslation;
   } | null>(null);
   const translationAbortRef = useRef<AbortController | null>(null);
   const translationRequestRef = useRef(0);
+  const attemptedRef = useRef(new Set<string>());
+  const sourceKey = JSON.stringify([courseId, documentId, refreshToken]);
+  const requestKey = JSON.stringify([
+    courseId,
+    documentId,
+    page,
+    targetLanguage.trim(),
+  ]);
+
+  useEffect(() => {
+    let saved = '';
+    try {
+      saved =
+        window.localStorage.getItem(
+          `yeyu-shared-translation-language:${documentId}`,
+        ) ?? '';
+    } catch {
+      /* Optional preference. */
+    }
+    setTargetLanguage(saved.trim() || '简体中文');
+    attemptedRef.current.clear();
+  }, [courseId, documentId]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setLoadedKey(null);
     setError(null);
     void loadSharedTranslations(courseId, documentId)
       .then((payload) => {
-        if (!cancelled) setRecords(payload.translations);
+        if (!cancelled) {
+          setRecords(payload.translations);
+          setLoadedKey(sourceKey);
+        }
       })
       .catch((loadError) => {
         if (cancelled) return;
@@ -245,19 +275,24 @@ function SharedTranslationPanel({
     return () => {
       cancelled = true;
     };
-  }, [courseId, documentId, refreshToken, onSessionExpired]);
+  }, [courseId, documentId, refreshToken, sourceKey, onSessionExpired]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    setGenerating(false);
+    setError(null);
+    const attempted = attemptedRef.current;
+    return () => {
+      // Leaving an unfinished page must not permanently suppress its next
+      // automatic attempt. Explicit Cancel clears the controller first.
+      if (translationAbortRef.current) attempted.delete(requestKey);
       translationAbortRef.current?.abort();
       translationAbortRef.current = null;
       translationRequestRef.current += 1;
-      setGeneratedTranslation(null);
-    },
-    [courseId, documentId, page],
-  );
+    };
+  }, [requestKey, active, canUseAi]);
 
   const languages = useMemo(() => {
+    if (loadedKey !== sourceKey) return [];
     const seen = new Set<string>();
     return [...records]
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
@@ -267,7 +302,7 @@ function SharedTranslationPanel({
         seen.add(language);
         return true;
       });
-  }, [records]);
+  }, [records, loadedKey, sourceKey]);
 
   useEffect(() => {
     if (canUseAi) return;
@@ -292,10 +327,12 @@ function SharedTranslationPanel({
 
   const publishedCurrent = records.find(
     (record) =>
+      loadedKey === sourceKey &&
       record.pageNumber === page &&
       record.targetLanguage === targetLanguage.trim(),
   );
   const generatedCurrent =
+    generatedTranslation?.courseId === courseId &&
     generatedTranslation?.documentId === documentId &&
     generatedTranslation.record.pageNumber === page &&
     generatedTranslation.record.targetLanguage === targetLanguage.trim()
@@ -318,61 +355,109 @@ function SharedTranslationPanel({
   const cancelTranslation = () => {
     translationAbortRef.current?.abort();
     translationAbortRef.current = null;
+    translationRequestRef.current += 1;
+    setGenerating(false);
   };
 
-  const generateTranslation = async () => {
-    const language = targetLanguage.trim();
-    if (!canUseAi || !language || generating) return;
-    translationAbortRef.current?.abort();
-    const controller = new AbortController();
-    const requestId = ++translationRequestRef.current;
-    translationAbortRef.current = controller;
-    setGenerating(true);
-    setError(null);
-    try {
-      const result = await translateSharedPage(
-        courseId,
-        documentId,
-        page,
-        language,
-        true,
-        controller.signal,
-      );
-      if (
-        controller.signal.aborted ||
-        requestId !== translationRequestRef.current
-      ) {
+  const generateTranslation = useCallback(
+    async (bypassCache = false) => {
+      const language = targetLanguage.trim();
+      if (!active || !canUseAi || !language || translationAbortRef.current)
         return;
-      }
-      setGeneratedTranslation({ documentId, record: result.translation });
-      setRefreshToken((value) => value + 1);
-    } catch (translationError) {
-      if (
-        controller.signal.aborted ||
-        requestId !== translationRequestRef.current
-      ) {
-        return;
-      }
-      if (
-        translationError instanceof SharedApiError &&
-        translationError.status === 401
-      ) {
-        onSessionExpired?.();
-      }
-      setError(
-        translationError instanceof Error
-          ? translationError.message
-          : '译文生成失败，请稍后重试。',
-      );
-    } finally {
-      if (requestId === translationRequestRef.current) {
-        setGenerating(false);
-        if (translationAbortRef.current === controller) {
-          translationAbortRef.current = null;
+      attemptedRef.current.add(requestKey);
+      const controller = new AbortController();
+      const requestId = ++translationRequestRef.current;
+      translationAbortRef.current = controller;
+      setGenerating(true);
+      setError(null);
+      try {
+        const result = await translateSharedPage(
+          courseId,
+          documentId,
+          page,
+          language,
+          bypassCache,
+          controller.signal,
+        );
+        if (
+          controller.signal.aborted ||
+          requestId !== translationRequestRef.current
+        ) {
+          return;
+        }
+        setGeneratedTranslation({
+          courseId,
+          documentId,
+          record: result.translation,
+        });
+        setRefreshToken((value) => value + 1);
+      } catch (translationError) {
+        if (
+          controller.signal.aborted ||
+          requestId !== translationRequestRef.current
+        ) {
+          return;
+        }
+        if (
+          translationError instanceof SharedApiError &&
+          translationError.status === 401
+        ) {
+          onSessionExpired?.();
+        }
+        setError(
+          translationError instanceof Error
+            ? translationError.message
+            : '译文生成失败，请稍后重试。',
+        );
+      } finally {
+        if (requestId === translationRequestRef.current) {
+          setGenerating(false);
+          if (translationAbortRef.current === controller) {
+            translationAbortRef.current = null;
+          }
         }
       }
-    }
-  };
+    },
+    [
+      active,
+      canUseAi,
+      courseId,
+      documentId,
+      page,
+      targetLanguage,
+      requestKey,
+      onSessionExpired,
+    ],
+  );
+
+  useEffect(() => {
+    if (
+      !active ||
+      !canUseAi ||
+      loading ||
+      loadedKey !== sourceKey ||
+      current ||
+      !targetLanguage.trim() ||
+      attemptedRef.current.has(requestKey)
+    )
+      return;
+    // Allow scrolling/typing to settle and StrictMode's setup-cleanup probe
+    // to finish before starting a billable host request.
+    const timer = window.setTimeout(() => {
+      void generateTranslation(false);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [
+    active,
+    canUseAi,
+    loading,
+    loadedKey,
+    sourceKey,
+    current,
+    targetLanguage,
+    requestKey,
+    generateTranslation,
+  ]);
 
   return (
     <section className="flex min-h-0 flex-col" aria-label="页面翻译面板">
@@ -381,7 +466,7 @@ function SharedTranslationPanel({
           <p className="text-xs font-semibold text-slate-800">页面翻译</p>
           <p className="mt-1 text-[11px] text-slate-500">
             {canUseAi
-              ? '可请求主电脑生成译文，AI 在主电脑执行。'
+              ? '打开页面自动翻译，优先复用已有译文；AI 在主电脑执行。'
               : '只显示主电脑已经完成并发布的译文。'}
           </p>
         </div>
@@ -439,7 +524,7 @@ function SharedTranslationPanel({
             <Button
               type="button"
               size="sm"
-              onClick={() => void generateTranslation()}
+              onClick={() => void generateTranslation(Boolean(current))}
               disabled={!targetLanguage.trim() || loading}
             >
               <Languages /> {current ? '重新翻译' : '生成译文'}
@@ -468,6 +553,13 @@ function SharedTranslationPanel({
           <div className="flex min-h-40 items-center justify-center text-xs text-slate-500">
             <LoaderCircle className="mr-2 size-4 animate-spin" /> 正在读取译文…
           </div>
+        ) : generating ? (
+          <output
+            className="flex min-h-40 items-center justify-center text-xs text-slate-500"
+          >
+            <LoaderCircle className="mr-2 size-4 animate-spin" /> 正在翻译第{' '}
+            {page} 页…
+          </output>
         ) : error ? (
           <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-3 text-xs leading-5 text-rose-700">
             {error}
@@ -480,7 +572,7 @@ function SharedTranslationPanel({
             </p>
             <p className="mt-2 text-xs leading-5 text-slate-500">
               {canUseAi
-                ? '输入目标语言并生成，完成后即可在这里查看。'
+                ? '未翻译的页面会自动请求主电脑；取消或失败后可点击“生成译文”重试。'
                 : '主电脑完成翻译并发布后，点击“刷新译文”即可查看。'}
             </p>
           </div>
@@ -863,6 +955,14 @@ export function SharedPdfReader({
   onSessionExpired?: () => void;
 }) {
   const aiEnabled = canUseAi === true;
+  const [wideLayout, setWideLayout] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 1024px)');
+    const update = () => setWideLayout(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
   const initialPageTarget = Number.isFinite(initialPage)
     ? Math.max(1, Math.floor(initialPage))
     : 1;
@@ -1189,10 +1289,7 @@ export function SharedPdfReader({
         const stageRect = stage.getBoundingClientRect();
         const pageRect = element.getBoundingClientRect();
         stage.scrollTo({
-          top: Math.max(
-            0,
-            stage.scrollTop + pageRect.top - stageRect.top - 12,
-          ),
+          top: Math.max(0, stage.scrollTop + pageRect.top - stageRect.top - 12),
           behavior: 'auto',
         });
         pendingPageRef.current = null;
@@ -1550,6 +1647,7 @@ export function SharedPdfReader({
                       documentId={documentId}
                       page={page}
                       canUseAi={aiEnabled}
+                      active={panel === 'translation' && wideLayout}
                       onSessionExpired={onSessionExpired}
                     />
                   </TabsContent>
@@ -1657,6 +1755,7 @@ export function SharedPdfReader({
                     documentId={documentId}
                     page={page}
                     canUseAi={aiEnabled}
+                    active={panel === 'translation' && !wideLayout}
                     onSessionExpired={onSessionExpired}
                   />
                 </TabsContent>
