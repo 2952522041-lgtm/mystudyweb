@@ -45,9 +45,9 @@ import {
 } from './reading-state-store.ts';
 import { McpControlServer, type McpControlRequest } from './mcp-control.ts';
 import { prepareMcpRendererArgs } from './mcp-import.ts';
-import { DshManager } from './dsh-manager.ts';
+import { DshDispatcher } from './dsh-dispatcher.ts';
 
-const dshManager = new DshManager(path.join(__dirname, 'dsh-worker.mjs'));
+const dshManager = new DshDispatcher(path.join(__dirname, 'dsh-worker.mjs'));
 
 // Windows Squirrel 安装/更新/卸载事件必须在最早期处理（HANDOFF 13.2）。
 if (handleSquirrelStartup()) {

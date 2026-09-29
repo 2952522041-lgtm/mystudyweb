@@ -23,6 +23,8 @@ const result = spawnSync(
     '--save-exact',
     '@deepseek-ai/dsh@0.1.7-rc.2',
     '@deepseek-ai/dsh-sdk-client@0.1.7-rc.2',
+    '@deepseek-ai/dsh-llm-pi-ai@0.1.7-rc.2',
+    '@deepseek-ai/dsh-attachment-local@0.1.7-rc.2',
   ],
   { stdio: 'inherit', shell: false },
 );

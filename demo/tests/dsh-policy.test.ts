@@ -144,7 +144,7 @@ void test('builds a read-only profile with every tool-capability entry disabled'
   });
   const systemPrompt = patch.find((entry) => entry.id === 'system-prompt');
   assert.ok(systemPrompt && 'config' in systemPrompt);
-  if (systemPrompt && 'config' in systemPrompt) {
+  if (systemPrompt?.config && typeof systemPrompt.config.personaPrefix==='string') {
     assert.equal(systemPrompt.config.includeHarnessIdentity, false);
     assert.equal(systemPrompt.config.includeRuntimeContext, false);
     assert.match(

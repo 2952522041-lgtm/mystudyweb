@@ -38,6 +38,7 @@ import {
   CourseLibrary,
   type CourseReaderContext,
 } from '@/components/course-library';
+import { buildCourseAiContext } from '@/lib/course-ai-context';
 import { DocumentSummaryPanel } from '@/components/document-summary-panel';
 import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
 import type { SelectionQuestion } from '@/lib/selection-translation';
@@ -2309,6 +2310,7 @@ function PdfReader({
                           pdfDoc={pdfDoc}
                           fingerprint={docMeta?.fingerprint ?? null}
                           pageNumber={translationPage}
+                          courseContext={courseContext?.courseContext}
                           onNavigate={goToPage}
                           settings={chatSettings}
                           selectionQuestion={selectionQuestion}
@@ -2652,9 +2654,14 @@ function DesktopHome() {
             <CourseLibrary
               onControlReady={registerCourseControl}
               onBundleUpdated={(bundle) => setReaderContext(previous => {
-                if (!previous || previous.courseName !== bundle.manifest.name) return previous;
+                if (!previous || previous.courseId !== bundle.manifest.id) return previous;
                 const document = bundle.manifest.documents.find(item => item.id === previous.document.id);
-                return document ? {...previous, document, digest:bundle.digests[document.id]} : previous;
+                return document ? {
+                  ...previous,
+                  document,
+                  digest: bundle.digests[document.id],
+                  courseContext: buildCourseAiContext(bundle, previous.glossary),
+                } : previous;
               })}
               onOpenDocument={(file, context) => {
                 setReaderFile(file);

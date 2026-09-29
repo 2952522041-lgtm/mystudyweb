@@ -28,7 +28,8 @@ const CANCEL_SETTLE_TIMEOUT_MS = 250;
 
 const DSH_UNAVAILABLE_MESSAGE =
   '当前环境不支持桌面 DSH，请使用页语桌面版后重试。';
-const DSH_TEXT_ONLY_MESSAGE = 'DSH 当前仅支持纯文本消息，不支持图片内容。';
+const DSH_TEXT_ONLY_MESSAGE =
+  'DSH 仅接受文字或内嵌 PNG/JPEG 图片，不接受远程图片地址。';
 const DSH_REQUEST_FAILED_MESSAGE = 'DSH 服务请求失败，请稍后重试。';
 const DSH_INITIALIZATION_FAILED_MESSAGE = 'DSH 请求初始化失败，请稍后重试。';
 
@@ -45,7 +46,7 @@ class DshClientError extends Error {
 }
 
 /**
- * Run one text-only completion through the desktop DSH bridge.
+ * Run a text/image completion or fixed search tool through the desktop bridge.
  *
  * The optional bridge argument is intentionally only an injection seam for
  * tests and internal callers.  Production callers use `window.yeyuDesktop`.
@@ -110,6 +111,7 @@ export async function requestDshCompletion(
       messages,
       maxTokens: input.maxTokens ?? DEFAULT_MAX_TOKENS,
       thinking: input.thinking ?? 'default',
+      ...(input.backendOperation ? { operation: input.backendOperation } : {}),
     };
 
     const onProgress = (progress: DshProgress): void => {
@@ -260,11 +262,35 @@ function toTextMessages(
     ) {
       throw new DshClientError('input', DSH_REQUEST_FAILED_MESSAGE);
     }
-    if (typeof message.content !== 'string') {
+    if (
+      typeof message.content !== 'string' &&
+      (!Array.isArray(message.content) ||
+        !message.content.every((part) =>
+          part?.type === 'text'
+            ? typeof part.text === 'string'
+            : part?.type === 'image_url' &&
+              message.role === 'user' &&
+              isInlineImage(part.image_url?.url),
+        ))
+    )
       throw new DshClientError('input', DSH_TEXT_ONLY_MESSAGE);
-    }
     return { role: message.role, content: message.content };
   });
+}
+
+function isInlineImage(url: unknown): boolean {
+  if (typeof url !== 'string') return false;
+  const match = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(
+    url,
+  );
+  return Boolean(
+    match &&
+    match[2].length <= 8_000_000 &&
+    match[2].length % 4 === 0 &&
+    (match[1] === 'png'
+      ? match[2].startsWith('iVBORw0KGgo')
+      : match[2].startsWith('/9j/')),
+  );
 }
 
 function resolveBridge(

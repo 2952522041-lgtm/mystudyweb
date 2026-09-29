@@ -221,7 +221,7 @@ void test('cancels an in-flight request and does not wait for late completion', 
   assert.equal(timings[0].status, 'cancelled');
 });
 
-void test('rejects image messages without silently converting or invoking DSH', async () => {
+void test('rejects invalid image bytes without silently converting or invoking DSH', async () => {
   const bridge = new FakeDshBridge();
   const imageMessage: ChatCompletionInput['messages'][number] = {
     role: 'user',
@@ -234,7 +234,7 @@ void test('rejects image messages without silently converting or invoking DSH', 
     requestDshCompletion(config, { messages: [imageMessage] }, bridge),
     (error: unknown) =>
       error instanceof Error &&
-      error.message.includes('纯文本') &&
+      error.message.includes('PNG/JPEG') &&
       error.message.includes('图片'),
   );
   assert.equal(bridge.requests.length, 0);

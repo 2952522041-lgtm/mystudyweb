@@ -135,7 +135,7 @@ export function ReaderSettingsDialog({
               AI 执行后端
             </h2>
             <p className="mt-1 text-[11px] leading-5 text-slate-500">
-              只影响 PDF 整理和整份文档问答；页面翻译、OCR、图片问答仍使用原路径。
+              可统一管理整理、翻译、OCR 和答疑；每项继续使用对应的模型配置。
             </p>
           </div>
           <NativeSelect
@@ -157,13 +157,18 @@ export function ReaderSettingsDialog({
           {agentSettingsDraft.backend === 'dsh' ? (
             <div className="space-y-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] leading-5 text-amber-900">
               <p>
-                DSH 第一版仅支持官方 DeepSeek Flash / V4 Pro，在本机桌面宿主运行；Windows
+                DSH 支持已接入的官方 DeepSeek / 智谱模型，在本机桌面宿主运行；Windows
                 共享端通过宿主，不会替换数据。
               </p>
               <div className="flex items-start gap-2 pt-1">
+                <Checkbox id="agent-dsh-all-ai" checked={Boolean(agentSettingsDraft.allAi)} onCheckedChange={checked=>setAgentSettingsDraft(previous=>({...previous,allAi:checked===true}))}/>
+                <label htmlFor="agent-dsh-all-ai">所有 AI 任务统一走 DSH（翻译、OCR、图片答疑保留各自模型）</label>
+              </div>
+              <div className="flex items-start gap-2 pt-1">
                 <Checkbox
                   id="agent-dsh-document-chat"
-                  checked={agentSettingsDraft.dshDocumentChat}
+                  checked={Boolean(agentSettingsDraft.allAi || agentSettingsDraft.dshDocumentChat)}
+                  disabled={Boolean(agentSettingsDraft.allAi)}
                   onCheckedChange={(checked) =>
                     setAgentSettingsDraft((previous) => ({
                       ...previous,

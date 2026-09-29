@@ -5,6 +5,7 @@ import {
 import type { PageImageInput } from './chat.ts';
 import { normalizeMathText } from './math-text.ts';
 import { createIndexedDBStore, type KVStore } from './reader-cache.ts';
+import { useDshForTask as selectDshForTask } from './agent-settings.ts';
 
 export const OCR_PROMPT_VERSION = 1;
 export const OCR_MIN_TEXT_LENGTH = 24;
@@ -106,8 +107,9 @@ export function createOcrProviderForSettings(
 ): OcrProvider {
   const chatProvider = createChatProviderForSettings(settings, fetchImpl);
   const serviceId = settings.baseUrl.trim().replace(/\/$/, '');
+  const providerId = `openai-compatible-vision:${serviceId}${selectDshForTask('ocr') ? ':dsh' : ''}`;
   return {
-    id: `openai-compatible-vision:${serviceId}`,
+    id: providerId,
     model: chatProvider.model,
     async recognize(request, signal) {
       const result = await chatProvider.answer(
@@ -125,7 +127,7 @@ export function createOcrProviderForSettings(
       if (!text) throw new Error('视觉模型没有返回可用的 OCR 文字。');
       return {
         text,
-        provider: `openai-compatible-vision:${serviceId}`,
+        provider: providerId,
         model: result.model,
       };
     },

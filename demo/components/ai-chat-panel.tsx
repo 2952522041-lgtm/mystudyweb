@@ -76,6 +76,7 @@ export function AIChatPanel({
   pdfDoc,
   fingerprint,
   pageNumber,
+  courseContext,
   settings,
   onOpenSettings,
   onNavigate,
@@ -85,6 +86,8 @@ export function AIChatPanel({
   pdfDoc: PDFDocumentProxy | null;
   fingerprint: string | null;
   pageNumber: number;
+  /** Bounded course-level material; standalone PDFs leave this empty. */
+  courseContext?: string;
   settings: ChatSettings;
   onOpenSettings: () => void;
   onNavigate?: (page: number) => void;
@@ -220,6 +223,7 @@ export function AIChatPanel({
           pageText,
           pageImage,
           documentChunks,
+          courseContext,
           messages: history,
           question,
           allowWebSearch,

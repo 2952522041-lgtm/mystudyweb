@@ -1,5 +1,7 @@
 import { glossaryPrompt, type Glossary } from './glossary.ts';
 import { protectScientificText, safeScientificCut, splitScientificParagraphs } from './scientific-text.ts';
+import { useDshForTask as selectDshForTask } from './agent-settings.ts';
+import { requestChatCompletion } from './openai-client.ts';
 
 export interface TranslationRequest {
   glossary?: Glossary;
@@ -269,8 +271,14 @@ export function createOpenAICompatibleProvider(
   config: OpenAICompatibleConfig,
 ): TranslationProvider {
   const doFetch = config.fetchImpl ?? fetch;
+  // Capture the selected backend when the provider is created.  The provider
+  // identity is part of the reader cache key, so changing backend settings
+  // while an existing provider is in use must not make one provider appear as
+  // the other half-way through a page translation.
+  const useDsh = selectDshForTask('translation');
+  const providerId = useDsh ? 'openai-compatible:dsh' : 'openai-compatible';
   return {
-    id: 'openai-compatible',
+    id: providerId,
     model: config.model,
     async translate(request, options) {
       if (request.text.trim().length === 0) {
@@ -286,7 +294,7 @@ export function createOpenAICompatibleProvider(
         let restored = new Map<string, string>();
         if (batchEnabled && batch.length > 1) {
           try {
-            const completion = await requestTranslationChunk(doFetch, config, request, batchPayload(batch), options?.signal, undefined, false, true);
+            const completion = await requestTranslationChunk(doFetch, config, request, batchPayload(batch), options?.signal, undefined, false, true, useDsh);
             if (completion.finishReason !== 'length') restored = restoreBatch(completion.content, batch);
           } catch (error) {
             options?.signal?.throwIfAborted();
@@ -319,7 +327,7 @@ export function createOpenAICompatibleProvider(
                     const partial = protectedText.restore(parseParagraphList(content, chunk.text).join('\n\n'), chunk.text);
                     options?.onPartial?.([...completedParagraphs, [...fragments, partial].join(' ')]);
                   } catch { /* Wait for the next complete stream snapshot. */ }
-                }, repair > 0);
+                }, repair > 0, false, useDsh);
               if (completion.finishReason === 'length') {
                 const smaller = splitTranslationChunks(chunk.text, Math.max(400, Math.floor(chunk.text.length / 2)));
                 if (chunk.splitDepth >= MAX_TRUNCATION_SPLITS || smaller.length < 2) {
@@ -348,7 +356,7 @@ export function createOpenAICompatibleProvider(
       options?.signal?.throwIfAborted();
       return {
         paragraphs: completedParagraphs,
-        provider: 'openai-compatible',
+        provider: providerId,
         model: config.model,
       };
     },
@@ -369,6 +377,7 @@ async function requestTranslationChunk(
   onPartial: ((content: string) => void) | undefined,
   repair = false,
   batch = false,
+  useDsh = false,
 ): Promise<CompletionResult> {
   signal?.throwIfAborted();
   const timeout = new AbortController();
@@ -382,7 +391,7 @@ async function requestTranslationChunk(
   try {
     return await Promise.race([
       performTranslationChunk(doFetch, config, request, text, combined,
-        onPartial ? (content) => { if (!combined.aborted) onPartial(content); } : undefined, repair, batch),
+        onPartial ? (content) => { if (!combined.aborted) onPartial(content); } : undefined, repair, batch, useDsh),
       aborted,
     ]);
   } catch (error) {
@@ -404,7 +413,45 @@ async function performTranslationChunk(
   onPartial: ((content: string) => void) | undefined,
   repair = false,
   batch = false,
+  useDsh = false,
 ): Promise<CompletionResult> {
+  const messages = [
+    {
+      role: 'system' as const,
+      content: (batch ? BATCH_SYSTEM_PROMPT : SYSTEM_PROMPT) + glossaryPrompt(request.glossary, request.text) + (repair ? '\nYour previous output lost or changed protected placeholders. Correct this: copy all YYKEEP…ZZ markers exactly once, in order.' : ''),
+    },
+    {
+      role: 'user' as const,
+      content: [
+        `Source language: ${request.sourceLanguage}`,
+        `Target language: ${request.targetLanguage}`,
+        `Page number: ${request.pageNumber}`,
+        '---',
+        text,
+      ].join('\n'),
+    },
+  ];
+
+  if (useDsh) {
+    const completion = await requestChatCompletion(
+      { ...config, executionBackend: 'dsh' },
+      {
+        messages,
+        temperature: 0.1,
+        maxTokens: recommendedMaxOutputTokens(text),
+        // DSH translation is deliberately non-reasoning, matching the GLM
+        // translation path and keeping output budget focused on the text.
+        thinking: 'disabled',
+        signal,
+        onPartial,
+      },
+    );
+    return {
+      content: completion.content,
+      finishReason: completion.finishReason ?? undefined,
+    };
+  }
+
   let response: Response;
   try {
     response = await doFetch(
@@ -422,19 +469,7 @@ async function performTranslationChunk(
           stream: true,
           max_tokens: recommendedMaxOutputTokens(text),
           ...(config.disableThinking ? { thinking: { type: 'disabled' } } : {}),
-          messages: [
-            { role: 'system', content: (batch ? BATCH_SYSTEM_PROMPT : SYSTEM_PROMPT) + glossaryPrompt(request.glossary, request.text) + (repair ? '\nYour previous output lost or changed protected placeholders. Correct this: copy all YYKEEP…ZZ markers exactly once, in order.' : '') },
-            {
-              role: 'user',
-              content: [
-                `Source language: ${request.sourceLanguage}`,
-                `Target language: ${request.targetLanguage}`,
-                `Page number: ${request.pageNumber}`,
-                '---',
-                text,
-              ].join('\n'),
-            },
-          ],
+          messages,
         }),
       },
     );

@@ -7,10 +7,8 @@ import {
   type PageConversation,
 } from './chat-cache.ts';
 import type { ChatMessage } from './chat.ts';
-import type {
-  CourseStorage,
-  DocumentRecord,
-} from './course-storage/types.ts';
+import type { CourseStorage, DocumentRecord } from './course-storage/types.ts';
+import { buildCourseAiContext } from './course-ai-context.ts';
 import {
   readDocumentChatIndex,
   retrieveDocumentChunks,
@@ -175,6 +173,38 @@ export async function clearSharedConversation(input: {
   return { cleared: true };
 }
 
+/**
+ * Read the current course material for a shared-host question. The document
+ * identity check prevents a stale or mismatched storage entry from leaking a
+ * different course's summary into this conversation. Context loading is
+ * best-effort: a transient course-directory read must not disable existing
+ * page/document answering.
+ */
+export async function loadSharedCourseAiContext(input: {
+  storage: CourseStorage;
+  document: DocumentRecord;
+}): Promise<string> {
+  try {
+    const bundle = await input.storage.load();
+    const document = bundle.manifest.documents.find(
+      (candidate) =>
+        candidate.id === input.document.id &&
+        candidate.fingerprint === input.document.fingerprint,
+    );
+    if (!document) return '';
+    let glossary = EMPTY_GLOSSARY;
+    try {
+      glossary = (await input.storage.loadGlossary?.()) ?? EMPTY_GLOSSARY;
+    } catch {
+      // The course summary is still useful when only glossary.json is
+      // temporarily unavailable.
+    }
+    return buildCourseAiContext(bundle, glossary);
+  } catch {
+    return '';
+  }
+}
+
 export async function askSharedDocument(input: {
   storage: CourseStorage;
   document: DocumentRecord;
@@ -223,6 +253,10 @@ export async function askSharedDocument(input: {
         extractPageText(pdfDoc, input.page),
         renderPageImage(pdfDoc, input.page, { signal: input.signal }),
       ]);
+  const courseContext = await loadSharedCourseAiContext({
+    storage: input.storage,
+    document: input.document,
+  });
   const user = newMessage('user', question, input.allowWebSearch);
   const result = await createChatProviderForSettings(settings).answer(
     {
@@ -231,6 +265,7 @@ export async function askSharedDocument(input: {
       pageText,
       pageImage,
       documentChunks,
+      courseContext,
       messages: history,
       question,
       allowWebSearch: input.allowWebSearch,

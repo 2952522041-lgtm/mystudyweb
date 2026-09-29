@@ -44,6 +44,7 @@ export interface ChatCompletionTiming {
 }
 
 export interface ChatCompletionInput {
+  backendOperation?: 'web-search';
   messages: ChatApiMessage[];
   temperature?: number;
   maxTokens?: number;

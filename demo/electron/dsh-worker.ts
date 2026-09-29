@@ -11,6 +11,8 @@ import {
   DSH_CLIENT_VERSION,
 } from './dsh-policy.ts';
 import { DshEventCollector } from './dsh-events.ts';
+import { dshPrompt } from './dsh-prompt.ts';
+import { dshWebSearch } from './dsh-search.ts';
 
 const [runtimeRoot, taskRoot] = process.argv.slice(2);
 const send = (value: unknown) =>
@@ -32,13 +34,29 @@ try {
   let input = '';
   for await (const chunk of process.stdin) {
     input += chunk;
-    if (input.length > 1_100_000) throw new Error('request');
+    if (input.length > 17_000_000) throw new Error('request');
   }
   const request = validateDshRequest(JSON.parse(input));
+  if (request.operation === 'web-search') {
+    const content = await dshWebSearch(
+      request.apiKey,
+      request.messages[0].content as string,
+    );
+    await new Promise<void>((resolve, reject) =>
+      process.stdout.write(
+        JSON.stringify({ type: 'result', content, finishReason: 'stop' }) +
+          '\n',
+        (error) => (error ? reject(error) : resolve()),
+      ),
+    );
+    process.exit(0);
+  }
   const packageRoot = path.join(runtimeRoot, 'node_modules', '@deepseek-ai');
   for (const [name, version] of [
     ['dsh', DSH_RUNTIME_VERSION],
     ['dsh-sdk-client', DSH_CLIENT_VERSION],
+    ['dsh-llm-pi-ai', DSH_RUNTIME_VERSION],
+    ['dsh-attachment-local', DSH_RUNTIME_VERSION],
   ]) {
     const metadata = JSON.parse(
       await readFile(path.join(packageRoot, name, 'package.json'), 'utf8'),
@@ -50,11 +68,8 @@ try {
       .href
   );
   const patchPath = path.join(taskRoot, 'policy.json');
-  const system = request.messages
-    .filter((m) => m.role === 'system')
-    .map((m) => m.content)
-    .join('\n');
-  await writeFile(patchPath, JSON.stringify(buildDshPatch(system)), {
+  const { system, blocks } = dshPrompt(request);
+  await writeFile(patchPath, JSON.stringify(buildDshPatch(system, request)), {
     mode: 0o600,
   });
   await mkdir(path.join(taskRoot, 'workspace'), {
@@ -66,6 +81,7 @@ try {
     LANG: process.env.LANG ?? 'C.UTF-8',
     DSH_HOME: path.join(taskRoot, 'home'),
     DEEPSEEK_API_KEY: request.apiKey,
+    YEYU_PROVIDER_KEY: request.apiKey,
     DSH_MAX_TOKENS_AS_SUCCESS: 'false',
   };
   if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
@@ -76,7 +92,10 @@ try {
   runtime.start();
   const identity = await runtime.initialize({
     cwd: path.join(taskRoot, 'workspace'),
-    provider: 'deepseek-official',
+    provider:
+      new URL(request.baseUrl).hostname === 'open.bigmodel.cn'
+        ? 'yeyu-zhipu'
+        : 'deepseek-official',
     model: request.model,
     maxTokens: request.maxTokens,
     reasoningEffort: request.thinking === 'disabled' ? 'off' : 'high',
@@ -86,14 +105,7 @@ try {
   const sessionId = `yeyu-${randomUUID()}`;
   const subscription = runtime.subscribeSessionTree(sessionId);
   try {
-    const messageId = await runtime.prompt(sessionId, [
-      {
-        type: 'text',
-        text: JSON.stringify({
-          messages: request.messages.filter((m) => m.role !== 'system'),
-        }),
-      },
-    ]);
+    const messageId = await runtime.prompt(sessionId, blocks);
     const collector = new DshEventCollector(sessionId, messageId);
     let previous = '';
     while (!collector.done) {
@@ -115,7 +127,7 @@ try {
   send({
     type: 'error',
     message:
-      'DSH 任务未完整完成。请检查托管运行时、DeepSeek 配置或切回 API；未发布残缺成果。',
+      'DSH 任务未完整完成。请检查托管运行时和模型配置，或切回 API；未发布残缺成果。',
   });
   process.exitCode = 1;
 }

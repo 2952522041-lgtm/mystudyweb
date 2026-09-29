@@ -7,6 +7,7 @@ import {
   loadAgentSettings,
   readSelectedAgentBackend,
   saveAgentSettings,
+  useDshForTask,
   type AgentSettings,
 } from '../lib/agent-settings.ts';
 
@@ -22,7 +23,10 @@ function memoryStorage(initial: Record<string, string> = {}) {
 }
 
 function replaceGlobalLocalStorage(value: Storage | undefined): () => void {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const descriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'localStorage',
+  );
   Object.defineProperty(globalThis, 'localStorage', {
     configurable: true,
     value,
@@ -73,6 +77,7 @@ void test('load accepts only the persisted API and DSH backends', () => {
     JSON.stringify({ backend: 'harness' }),
     JSON.stringify({ backend: '' }),
     JSON.stringify({ backend: 'dsh', dshDocumentChat: 'yes' }),
+    JSON.stringify({ backend: 'dsh', dshDocumentChat: false, allAi: 'yes' }),
   ]) {
     assert.deepEqual(
       loadAgentSettings(memoryStorage({ 'yeyu-agent-settings': raw })),
@@ -133,6 +138,64 @@ void test('save rejects a non-boolean whole-document DSH opt-in', () => {
   assert.equal(storage.data.has('yeyu-agent-settings'), false);
 });
 
+void test('allAi expands DSH routing to every AI task without changing API mode', () => {
+  const storage = memoryStorage();
+  const restore = replaceGlobalLocalStorage(storage as unknown as Storage);
+  const tasks = [
+    'knowledge',
+    'document-chat',
+    'page-chat',
+    'translation',
+    'ocr',
+    'web-search',
+  ] as const;
+  try {
+    storage.setItem(
+      'yeyu-agent-settings',
+      JSON.stringify({ backend: 'api', dshDocumentChat: true, allAi: true }),
+    );
+    for (const task of tasks) assert.equal(useDshForTask(task), false, task);
+
+    storage.setItem(
+      'yeyu-agent-settings',
+      JSON.stringify({ backend: 'dsh', dshDocumentChat: false }),
+    );
+    assert.equal(useDshForTask('knowledge'), true);
+    assert.equal(useDshForTask('document-chat'), false);
+    for (const task of [
+      'page-chat',
+      'translation',
+      'ocr',
+      'web-search',
+    ] as const) {
+      assert.equal(useDshForTask(task), false, task);
+    }
+
+    storage.setItem(
+      'yeyu-agent-settings',
+      JSON.stringify({ backend: 'dsh', dshDocumentChat: true }),
+    );
+    assert.equal(useDshForTask('knowledge'), true);
+    assert.equal(useDshForTask('document-chat'), true);
+    for (const task of [
+      'page-chat',
+      'translation',
+      'ocr',
+      'web-search',
+    ] as const) {
+      assert.equal(useDshForTask(task), false, task);
+    }
+
+    storage.setItem(
+      'yeyu-agent-settings',
+      JSON.stringify({ backend: 'dsh', dshDocumentChat: false, allAi: true }),
+    );
+    for (const task of tasks) assert.equal(useDshForTask(task), true, task);
+  } finally {
+    restore();
+  }
+});
+
 void test('readSelectedAgentBackend reads global browser storage and falls back safely', () => {
   const storage = memoryStorage({
     'yeyu-agent-settings': JSON.stringify({
@@ -143,7 +206,10 @@ void test('readSelectedAgentBackend reads global browser storage and falls back 
   const restore = replaceGlobalLocalStorage(storage as unknown as Storage);
   try {
     assert.equal(readSelectedAgentBackend(), 'dsh');
-    storage.setItem('yeyu-agent-settings', JSON.stringify({ backend: 'unknown' }));
+    storage.setItem(
+      'yeyu-agent-settings',
+      JSON.stringify({ backend: 'unknown' }),
+    );
     assert.equal(readSelectedAgentBackend(), 'api');
   } finally {
     restore();
@@ -163,9 +229,9 @@ void test('settings dialog keeps backend selection outside the three service tab
   assert.match(dialogSource, /value="dsh">[\s\S]*DeepSeek Harness/);
   assert.match(
     dialogSource,
-    /只影响 PDF 整理和整份文档问答；页面翻译、OCR、图片问答仍使用原路径。/,
+    /可统一管理整理、翻译、OCR 和答疑；每项继续使用对应的模型配置。/,
   );
-  assert.match(dialogSource, /DSH 第一版仅支持官方 DeepSeek Flash \/ V4 Pro/);
+  assert.match(dialogSource, /DSH 支持已接入的官方 DeepSeek \/ 智谱模型/);
   assert.match(
     dialogSource,
     /整份文档问答使用知识库的 DeepSeek 配置（页面图片问答仍用原配置）/,
@@ -174,7 +240,9 @@ void test('settings dialog keeps backend selection outside the three service tab
   assert.match(dialogSource, /必须安装页语托管的 DSH 运行时/);
   assert.match(dialogSource, /本设置页不检测运行时状态/);
 
-  const sectionIndex = dialogSource.indexOf('aria-labelledby="agent-backend-heading"');
+  const sectionIndex = dialogSource.indexOf(
+    'aria-labelledby="agent-backend-heading"',
+  );
   const tabsIndex = dialogSource.indexOf('<Tabs');
   assert.ok(sectionIndex >= 0 && sectionIndex < tabsIndex);
 });
@@ -184,8 +252,17 @@ void test('backend is persisted only after the existing settings validations', (
     dialogSource.indexOf('  const save = () => {'),
     dialogSource.indexOf('  const chooseTranslationPreset'),
   );
-  assert.ok(saveBody.indexOf('validateReaderSettings') < saveBody.indexOf('saveAgentSettings'));
-  assert.ok(saveBody.indexOf('validateChatSettings') < saveBody.indexOf('saveAgentSettings'));
-  assert.ok(saveBody.indexOf('validateKnowledgeSettings') < saveBody.indexOf('saveAgentSettings'));
+  assert.ok(
+    saveBody.indexOf('validateReaderSettings') <
+      saveBody.indexOf('saveAgentSettings'),
+  );
+  assert.ok(
+    saveBody.indexOf('validateChatSettings') <
+      saveBody.indexOf('saveAgentSettings'),
+  );
+  assert.ok(
+    saveBody.indexOf('validateKnowledgeSettings') <
+      saveBody.indexOf('saveAgentSettings'),
+  );
   assert.doesNotMatch(saveBody, /onClose\(\)[\s\S]*saveAgentSettings/);
 });

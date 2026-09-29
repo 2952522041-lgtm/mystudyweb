@@ -4,6 +4,8 @@ import {
   extractErrorDetail,
 } from './ai-errors.ts';
 import type { ChatMessage } from './chat.ts';
+import { useDshForTask as selectDshForTask } from './agent-settings.ts';
+import { requestDshCompletion } from './dsh-client.ts';
 
 export const WEB_SEARCH_RESULT_LIMIT = 5;
 export const WEB_SEARCH_QUERY_LIMIT = 70;
@@ -111,25 +113,43 @@ export async function searchZhipuWeb(
 ): Promise<WebSearchResult[]> {
   let response: Response;
   try {
-    response = await (config.fetchImpl ?? fetch)(
-      `${config.baseUrl.replace(/\/$/u, '')}/web_search`,
-      {
-        method: 'POST',
-        signal,
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${config.apiKey}`,
+    if (selectDshForTask('web-search')) {
+      const result = await requestDshCompletion(
+        { ...config, model: 'web-search' },
+        {
+          backendOperation: 'web-search',
+          messages: [
+            { role: 'user', content: query.slice(0, WEB_SEARCH_QUERY_LIMIT) },
+          ],
+          maxTokens: 1,
+          thinking: 'disabled',
+          signal,
         },
-        body: JSON.stringify({
-          search_query: query.slice(0, WEB_SEARCH_QUERY_LIMIT),
-          search_engine: 'search_std',
-          search_intent: false,
-          count: WEB_SEARCH_RESULT_LIMIT,
-          search_recency_filter: 'noLimit',
-          content_size: 'medium',
-        }),
-      },
-    );
+      );
+      response = new Response(result.content, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    } else
+      response = await (config.fetchImpl ?? fetch)(
+        `${config.baseUrl.replace(/\/$/u, '')}/web_search`,
+        {
+          method: 'POST',
+          signal,
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${config.apiKey}`,
+          },
+          body: JSON.stringify({
+            search_query: query.slice(0, WEB_SEARCH_QUERY_LIMIT),
+            search_engine: 'search_std',
+            search_intent: false,
+            count: WEB_SEARCH_RESULT_LIMIT,
+            search_recency_filter: 'noLimit',
+            content_size: 'medium',
+          }),
+        },
+      );
   } catch (error) {
     if (signal?.aborted) throw error;
     throw new ChatError('network', '联网搜索失败，请检查网络连接。');

@@ -80,6 +80,7 @@ import {
 import { loadKnowledgeSettings } from '@/lib/knowledge-settings';
 import type { PageImageInput } from '@/lib/chat';
 import { sha256Hex, stableDocumentId } from '@/lib/course-storage/file-utils';
+import { buildCourseAiContext } from '@/lib/course-ai-context';
 import type { LanShareStatus } from '@/electron/api';
 import {
   createKnowledgeProviderForSettings,
@@ -107,6 +108,8 @@ import {
 export interface CourseReaderContext {
   glossary?: Glossary;
   glossaryFingerprint?: string;
+  /** Short course-level material shared by page/document AI questions. */
+  courseContext?: string;
   courseId: string;
   courseName: string;
   document: DocumentRecord;
@@ -991,6 +994,7 @@ export function CourseLibrary({
       onOpenDocument(file, {
         glossary,
         glossaryFingerprint: await glossaryFingerprint(glossary),
+        courseContext: buildCourseAiContext(entry.bundle, glossary),
         courseId: entry.bundle.manifest.id,
         courseName: entry.bundle.manifest.name,
         document,
