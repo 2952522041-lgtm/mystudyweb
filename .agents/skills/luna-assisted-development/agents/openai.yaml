@@ -1,6 +1,0 @@
-interface:
-  display_name: "架构统筹与 Luna 协作开发"
-  short_description: "主 Agent 负责架构与审查，Luna 执行范围明确的基础编码任务"
-  default_prompt: "使用 $luna-assisted-development 完成开发任务，由主 Agent 负责架构与审查，将基础编码交给 GPT-5.6 Luna（max）。"
-policy:
-  allow_implicit_invocation: true

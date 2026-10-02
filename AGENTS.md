@@ -5,6 +5,6 @@
 
 ## 默认开发分工
 
-涉及代码实现、修复或重构时，默认使用 [luna-assisted-development](.agents/skills/luna-assisted-development/SKILL.md) 技能。用户已授权主 Agent 负责架构、拆分、审查与集成，将独立且范围明确的基础编码任务派发给 `gpt-5.6-luna`，推理强度 `max`。
+涉及代码实现、修复或重构时，默认使用 [dsh-assisted-development](.agents/skills/dsh-assisted-development/SKILL.md) 技能。主 Agent 保留当前模型，负责架构、拆分、审查与集成；通过已安装的 DSH CLI，在独立任务目录完成范围明确的基础编码任务。
 
-主 Agent 统一验证和提交；微小任务直接处理，模型不可用时说明限制并由主 Agent 接手。用户本次明确指定的分工优先。
+主 Agent 独立验证执行者产物并统一提交；微小任务直接处理，CLI 不可用时说明限制并接手。用户本次明确指定的分工优先。
