@@ -1,0 +1,410 @@
+diff --git a/components/summary-diff-view.tsx b/components/summary-diff-view.tsx
+new file mode 100644
+--- /dev/null
++++ b/components/summary-diff-view.tsx
+@@ -0,0 +1,108 @@
++'use client';
++
++import {useId, useMemo, useState} from 'react';
++import {compareSummaryParagraphs} from '../lib/summary-diff.ts';
++
++const PAGE_SIZE = 20;
++
++export interface SummaryDiffViewProps {
++  before: string;
++  after: string;
++  beforeLabel?: string;
++  afterLabel?: string;
++}
++
++export function SummaryDiffView({
++  before,
++  after,
++  beforeLabel = '起始版本',
++  afterLabel = '对比版本',
++}: SummaryDiffViewProps) {
++  return (
++    <SummaryDiffViewContent
++      key={JSON.stringify([before, after])}
++      before={before}
++      after={after}
++      beforeLabel={beforeLabel}
++      afterLabel={afterLabel}
++    />
++  );
++}
++
++function SummaryDiffViewContent({
++  before,
++  after,
++  beforeLabel = '起始版本',
++  afterLabel = '对比版本',
++}: SummaryDiffViewProps) {
++  const [changesOnly, setChangesOnly] = useState(true);
++  const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
++  const headingId = useId();
++  const diff = useMemo(() => compareSummaryParagraphs(before, after), [before, after]);
++
++  const visibleSegments = diff.segments.filter((item) => !changesOnly || item.kind !== 'equal');
++  const rows = visibleSegments.slice(0, visibleLimit);
++  const bothEmpty = diff.segments.length === 0;
++  const unchangedOnly = diff.added === 0 && diff.removed === 0 && diff.unchanged > 0;
++
++  return (
++    <section aria-labelledby={headingId} className="space-y-4">
++      <div className="space-y-2">
++        <h2 id={headingId} className="text-lg font-semibold">总结文字差异</h2>
++        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
++          <span>起始版本：{beforeLabel}</span>
++          <span>对比版本：{afterLabel}</span>
++        </div>
++        <p aria-live="polite" className="text-sm">
++          新增 {diff.added} 段 · 移除 {diff.removed} 段 · 未变 {diff.unchanged} 段
++        </p>
++      </div>
++
++      <label className="inline-flex cursor-pointer items-center gap-2 rounded-sm focus-within:outline-none focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
++        <input
++          type="checkbox"
++          checked={changesOnly}
++          onChange={(event) => {
++            setChangesOnly(event.currentTarget.checked);
++            setVisibleLimit(PAGE_SIZE);
++          }}
++          className="size-4 accent-primary focus-visible:outline-none"
++        />
++        <span>只看改动</span>
++      </label>
++
++      {bothEmpty ? <p aria-live="polite">没有可比较的总结文字。</p> : null}
++      {unchangedOnly ? <p aria-live="polite">总结文字没有变化。</p> : null}
++      {diff.coarse ? <p aria-live="polite">内容较长，显示简化差异。</p> : null}
++
++      {rows.length > 0 ? (
++        <ol aria-label="差异段落" className="m-0 list-none space-y-3 p-0">
++          {rows.map((item, index) => (
++            <li
++              key={`${item.kind}-${index}`}
++              data-diff-kind={item.kind}
++              className="rounded-md border p-3"
++            >
++              <span className="mb-2 inline-block text-sm font-medium">
++                {item.kind === 'equal' ? '未变' : item.kind === 'added' ? '新增' : '移除'}
++              </span>
++              <p data-diff-text={item.text} className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
++                {item.text}
++              </p>
++            </li>
++          ))}
++        </ol>
++      ) : null}
++
++      {visibleSegments.length > visibleLimit ? (
++        <button
++          type="button"
++          onClick={() => setVisibleLimit((limit) => limit + PAGE_SIZE)}
++          className="rounded-md border px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
++        >
++          显示更多
++        </button>
++      ) : null}
++    </section>
++  );
++}
+diff --git a/lib/summary-diff.ts b/lib/summary-diff.ts
+new file mode 100644
+--- /dev/null
++++ b/lib/summary-diff.ts
+@@ -0,0 +1,200 @@
++export const MAX_DIFF_CELLS = 40_000;
++
++export interface SummaryDiffSegment {
++  kind: 'equal' | 'added' | 'removed';
++  text: string;
++}
++
++export interface SummaryDiff {
++  segments: SummaryDiffSegment[];
++  added: number;
++  removed: number;
++  unchanged: number;
++  coarse: boolean;
++}
++
++interface Fence {
++  character: '`' | '~';
++  length: number;
++}
++
++function openingFence(line: string): Fence | undefined {
++  const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
++  if (!match) return undefined;
++
++  const marker = match[1];
++  const info = match[2];
++  if (marker.startsWith('`') && info.includes('`')) return undefined;
++
++  return {character: marker[0] as '`' | '~', length: marker.length};
++}
++
++function closesFence(line: string, fence: Fence): boolean {
++  const match = /^ {0,3}(`+|~+)[\t ]*$/.exec(line);
++  if (!match) return false;
++
++  const marker = match[1];
++  return marker[0] === fence.character && marker.length >= fence.length;
++}
++
++export function splitSummaryParagraphs(text: string): string[] {
++  const normalized = text.replace(/\r\n?/g, '\n');
++  const lines = normalized.split('\n');
++  const paragraphs: string[] = [];
++  let current: string[] = [];
++  let fence: Fence | undefined;
++  let inMath = false;
++
++  const finishParagraph = () => {
++    const paragraph = current.join('\n').trim();
++    if (paragraph) paragraphs.push(paragraph);
++    current = [];
++  };
++
++  for (const line of lines) {
++    if (fence) {
++      current.push(line);
++      if (closesFence(line, fence)) fence = undefined;
++      continue;
++    }
++
++    if (!inMath && line.trim() === '') {
++      finishParagraph();
++      continue;
++    }
++
++    current.push(line);
++    if (inMath) {
++      if (line.trim() === '$$') inMath = false;
++      continue;
++    }
++
++    if (line.trim() === '$$') {
++      inMath = true;
++      continue;
++    }
++
++    fence = openingFence(line);
++  }
++
++  finishParagraph();
++  return paragraphs;
++}
++
++function segment(kind: SummaryDiffSegment['kind'], text: string): SummaryDiffSegment {
++  return {kind, text};
++}
++
++function summarize(segments: SummaryDiffSegment[], coarse: boolean): SummaryDiff {
++  let added = 0;
++  let removed = 0;
++  let unchanged = 0;
++
++  for (const item of segments) {
++    if (item.kind === 'added') added += 1;
++    else if (item.kind === 'removed') removed += 1;
++    else unchanged += 1;
++  }
++
++  return {segments, added, removed, unchanged, coarse};
++}
++
++export function compareSummaryParagraphs(before: string, after: string): SummaryDiff {
++  const oldParagraphs = splitSummaryParagraphs(before);
++  const newParagraphs = splitSummaryParagraphs(after);
++  let prefixLength = 0;
++
++  while (
++    prefixLength < oldParagraphs.length &&
++    prefixLength < newParagraphs.length &&
++    oldParagraphs[prefixLength] === newParagraphs[prefixLength]
++  ) {
++    prefixLength += 1;
++  }
++
++  let suffixLength = 0;
++  while (
++    suffixLength < oldParagraphs.length - prefixLength &&
++    suffixLength < newParagraphs.length - prefixLength &&
++    oldParagraphs[oldParagraphs.length - suffixLength - 1] ===
++      newParagraphs[newParagraphs.length - suffixLength - 1]
++  ) {
++    suffixLength += 1;
++  }
++
++  const oldEnd = oldParagraphs.length - suffixLength;
++  const newEnd = newParagraphs.length - suffixLength;
++  const oldLength = oldEnd - prefixLength;
++  const newLength = newEnd - prefixLength;
++  const segments: SummaryDiffSegment[] = [];
++
++  for (let index = 0; index < prefixLength; index += 1) {
++    segments.push(segment('equal', oldParagraphs[index]));
++  }
++
++  const tooLarge = newLength > 0 && oldLength > Math.floor(MAX_DIFF_CELLS / newLength);
++  if (tooLarge) {
++    for (let index = prefixLength; index < oldEnd; index += 1) {
++      segments.push(segment('removed', oldParagraphs[index]));
++    }
++    for (let index = prefixLength; index < newEnd; index += 1) {
++      segments.push(segment('added', newParagraphs[index]));
++    }
++    for (let index = oldParagraphs.length - suffixLength; index < oldParagraphs.length; index += 1) {
++      segments.push(segment('equal', oldParagraphs[index]));
++    }
++    return summarize(segments, true);
++  }
++
++  // Store exactly oldLength * newLength cells so the allocation follows the
++  // public bound, including the empty-row/column cases without extra sentinels.
++  const lcs = new Uint32Array(oldLength * newLength);
++  const valueAt = (oldIndex: number, newIndex: number) => {
++    if (oldIndex >= oldLength || newIndex >= newLength) return 0;
++    return lcs[oldIndex * newLength + newIndex];
++  };
++
++  for (let oldIndex = oldLength - 1; oldIndex >= 0; oldIndex -= 1) {
++    for (let newIndex = newLength - 1; newIndex >= 0; newIndex -= 1) {
++      const cellIndex = oldIndex * newLength + newIndex;
++      if (oldParagraphs[prefixLength + oldIndex] === newParagraphs[prefixLength + newIndex]) {
++        lcs[cellIndex] = valueAt(oldIndex + 1, newIndex + 1) + 1;
++      } else {
++        lcs[cellIndex] = Math.max(valueAt(oldIndex + 1, newIndex), valueAt(oldIndex, newIndex + 1));
++      }
++    }
++  }
++
++  let oldIndex = 0;
++  let newIndex = 0;
++  while (oldIndex < oldLength && newIndex < newLength) {
++    const oldText = oldParagraphs[prefixLength + oldIndex];
++    const newText = newParagraphs[prefixLength + newIndex];
++    if (oldText === newText) {
++      segments.push(segment('equal', oldText));
++      oldIndex += 1;
++      newIndex += 1;
++    } else if (valueAt(oldIndex + 1, newIndex) >= valueAt(oldIndex, newIndex + 1)) {
++      // On an LCS tie, consume the before paragraph first.
++      segments.push(segment('removed', oldText));
++      oldIndex += 1;
++    } else {
++      segments.push(segment('added', newText));
++      newIndex += 1;
++    }
++  }
++
++  while (oldIndex < oldLength) {
++    segments.push(segment('removed', oldParagraphs[prefixLength + oldIndex]));
++    oldIndex += 1;
++  }
++  while (newIndex < newLength) {
++    segments.push(segment('added', newParagraphs[prefixLength + newIndex]));
++    newIndex += 1;
++  }
++  for (let index = oldParagraphs.length - suffixLength; index < oldParagraphs.length; index += 1) {
++    segments.push(segment('equal', oldParagraphs[index]));
++  }
++
++  return summarize(segments, false);
++}
+diff --git a/tests/summary-diff.test.ts b/tests/summary-diff.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/summary-diff.test.ts
+@@ -0,0 +1,87 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import {compareSummaryParagraphs,splitSummaryParagraphs} from '../lib/summary-diff.ts';
++
++void test('normalizes line endings and splits blank paragraphs', () => {
++  assert.deepEqual(splitSummaryParagraphs(' A\r\nline\r\n \r\nB '), ['A\nline','B']);
++});
++void test('reports a replacement between shared paragraphs', () => {
++  assert.deepEqual(compareSummaryParagraphs('A\n\nold\n\nZ','A\n\nnew\n\nZ'),{
++    segments:[{kind:'equal',text:'A'},{kind:'removed',text:'old'},{kind:'added',text:'new'},{kind:'equal',text:'Z'}],
++    added:1,removed:1,unchanged:2,coarse:false,
++  });
++});
++void test('empty summaries have no changes', () => {
++  assert.deepEqual(compareSummaryParagraphs('',' \n\n '),{segments:[],added:0,removed:0,unchanged:0,coarse:false});
++});
++
++void test('preserves code fences as part of surrounding paragraphs', () => {
++  assert.deepEqual(splitSummaryParagraphs(
++    'intro\n```ts\n\nconst value = 1;\n ```\n\nnext',
++  ), ['intro\n```ts\n\nconst value = 1;\n ```', 'next']);
++  assert.deepEqual(splitSummaryParagraphs('~~~\n\ninside\n~~~~  \n\nend'), ['~~~\n\ninside\n~~~~', 'end']);
++});
++
++void test('does not treat invalid or mismatched fences as closing fences', () => {
++  assert.deepEqual(splitSummaryParagraphs('```js`\n\nseparate'), ['```js`', 'separate']);
++  assert.deepEqual(splitSummaryParagraphs('```\ncode\n~~~\n\nstill fenced\n````\n\nend'), [
++    '```\ncode\n~~~\n\nstill fenced\n````',
++    'end',
++  ]);
++});
++
++void test('blank lines inside display math stay inside one paragraph', () => {
++  assert.deepEqual(splitSummaryParagraphs('before\n$$\n\nx^2\n\n$$\n\nafter'), [
++    'before\n$$\n\nx^2\n\n$$',
++    'after',
++  ]);
++  assert.deepEqual(splitSummaryParagraphs('$$\n```\n\n$$\n\nend'), ['$$\n```\n\n$$', 'end']);
++});
++
++void test('normalizes lone carriage returns and trims only paragraph edges', () => {
++  assert.deepEqual(splitSummaryParagraphs('  first\rline  \r \t\r second  '), ['first\nline', 'second']);
++});
++
++void test('removes from before first when LCS alternatives have equal length', () => {
++  assert.deepEqual(compareSummaryParagraphs('A\n\nB', 'B\n\nA').segments, [
++    {kind: 'removed', text: 'A'},
++    {kind: 'equal', text: 'B'},
++    {kind: 'added', text: 'A'},
++  ]);
++});
++
++void test('uses the bounded fallback after preserving the common prefix and suffix', () => {
++  const beforeMiddle = Array.from({length: 201}, (_, index) => `old-${index}`);
++  const afterMiddle = Array.from({length: 200}, (_, index) => `new-${index}`);
++  const result = compareSummaryParagraphs(
++    ['head', ...beforeMiddle, 'tail'].join('\n\n'),
++    ['head', ...afterMiddle, 'tail'].join('\n\n'),
++  );
++
++  assert.equal(result.coarse, true);
++  assert.deepEqual(result.segments.slice(0, 2), [
++    {kind: 'equal', text: 'head'},
++    {kind: 'removed', text: 'old-0'},
++  ]);
++  assert.equal(result.segments.filter(({kind}) => kind === 'removed').length, 201);
++  assert.equal(result.segments.filter(({kind}) => kind === 'added').length, 200);
++  assert.deepEqual(result.segments.at(-1), {kind: 'equal', text: 'tail'});
++  assert.equal(result.removed, 201);
++  assert.equal(result.added, 200);
++  assert.equal(result.unchanged, 2);
++});
++
++void test('keeps the LCS matrix within the threshold and identical long input exact', () => {
++  const before = Array.from({length: 200}, (_, index) => `before-${index}`);
++  const after = Array.from({length: 200}, (_, index) => `after-${index}`);
++  const atThreshold = compareSummaryParagraphs(before.join('\n\n'), after.join('\n\n'));
++  assert.equal(atThreshold.coarse, false);
++  assert.equal(atThreshold.removed, 200);
++  assert.equal(atThreshold.added, 200);
++
++  const identical = Array.from({length: 1_000}, (_, index) => `same-${index}`).join('\n\n');
++  const unchanged = compareSummaryParagraphs(identical, identical);
++  assert.equal(unchanged.coarse, false);
++  assert.equal(unchanged.unchanged, 1_000);
++  assert.equal(unchanged.segments.length, 1_000);
++});

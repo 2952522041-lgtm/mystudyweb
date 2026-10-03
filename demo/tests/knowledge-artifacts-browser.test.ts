@@ -35,7 +35,7 @@ const storage = new MemoryCourseStorage();
 const historyStorage = {listHistory:async()=>[{id:'past',revision:0,updatedAt:'2026-01-01',source:'snapshot',summary:'历史概览',knowledge:{...knowledge,version:0,nodes:[knowledge.nodes[0],{...knowledge.nodes[1],description:'历史说明'},{...knowledge.nodes[1],id:'removed',label:'已移除概念'}],relations:[],unresolvedQuestions:['旧问题']}}]};
 function App() {
   const [notesVisible,setNotesVisible] = useState(true); window.setNotesVisible=setNotesVisible;
-  return <><DocumentSummaryPanel digest={digest} onOpenSource={jump} onAskQuestion={question=>window.questions.push(question)} onSaveNote={(text,page)=>appendStudyNote(storage,{text,sources:[{...source,pageStart:page}]})}/><KnowledgeMindmap knowledge={knowledge} onOpenSource={jump} onAskQuestion={question=>window.questions.push(question)} onSaveNote={(text,sources)=>appendStudyNote(storage,{text,sources})}/>{notesVisible ? <CourseNotesPanel storage={storage} courseId="fixture-course"/> : null}<CourseHistoryPanel storage={historyStorage} current={knowledge}/></>;
+  return <><DocumentSummaryPanel digest={digest} onOpenSource={jump} onAskQuestion={question=>window.questions.push(question)} onSaveNote={(text,page)=>appendStudyNote(storage,{text,sources:[{...source,pageStart:page}]})}/><KnowledgeMindmap knowledge={knowledge} onOpenSource={jump} onAskQuestion={question=>window.questions.push(question)} onSaveNote={(text,sources)=>appendStudyNote(storage,{text,sources})}/>{notesVisible ? <CourseNotesPanel storage={storage} courseId="fixture-course"/> : null}<CourseHistoryPanel storage={historyStorage} current={knowledge} currentSummary="当前概览"/></>;
 }
 createRoot(document.getElementById('root')).render(<App/>);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve,ms));
@@ -69,9 +69,22 @@ window.runReaderRegression = async () => {
   check(history.textContent.includes('移除 1 项')&&history.textContent.includes('修改 1 项'),'history node differences wrong');
   check(history.textContent.includes('移除问题：旧问题')&&history.textContent.includes('新增关系'),'history lost questions or relation changes');
   check(history.textContent.includes('历史概览')&&history.textContent.includes('不支持整门课程恢复'),'artifact-only history preview missing scope');
+  const summaryDiff=[...history.querySelectorAll('section')].find(node=>(node.getAttribute('aria-label')??document.getElementById(node.getAttribute('aria-labelledby'))?.textContent)==='总结文字差异');
+  check(summaryDiff,'summary text comparison missing');
+  check(summaryDiff.querySelector('[data-diff-kind="removed"] [data-diff-text]')?.textContent==='历史概览','historical summary was not used');
+  check(summaryDiff.querySelector('[data-diff-kind="added"] [data-diff-text]')?.textContent==='当前概览','current rendered summary was not used');
   const comparison=document.querySelector('[aria-label="历史对比版本"]');
   Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(comparison,'past');comparison.dispatchEvent(new Event('change',{bubbles:true}));
   await waitFor('history comparison selection',()=>history.textContent.includes('对比版本新增 0 项 · 移除 0 项 · 修改 0 项'));
+  await waitFor('same summary comparison',()=>summaryDiff.textContent.includes('总结文字没有变化。'));
+  check(summaryDiff.querySelectorAll('[data-diff-kind]').length===0,'same historical summary still shows changes');
+  const oldHistory=await historyStorage.listHistory();
+  historyStorage.listHistory=async()=>[{...oldHistory[0],id:'legacy',source:'knowledge',summary:''}];
+  [...history.querySelectorAll('button')].find(node=>node.textContent.trim()==='刷新').click();
+  await waitFor('legacy summary fallback',()=>history.textContent.includes('部分版本缺少完整总结'));
+  check(comparison.value==='current','deleted comparison target did not fall back to current');
+  check(!summaryDiff.textContent.includes('当前概览'),'legacy knowledge compared against full summary');
+  check(summaryDiff.textContent.includes('历史说明')&&summaryDiff.textContent.includes('说明 1'),'legacy knowledge text comparison missing');
   const canvas = document.querySelector('[aria-label="脑图画布"]');
   const conceptButton = (label) => [...canvas.querySelectorAll('button')].find(node => node.querySelector('.line-clamp-1')?.textContent === label);
   check(conceptButton('概念 2') && conceptButton('概念 2').offsetLeft > conceptButton('概念 1').offsetLeft && conceptButton('概念 1').offsetLeft > conceptButton('概念 0').offsetLeft, 'three hierarchy levels visible by default despite cross link');

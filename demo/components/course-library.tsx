@@ -2087,7 +2087,7 @@ export function CourseLibrary({
                 </TabsContent>
 
                 <TabsContent value="notes" keepMounted><CourseNotesPanel key={active.id} storage={active.storage} courseId={bundle.manifest.id} /></TabsContent>
-                <TabsContent value="history"><CourseHistoryPanel key={active.id} storage={active.storage} current={bundle.knowledge} /></TabsContent>
+                <TabsContent value="history"><CourseHistoryPanel key={active.id} storage={active.storage} current={bundle.knowledge} currentSummary={renderCourseSummary(bundle.manifest, bundle.knowledge)} /></TabsContent>
 
                 <TabsContent
                   value="documents"

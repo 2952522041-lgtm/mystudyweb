@@ -1,0 +1,47 @@
+{
+  "files": {
+    ".oxlintrc.json": "4f92c65da991cb9aa04aa96fec9c5c28d9a287bb20a3fc5a7593fd8f18c0594f",
+    "tsconfig.json": "8bda58ad8d9f149034424fe233fb71d99f83b8e2e320defe70e4c3c0d59a97c8",
+    "package.json": "e215752da4649d9f4040d0fd29d64971140eca695f60b9db18ed3b3a25708f59",
+    "TASK.md": "a112f733c06a82a96ecd20398a4b224e9d5efbf0074abebee69bc2034efb72db",
+    "tests/summary-diff.test.ts": "03f616e6f62a5605a852cfdee32ac46e4439c23cf3da2a3fe26b13b58acfa329",
+    "components/summary-diff-view.tsx": "8ca95e4d6bdb6f1d0de29d1ba6674dea95d877be01dedb2d8c46027bbfc02f0d",
+    "lib/summary-diff.ts": "da4250124b80483a9aef438bbd21e3bb0d5ba376ffbb68abdc3fabfcf7d0e2e9"
+  },
+  "acceptanceSha256": "5f1078abb26820ca73bafc3c145040756c1a37d00d45f5e058469b988b147486",
+  "preparedAt": 1791020502.2381396,
+  "browserAcceptanceSha256": "c4d413c54ac091a8b645c5bf8f9ef9d2483ea7274e85645417c84cf62c7b163c",
+  "harnessCorrections": [
+    "Duplicate paragraph expectation now preserves the explicitly required common suffix.",
+    "Accessible section lookup accepts both aria-label and aria-labelledby. Neither markup form was required.",
+    "Browser count assertion corrected after verifying the displayed count text; implementation was unchanged."
+  ],
+  "correctedAcceptanceSha256": "ab0ebda7f1451e07d74edf0bb5e2362b64942a18a30ebf28da8e54bb5b364a56",
+  "correctedBrowserAcceptanceSha256": "571a4513795f4a43e64921b76995b41ed954a526dd630be44e4ee21f4cba4b5f",
+  "finalAcceptanceSha256": "ab0ebda7f1451e07d74edf0bb5e2362b64942a18a30ebf28da8e54bb5b364a56",
+  "finalBrowserAcceptanceSha256": "12bfa48253a1bb3c962ef82b3ff6e42441b9c5180406f19d43b50b0f1c005fd1",
+  "results": {
+    "dsh": {
+      "configuredModel": "deepseek-flash",
+      "provider": "deepseek-official",
+      "reasoningEffort": "high",
+      "cliVersion": "0.1.5-rc.2",
+      "elapsedSeconds": 186.62,
+      "timingMethod": "process wall clock",
+      "algorithmAcceptancePassed": 14,
+      "browserAcceptancePassed": true,
+      "ownTestsPassed": 31,
+      "correctionRounds": 0
+    },
+    "luna": {
+      "toolModel": "gpt-6-luna",
+      "reasoningEffort": "max",
+      "elapsedSecondsApproximate": 458,
+      "timingMethod": "dispatch to completion notification receipt",
+      "algorithmAcceptancePassed": 14,
+      "browserAcceptancePassed": true,
+      "ownTestsPassed": 10,
+      "correctionRounds": 0
+    }
+  }
+}

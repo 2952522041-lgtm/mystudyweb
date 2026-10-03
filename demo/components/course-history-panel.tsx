@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { KnowledgeMarkdown } from '@/components/knowledge-section';
 import { Button } from '@/components/ui/button';
+import { SummaryDiffView } from '@/components/summary-diff-view';
 import type {
   CourseKnowledge,
   CourseStorage,
@@ -16,9 +17,11 @@ import { formatSource } from '@/lib/knowledge/artifact-renderer';
 export function CourseHistoryPanel({
   storage,
   current,
+  currentSummary,
 }: {
   storage: CourseStorage;
   current: CourseKnowledge;
+  currentSummary?: string;
 }) {
   const [entries, setEntries] = useState<CourseHistoryEntry[]>([]);
   const [selectedId, setSelectedId] = useState('');
@@ -51,10 +54,19 @@ export function CourseHistoryPanel({
     };
   }, [storage, current.version, refresh]);
   const selected = entries.find((entry) => entry.id === selectedId);
-  const compared =
-    compareId === 'current'
-      ? current
-      : entries.find((entry) => entry.id === compareId)?.knowledge;
+  const comparedEntry = entries.find((entry) => entry.id === compareId);
+  // A refresh can remove a history file. Keep the selector and comparison in sync.
+  const effectiveCompareId = comparedEntry ? compareId : 'current';
+  const compared = comparedEntry?.knowledge ?? current;
+  const fullSummaries =
+    selected?.source === 'snapshot' &&
+    (comparedEntry
+      ? comparedEntry.source === 'snapshot'
+      : currentSummary !== undefined);
+  const knowledgeText = (knowledge: CourseKnowledge) =>
+    knowledge.nodes
+      .map((node) => `## ${node.label}\n\n${node.description}`)
+      .join('\n\n');
   const diff = useMemo(
     () =>
       selected && compared
@@ -109,7 +121,7 @@ export function CourseHistoryPanel({
             <select
               aria-label="历史对比版本"
               className="rounded border p-2"
-              value={compareId}
+              value={effectiveCompareId}
               onChange={(event) => setCompareId(event.target.value)}
             >
               <option value="current">当前 v{current.version}</option>
@@ -121,6 +133,31 @@ export function CourseHistoryPanel({
               ))}
             </select>
           </label>
+        </div>
+      ) : null}
+      {selected && compared ? (
+        <div className="space-y-2">
+          {!fullSummaries ? (
+            <p className="text-xs text-amber-700">
+              部分版本缺少完整总结，以下只比较知识点说明。
+            </p>
+          ) : null}
+          <SummaryDiffView
+            before={
+              fullSummaries
+                ? selected.summary
+                : knowledgeText(selected.knowledge)
+            }
+            after={
+              fullSummaries
+                ? comparedEntry
+                  ? comparedEntry.summary
+                  : currentSummary!
+                : knowledgeText(compared)
+            }
+            beforeLabel={`起始 v${selected.knowledge.version}`}
+            afterLabel={`${comparedEntry ? '对比' : '当前'} v${compared.version}`}
+          />
         </div>
       ) : null}
       {diff ? (
