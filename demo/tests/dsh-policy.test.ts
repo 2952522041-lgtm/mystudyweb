@@ -40,7 +40,7 @@ void test('accepts only the official DeepSeek addresses and model allowlist', ()
     'https://api.deepseek.com/v1',
     'https://api.deepseek.com/v1/',
   ];
-  const allowedModels = ['deepseek-flash', 'deepseek-v4-pro'];
+  const allowedModels = ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro'];
 
   for (const baseUrl of officialAddresses) {
     for (const model of allowedModels) {
@@ -64,7 +64,7 @@ void test('accepts only the official DeepSeek addresses and model allowlist', ()
   }
   assert.throws(
     () => validateDshRequest(request({ model: 'deepseek-chat' })),
-    /deepseek-flash \/ deepseek-v4-pro/,
+    /unsupported_model/,
   );
 });
 

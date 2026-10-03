@@ -8,6 +8,33 @@ import {
 } from './api.ts';
 
 const api: YeyuDesktopApi = {
+  inspectDshRuntime: () => ipcRenderer.invoke(DESKTOP_CHANNELS.dshInspect),
+  acquireCourseLock: directory => ipcRenderer.invoke(DESKTOP_CHANNELS.courseLockAcquire, directory),
+  releaseCourseLock: token => ipcRenderer.invoke(DESKTOP_CHANNELS.courseLockRelease, token),
+  getBackgroundSnapshot: () => ipcRenderer.invoke(DESKTOP_CHANNELS.backgroundGet),
+  publishBackgroundSnapshot: snapshot => ipcRenderer.invoke(DESKTOP_CHANNELS.backgroundPublish, snapshot),
+  controlBackgroundTask: action => ipcRenderer.invoke(DESKTOP_CHANNELS.backgroundControl, action),
+  wakeBackgroundTasks: () => ipcRenderer.invoke(DESKTOP_CHANNELS.backgroundWake),
+  onCoursesChanged: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, value: { directoryName: string }) => listener(value);
+    ipcRenderer.on(DESKTOP_CHANNELS.coursesChanged, handler);
+    return () => ipcRenderer.removeListener(DESKTOP_CHANNELS.coursesChanged, handler);
+  },
+  onBackgroundSnapshot: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, value: import('./background-types.ts').BackgroundSnapshot) => listener(value);
+    ipcRenderer.on(DESKTOP_CHANNELS.backgroundSnapshot, handler);
+    return () => ipcRenderer.removeListener(DESKTOP_CHANNELS.backgroundSnapshot, handler);
+  },
+  onBackgroundCommand: handler => {
+    const listener = (_event: Electron.IpcRendererEvent, command: import('./background-types.ts').BackgroundCommand) => {
+      void Promise.resolve().then(() => handler(command)).then(
+        () => ipcRenderer.invoke(DESKTOP_CHANNELS.backgroundResponse, { id: command.id }),
+        () => ipcRenderer.invoke(DESKTOP_CHANNELS.backgroundResponse, { id: command.id, error: '后台操作未完成。' }),
+      ).catch(() => undefined);
+    };
+    ipcRenderer.on(DESKTOP_CHANNELS.backgroundCommand, listener);
+    return () => ipcRenderer.removeListener(DESKTOP_CHANNELS.backgroundCommand, listener);
+  },
   runDsh: request => ipcRenderer.invoke(DESKTOP_CHANNELS.dshRun, request),
   cancelDsh: requestId => ipcRenderer.invoke(DESKTOP_CHANNELS.dshCancel, requestId),
   onDshProgress: listener => {

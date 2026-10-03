@@ -1,3 +1,4 @@
+import { safeDshError } from './dsh-errors.ts';
 import type {
   ChatCompletionConfig,
   ChatCompletionInput,
@@ -112,6 +113,12 @@ export async function requestDshCompletion(
       maxTokens: input.maxTokens ?? DEFAULT_MAX_TOKENS,
       thinking: input.thinking ?? 'default',
       ...(input.backendOperation ? { operation: input.backendOperation } : {}),
+      ...(input.task ? { task: input.task } : {}),
+      ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+      ...(input.responseFormat ? { responseFormat: input.responseFormat } : {}),
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+      ...((input.connectionTimeoutMs ?? config.connectionTimeoutMs) !== undefined ? { connectionTimeoutMs: input.connectionTimeoutMs ?? config.connectionTimeoutMs } : {}),
+      ...((input.streamStallTimeoutMs ?? config.streamStallTimeoutMs) !== undefined ? { streamStallTimeoutMs: input.streamStallTimeoutMs ?? config.streamStallTimeoutMs } : {}),
     };
 
     const onProgress = (progress: DshProgress): void => {
@@ -126,6 +133,14 @@ export async function requestDshCompletion(
         return;
       }
 
+      if (progress.status) {
+        for (const key of ['queueMs', 'startupMs', 'executionMs', 'retries'] as const) {
+          const value = progress.status[key];
+          if (typeof value === 'number' && Number.isFinite(value) && value >= 0) timing[key] = value;
+        }
+        try { input.onDshStatus?.(progress.status); } catch { /* observer only */ }
+        if (!progress.content) return;
+      }
       const content = progress.content;
       latestContent = content;
       if (content && timing.firstContentMs === null) {
@@ -233,7 +248,7 @@ export async function requestDshCompletion(
     if (error instanceof DshClientError) throw error;
     // Never expose bridge errors: the main process may have included an API
     // key, prompt, or provider response in the original error message.
-    throw new DshClientError('failure', DSH_REQUEST_FAILED_MESSAGE);
+    throw safeDshError(error);
   } finally {
     settled = true;
     removeAbortListener?.();

@@ -735,6 +735,10 @@ function CourseDocuments({
                         ? '主电脑已排队，等待 AI 整理'
                         : document.processing.status === 'running'
                           ? '主电脑正在 AI 整理'
+                          : document.processing.status === 'paused'
+                            ? 'AI 整理已暂停，PDF 可正常阅读'
+                            : document.processing.status === 'cancelled'
+                              ? 'AI 整理已取消，PDF 和已有成果已保留'
                           : `AI 整理失败：${document.processing.error ?? '可在主电脑或共享端重新生成'}`}
                     </span>
                   ) : null}
@@ -946,7 +950,7 @@ export function SharedCourseViewer() {
   const [reader, setReader] = useState<{
     file: File;
     document: DocumentRecord;
-    initialPage: number;
+    initialPage?: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -1097,7 +1101,7 @@ export function SharedCourseViewer() {
       !selectedId ||
       !detail?.manifest.documents.some(
         (document) =>
-          document.processing && document.processing.status !== 'failed',
+          document.processing && (document.processing.status === 'queued' || document.processing.status === 'running'),
       )
     ) {
       return;
@@ -1119,7 +1123,7 @@ export function SharedCourseViewer() {
     };
   }, [authenticated, detail, handleRequestError, selectedId]);
 
-  const openDocument = async (document: DocumentRecord, initialPage = 1) => {
+  const openDocument = async (document: DocumentRecord, initialPage?: number) => {
     if (!selectedId || actionBusyRef.current || importBusyRef.current) return;
     const courseId = selectedId;
     const requestVersion = ++requestVersionRef.current;

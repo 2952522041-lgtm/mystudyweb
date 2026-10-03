@@ -37,7 +37,13 @@ function send(frame) {
   });
 }
 
-if (mode === 'success') {
+if (mode === 'structured-error') {
+  await send({ type: 'error', code: 'authentication', message: 'private-key private-body' });
+  process.exitCode = 1;
+} else if (mode === 'ready-success') {
+  await send({ type: 'ready' });
+  await send({ type: 'result', content: 'complete answer', finishReason: 'stop' });
+} else if (mode === 'success') {
   await send({ type: 'progress', content: 'partial answer' });
   await send({ type: 'result', content: 'complete answer', finishReason: 'stop' });
 } else if (mode === 'length') {
@@ -178,6 +184,19 @@ void test('runs a fake worker, forwards progress, and returns the final result',
   } finally {
     await disposeFixture(fixture);
   }
+});
+
+void test('worker readiness emits startup/execution timings and errors retain only allowlisted codes', async () => {
+  const fixture = await createFixture();
+  try {
+    const status: Array<import('../electron/dsh-types.ts').DshProgress> = [];
+    await fixture.track(fixture.manager.run(7, request('timing', 'ready-success'), value => status.push(value)));
+    assert.equal(status[0].status?.phase, 'running');
+    assert.ok(status[0].status!.startupMs! >= 0);
+    assert.equal(status[1].status?.phase, 'completed');
+    assert.ok(status[1].status!.executionMs! >= 0);
+    await assert.rejects(fixture.track(fixture.manager.run(7, request('safe-error', 'structured-error'), () => {})), error => error instanceof Error && /authentication/.test(error.message) && !/private/.test(error.message));
+  } finally { await disposeFixture(fixture); }
 });
 
 void test('rejects a nonzero exit and an unfinalized worker without returning partial output', async () => {

@@ -29,6 +29,9 @@ export interface SmokeProbeResult {
   origin?: string;
   storedBefore?: string | null;
   storedAfter?: string | null;
+  backgroundRoleBlocked?: boolean;
+  backgroundSnapshotValid?: boolean;
+  courseLockRoundtrip?: boolean;
   error?: string;
 }
 
@@ -82,11 +85,19 @@ export async function probePreloadBridge(
               new TextEncoder().encode(JSON.stringify(manifest)),
             );
           }
+          let backgroundRoleBlocked = false;
+          try { await api.publishBackgroundSnapshot({tasks:[],executor:'desktop',available:true}); } catch { backgroundRoleBlocked = true; }
+          const background = await api.getBackgroundSnapshot();
+          let courseLockRoundtrip = !createdCourse;
+          if (createdCourse) { const token = await api.acquireCourseLock(createdCourse); await api.releaseCourseLock(token); courseLockRoundtrip = true; }
           const courses = (await api.listCourses()).map(
             (course) => course.directoryName,
           );
           return {
             api: true,
+            backgroundRoleBlocked,
+            backgroundSnapshotValid: background.executor === 'desktop' && typeof background.available === 'boolean' && Array.isArray(background.tasks),
+            courseLockRoundtrip,
             popupDenied: popup === null,
             methods: Object.keys(api).sort(),
             workspace: await api.getWorkspaceInfo(),

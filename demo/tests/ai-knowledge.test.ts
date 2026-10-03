@@ -1178,6 +1178,12 @@ class MemoryDirectoryHandle implements BrowserDirectoryHandle {
   async list(): Promise<string[]> {
     return [...this.node.children.keys()];
   }
+
+  async *values(): AsyncIterable<BrowserFileHandle | BrowserDirectoryHandle> {
+    for (const [name, child] of this.node.children) {
+      yield child.type === 'dir' ? new MemoryDirectoryHandle(name, child) : new MemoryFileHandle(name, child);
+    }
+  }
 }
 
 function newMemoryRoot(): MemoryDirectoryHandle {
@@ -1579,4 +1585,24 @@ void test('browser directory glossary persists independently and rejects damaged
   const writer = await (await root.getFileHandle('glossary.json')).createWritable();
   await writer.write('{invalid'); await writer.close();
   await assert.rejects(storage.loadGlossary());
+});
+
+void test('browser notes detect external changes and directory history retains artifact previews', async () => {
+  const root = newMemoryRoot();
+  const storage = new BrowserDirectoryStorage(root);
+  await storage.initialize('学习');
+  const before = await storage.loadNotes();
+  const writer = await (await root.getFileHandle('我的课程笔记.md')).createWritable();
+  await writer.write('外部笔记'); await writer.close();
+  await assert.rejects(storage.saveNotes('过期草稿', before.token), /外部修改/);
+  assert.equal((await storage.loadNotes()).content, '外部笔记');
+  const latest = await storage.loadNotes();
+  await storage.saveNotes(`${latest.content}\n\n新笔记`, latest.token);
+  assert.equal(await readMemoryFile(root,['我的课程笔记.md']), '外部笔记\n\n新笔记');
+  await storage.savePdf(new File(['pdf'],'lesson.pdf',{type:'application/pdf'}),{fingerprint:'a'.repeat(64),pageCount:1},{generateSummary:false,generateMindmap:false,mergeIntoCourse:false,includeConversationInsights:false},0);
+  const history = await storage.listHistory();
+  assert.equal(history.length,1);
+  assert.equal(history[0].revision,0);
+  assert.match(history[0].summary,/学习课程总结/);
+  assert.equal(history[0].source,'snapshot');
 });

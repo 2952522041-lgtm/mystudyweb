@@ -1,4 +1,5 @@
 import { EMPTY_GLOSSARY, parseGlossary, type Glossary } from '../glossary.ts';
+import { assertNotesUnchanged, isHistoryKnowledge, notesSnapshot, withLocalWriteLock, type CourseHistoryEntry } from './study-tools.ts';
 import { rawPdfRecord, artifactsReady, processingBundle } from './background-records.ts';
 import type { DocumentProcessing, PdfMetadata } from './types.ts';
 import {
@@ -144,6 +145,46 @@ export class BrowserDirectoryStorage implements CourseStorage {
   }
   async saveGlossary(glossary: Glossary): Promise<void> {
     await writeFile(this.root, ['glossary.json'], JSON.stringify(parseGlossary(glossary), null, 2));
+  }
+
+  async loadNotes() {
+    try { return notesSnapshot(await readText(this.root, ['我的课程笔记.md'])); }
+    catch (error) {
+      if (error instanceof DOMException && error.name === 'NotFoundError') return notesSnapshot('');
+      throw error;
+    }
+  }
+
+  async saveNotes(content: string, expectedToken: string) {
+    const save = async () => {
+      assertSafeArtifactContent(content);
+      assertNotesUnchanged(await this.loadNotes(), expectedToken);
+      await writeFile(this.root, ['我的课程笔记.md'], content);
+      return notesSnapshot(content);
+    };
+    // Serialize application windows while still detecting external file edits.
+    if (typeof navigator !== 'undefined' && navigator.locks) {
+      const { manifest } = await this.load();
+      return navigator.locks.request(`course-notes:${manifest.id}`, save);
+    }
+    return withLocalWriteLock(this, save);
+  }
+
+  async listHistory(): Promise<CourseHistoryEntry[]> {
+    const root = await getDirectory(this.root, ['History']);
+    if (!root.values) return [];
+    const history: CourseHistoryEntry[] = [];
+    for await (const entry of root.values()) {
+      if (entry.kind !== 'directory' || !/^revision-\d+-\d+$/.test(entry.name)) continue;
+      try {
+        const manifest = await readJson<CourseManifest>(entry, ['course.json']);
+        const knowledge = await readJson<unknown>(entry, ['课程脑图.json']);
+        if (!isHistoryKnowledge(knowledge)) continue;
+        history.push({id:entry.name, revision:manifest.revision, updatedAt:manifest.updatedAt, knowledge,
+          summary:await readText(entry, ['课程总结.md']), source:'snapshot'});
+      } catch { /* One externally damaged snapshot must not hide other versions. */ }
+    }
+    return history.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   async initialize(name: string): Promise<CourseBundle> {
@@ -400,8 +441,6 @@ export class BrowserDirectoryStorage implements CourseStorage {
     );
     if (!document) throw new Error('课程中找不到这份 PDF。');
     const now = new Date().toISOString();
-    await removeEntry(this.root, ['PDFs', document.storedFileName]);
-    await removeEntry(this.root, documentDirectory(documentId), true);
     const knowledge = aiKnowledge
       ? applyAiCourseKnowledge(current.knowledge, aiKnowledge, now)
       : removeDocumentContribution(current.knowledge, documentId, now);
@@ -422,6 +461,10 @@ export class BrowserDirectoryStorage implements CourseStorage {
     };
     await this.createRevision(current);
     await this.writeBundle(bundle, true);
+    // Keep referenced PDF bytes until the new manifest is committed. An
+    // interrupted cleanup may leave extra files, but cannot break the old PDF.
+    await removeEntry(this.root, ['PDFs', document.storedFileName]);
+    await removeEntry(this.root, documentDirectory(documentId), true);
     return bundle;
   }
 

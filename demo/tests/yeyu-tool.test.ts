@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   main,
+  inspectProcessing,
   parseCommand,
   PDF_IMPORT_FAILED_MESSAGE,
   resultValue,
@@ -152,6 +153,106 @@ void test('wait polling reports a background failure without resubmitting the PD
   });
   assert.equal(completion.status, 'failed');
   assert.equal(completion.error, '知识库请求失败');
+});
+
+void test('paused and cancelled are explicit processing states; unknown states still fail', () => {
+  for (const status of ['paused', 'cancelled']) {
+    const processing = { phase: 'document', status };
+    assert.deepEqual(inspectProcessing(processing), {
+      kind: status,
+      status,
+      processing,
+    });
+  }
+  assert.throws(() => inspectProcessing({ status: 'unexpected' }), /未知/);
+});
+
+void test('wait stops immediately on an initial or polled pause/cancellation', async () => {
+  for (const status of ['paused', 'cancelled']) {
+    for (const initial of [true, false]) {
+      let stateReads = 0;
+      const completion = await waitForImportCompletion({
+        importResult: initial
+          ? { ...imported, processing: { ...imported.processing, status } }
+          : imported,
+        getState: async () => {
+          stateReads += 1;
+          return stateWithProcessing({ phase: 'document', status });
+        },
+        sleep: async () => assert.fail('a stopped task must not wait for another poll'),
+        onProgress: () => assert.fail('a stopped task must not report active progress'),
+      });
+      assert.equal(completion.status, status);
+      assert.equal(completion.source, initial ? 'import-result' : 'state');
+      assert.equal(stateReads, initial ? 0 : 1);
+    }
+  }
+});
+
+void test('CLI --wait emits stopped status, rejects with recovery guidance and closes without resubmitting', async () => {
+  for (const [status, label, action] of [
+    ['paused', '已暂停', '继续'],
+    ['cancelled', '已取消', '重试'],
+  ]) {
+    for (const initial of [true, false]) {
+      const calls: string[] = [];
+      const outputs: string[] = [];
+      const errors: string[] = [];
+      let closed = false;
+      const stopped = { ...imported.processing, status };
+      const client = {
+        async connect() {},
+        async callTool(command: { name: string }) {
+          calls.push(command.name);
+          return mcpText(command.name === 'yeyu_import_pdf'
+            ? initial ? { ...imported, processing: stopped } : imported
+            : stateWithProcessing(stopped));
+        },
+        async close() { closed = true; },
+      };
+      await assert.rejects(main(['import', '--wait', 'ece3250', '/tmp/L3.pdf'], {
+        createClient: () => client,
+        createTransport: () => ({}),
+        errorLog: (message: string) => errors.push(message),
+        log: (message: string) => outputs.push(message),
+        waitOptions: {
+          sleep: async () => assert.fail('paused/cancelled polling must stop'),
+        },
+      }), new RegExp(`PDF已保存.*${label}.*后台任务.*${action}`));
+      assert.deepEqual(calls, initial
+        ? ['yeyu_import_pdf']
+        : ['yeyu_import_pdf', 'yeyu_get_state']);
+      assert.equal(closed, true);
+      assert.equal(outputs.length, 1);
+      assert.equal(JSON.parse(outputs[0]).completion.status, status);
+      assert.doesNotMatch(errors.join('\n'), /后台整理已完成|当前没有后台整理任务/);
+    }
+  }
+});
+
+void test('default import reports an existing pause/cancellation without claiming completion or polling', async () => {
+  for (const [status, label] of [['paused', '已暂停'], ['cancelled', '已取消']]) {
+    const calls: string[] = [];
+    const errors: string[] = [];
+    const outputs: string[] = [];
+    await main(['import', 'ece3250', '/tmp/L3.pdf'], {
+      createClient: () => ({
+        async connect() {},
+        async callTool(command: { name: string }) {
+          calls.push(command.name);
+          return mcpText({ ...imported, processing: { ...imported.processing, status } });
+        },
+        async close() {},
+      }),
+      createTransport: () => ({}),
+      errorLog: (message: string) => errors.push(message),
+      log: (message: string) => outputs.push(message),
+    });
+    assert.deepEqual(calls, ['yeyu_import_pdf']);
+    assert.match(errors.join('\n'), new RegExp(`PDF已保存.*${label}`));
+    assert.doesNotMatch(errors.join('\n'), /后台整理已完成|当前没有后台整理任务/);
+    assert.equal(JSON.parse(outputs[0]).result.processing.status, status);
+  }
 });
 
 void test('polling errors and timeout are terminal read failures, never a second import', async () => {

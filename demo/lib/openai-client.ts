@@ -5,6 +5,7 @@ import {
   extractErrorDetail,
 } from './ai-errors.ts';
 import { requestDshCompletion } from './dsh-client.ts';
+import type { DshStatus, DshTaskPriority } from './dsh-types.ts';
 
 export type ChatApiContentPart =
   | { type: 'text'; text: string }
@@ -41,9 +42,16 @@ export interface ChatCompletionTiming {
   /** JavaScript string length of the accumulated output. */
   outputChars: number;
   status: ChatCompletionTimingStatus;
+  queueMs?: number;
+  startupMs?: number;
+  executionMs?: number;
+  retries?: number;
 }
 
 export interface ChatCompletionInput {
+  task?: DshTaskPriority;
+  timeoutMs?: number;
+  onDshStatus?: (status: DshStatus) => void;
   backendOperation?: 'web-search';
   messages: ChatApiMessage[];
   temperature?: number;

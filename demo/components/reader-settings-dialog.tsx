@@ -33,11 +33,17 @@ import {
   type KnowledgeSettings,
 } from '@/lib/knowledge-settings';
 import {
+  assessDshSettings,
   loadAgentSettings,
   saveAgentSettings,
   type AgentBackend,
   type AgentSettings,
 } from '@/lib/agent-settings';
+
+import { DSH_RUNTIME_VERSION, DSH_MODELS } from '@/lib/dsh-capabilities';
+import { DSH_ERRORS, DshError, safeDshError } from '@/lib/dsh-errors';
+import { requestDshCompletion } from '@/lib/dsh-client';
+import type { DshRuntimeStatus } from '@/lib/dsh-types';
 
 export type SettingsTab = 'translation' | 'chat' | 'knowledge';
 
@@ -70,6 +76,57 @@ export function ReaderSettingsDialog({
   const [agentSettingsDraft, setAgentSettingsDraft] = useState<AgentSettings>(
     () => loadAgentSettings(),
   );
+  const [runtimeStatus, setRuntimeStatus] = useState<DshRuntimeStatus | null>(null);
+  const [runtimeChecking, setRuntimeChecking] = useState(false);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<string | null>(null);
+  const [connectionTesting, setConnectionTesting] = useState(false);
+  const connectionAbort = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; connectionAbort.current?.abort(); }; }, []);
+  const availability = assessDshSettings(agentSettingsDraft, { translation: translationDraft, chat: chatDraft, knowledge: knowledgeDraft });
+  const checkRuntime = async () => {
+    await Promise.resolve();
+    if (!mounted.current) return;
+    const bridge = (window as unknown as { yeyuDesktop?: { inspectDshRuntime?(): Promise<DshRuntimeStatus> } }).yeyuDesktop;
+    setRuntimeChecking(true);
+    setRuntimeStatus(null);
+    setRuntimeError(null);
+    try {
+      if (!bridge?.inspectDshRuntime) throw new Error('unavailable');
+      const status = await bridge.inspectDshRuntime();
+      if (mounted.current) setRuntimeStatus(status);
+    } catch {
+      if (mounted.current) setRuntimeError('无法读取宿主运行时，请使用最新版桌面版或重新连接共享宿主。');
+    } finally { if (mounted.current) setRuntimeChecking(false); }
+  };
+  useEffect(() => {
+    if (agentSettingsDraft.backend !== 'dsh') return;
+    const timer = setTimeout(() => { void checkRuntime(); }, 0);
+    return () => clearTimeout(timer);
+  }, [agentSettingsDraft.backend]);
+  useEffect(() => {
+    connectionAbort.current?.abort();
+  }, [tab, translationDraft, chatDraft, knowledgeDraft, agentSettingsDraft]);
+  const testConnection = async () => {
+    const row = availability.find(item => item.tab === tab && item.backend === 'dsh');
+    if (!row) { setConnectionStatus('当前栏目没有启用 DSH。'); return; }
+    if (row.issue) { setConnectionStatus(row.issue.message); return; }
+    const config = tab === 'translation' ? translationDraft : tab === 'chat' ? chatDraft : knowledgeDraft;
+    const controller = new AbortController();
+    connectionAbort.current = controller;
+    setConnectionTesting(true);
+    setConnectionStatus('正在发送一条短请求，验证运行时、鉴权和模型…');
+    try {
+      const result = await requestDshCompletion(config, { messages: [{ role: 'user', content: '请只回复 OK。' }], maxTokens: 32, thinking: 'disabled', task: 'interactive', timeoutMs: 20_000, signal: controller.signal });
+      if (!result.content.trim() || result.finishReason !== 'stop') throw new DshError('incomplete');
+      if (mounted.current && !controller.signal.aborted) setConnectionStatus('DSH 连接成功，运行时、鉴权与模型均可用。');
+    } catch (error) {
+      if (mounted.current && !controller.signal.aborted) setConnectionStatus(safeDshError(error).message);
+    } finally {
+      if (connectionAbort.current === controller) { connectionAbort.current = null; if (mounted.current) setConnectionTesting(false); }
+    }
+  };
   const [error, setError] = useState<string | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
@@ -97,6 +154,18 @@ export function ReaderSettingsDialog({
         return;
       }
     }
+    const incompatible = availability.find(item => item.issue);
+    if (incompatible?.issue) {
+      setTab(incompatible.tab);
+      setError(`${incompatible.label}：${incompatible.issue.message}`);
+      const prefix = incompatible.tab === 'translation' ? 'setting' : incompatible.tab;
+      requestAnimationFrame(() => document.getElementById(`${prefix}-${incompatible.issue!.field}`)?.focus());
+      return;
+    }
+    if (agentSettingsDraft.backend === 'dsh' && (runtimeChecking || !runtimeStatus?.available)) {
+      setError(runtimeChecking ? '运行时自检中，请稍后保存。' : runtimeError ?? (runtimeStatus?.errorCode ? DSH_ERRORS[runtimeStatus.errorCode] : '请先完成运行时自检。'));
+      return;
+    }
     saveAgentSettings(agentSettingsDraft);
     onSave(translationDraft, chatDraft, knowledgeDraft);
   };
@@ -106,6 +175,7 @@ export function ReaderSettingsDialog({
       applyTranslationPreset(previous, presetId),
     );
     setError(null);
+    setConnectionStatus(null);
   };
 
   const updateTranslationApiKey = (apiKey: string) => {
@@ -114,7 +184,7 @@ export function ReaderSettingsDialog({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent onChangeCapture={() => setError(null)} className="max-h-[88vh] overflow-y-auto sm:max-w-[520px]">
+      <DialogContent onChangeCapture={() => { setError(null); setConnectionStatus(null); }} className="max-h-[88vh] overflow-y-auto sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle className="text-lg">阅读服务设置</DialogTitle>
           <DialogDescription>
@@ -180,12 +250,21 @@ export function ReaderSettingsDialog({
                   htmlFor="agent-dsh-document-chat"
                   className="text-[11px] leading-5 text-amber-950"
                 >
-                  整份文档问答使用知识库的 DeepSeek 配置（页面图片问答仍用原配置）
+                  整份文档问答使用知识库配置（页面图片问答使用答疑配置）
                 </label>
               </div>
-              <p>
-                使用 DSH 前必须安装页语托管的 DSH 运行时。本设置页不检测运行时状态。
-              </p>
+              <div className="flex items-center justify-between gap-2 pt-2">
+                <output>{runtimeChecking ? '正在自检宿主运行时…' : runtimeStatus?.available ? `运行时就绪 · ${runtimeStatus.expectedVersion}` : runtimeError ?? (runtimeStatus?.errorCode ? DSH_ERRORS[runtimeStatus.errorCode] : `需要运行时 ${DSH_RUNTIME_VERSION}`)}</output>
+                <Button type="button" size="sm" variant="outline" disabled={runtimeChecking} onClick={() => void checkRuntime()}>重新自检</Button>
+              </div>
+              {runtimeStatus ? <ul aria-label="运行时组件检查" className="text-[10px]">
+                {runtimeStatus.checks.map(check => <li key={check.component}>{check.ok ? '✓' : '×'} {check.component}{check.version ? ` · ${check.version}` : ''}</li>)}
+              </ul> : null}
+              <ul aria-label="AI 功能可用性" className="space-y-1 border-t border-amber-200 pt-2">
+                {availability.map(item => <li key={item.task}><strong>{item.label}</strong> · {item.backend === 'demo' ? '内置演示' : item.backend === 'api' ? 'API' : item.issue ? `DSH · ${item.issue.message}` : 'DSH · 配置兼容'}</li>)}
+              </ul>
+              <p>固定版本 DSH 不支持温度与强制 JSON 输出参数，使用服务商默认采样；整理结果仍经过 JSON 解析与结构校验。连接等待指运行时就绪后等待首个事件；执行和流空闲均有超时上限。</p>
+              <p>支持图片的模型：{DSH_MODELS.filter(model => model.image).map(model => model.id).join(' / ')}。</p>
             </div>
           ) : null}
         </section>
@@ -195,6 +274,7 @@ export function ReaderSettingsDialog({
           onValueChange={(value) => {
             setTab(value as SettingsTab);
             setError(null);
+            setConnectionStatus(null);
           }}
         >
           <TabsList className="grid w-full grid-cols-3">
@@ -516,6 +596,15 @@ export function ReaderSettingsDialog({
             </p>
           </TabsContent>
         </Tabs>
+
+        {agentSettingsDraft.backend === 'dsh' ? <section className="rounded-md border px-3 py-2 text-xs space-y-2">
+          <p>测试当前栏目配置会向对应服务商发送一条短请求，可能产生少量费用。</p>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" size="sm" disabled={connectionTesting || !runtimeStatus?.available || !availability.some(item => item.tab === tab && item.backend === 'dsh')} onClick={() => void testConnection()}>测试当前栏目 DSH 连接</Button>
+            {connectionTesting ? <Button type="button" variant="ghost" size="sm" onClick={() => { connectionAbort.current?.abort(); setConnectionStatus('连接测试已取消。'); }}>取消测试</Button> : null}
+          </div>
+          {connectionStatus ? <output className="block">{connectionStatus}</output> : null}
+        </section> : null}
 
         {error ? (
           <p ref={errorRef} tabIndex={-1} role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">

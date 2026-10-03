@@ -1,1 +1,1 @@
-export type { DshCompletionRequest, DshCompletionResult, DshProgress } from '../electron/dsh-types.ts';
+export type { DshCompletionRequest, DshCompletionResult, DshProgress, DshTaskPriority, DshStatus, DshRuntimeStatus } from '../electron/dsh-types.ts';

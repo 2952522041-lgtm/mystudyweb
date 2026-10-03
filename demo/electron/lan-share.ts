@@ -15,6 +15,7 @@ import {
   ReadingStateConflictError,
   ReadingStateStore,
 } from './reading-state-store.ts';
+import { validReaderView, readerViewFields } from './reader-view-state.ts';
 import {
   assertSafeRelativeSegments,
   WorkspacePathError,
@@ -341,6 +342,8 @@ function publicImportResult(
     (processing.phase === 'document' || processing.phase === 'course') &&
     (processing.status === 'queued' ||
       processing.status === 'running' ||
+      processing.status === 'paused' ||
+      processing.status === 'cancelled' ||
       processing.status === 'failed')
       ? {
           phase: processing.phase,
@@ -1422,11 +1425,12 @@ export class LanShareServer {
         !Number.isInteger(zoom) ||
         (zoom as number) < 50 ||
         (zoom as number) > 200 ||
-        !Number.isInteger(expectedVersion) ||
-        (expectedVersion as number) < 0
+        !Number.isSafeInteger(expectedVersion) ||
+        (expectedVersion as number) < 0 ||
+        !validReaderView(body)
       ) {
         sendJson(response, 400, {
-          error: '页码、缩放比例或阅读进度版本不合法。',
+          error: '页码、缩放比例、面板、页内位置或阅读进度版本不合法。',
         });
         return;
       }
@@ -1435,6 +1439,7 @@ export class LanShareServer {
           page: page as number,
           zoom: zoom as number,
           expectedVersion: expectedVersion as number,
+          ...readerViewFields(body),
         });
         sendJson(response, 200, { state });
       } catch (error) {

@@ -6,6 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 
 import type { YeyuDesktopApi } from '../electron/api.ts';
+import { CourseLocks } from '../electron/course-locks.ts';
+import { BackgroundImports } from '../lib/background-imports.ts';
 import {
   createCourseDirectory,
   courseFileExists,
@@ -20,6 +22,7 @@ import {
 } from '../electron/workspace.ts';
 import { resolveWorkspaceLayout } from '../electron/workspace-paths.ts';
 import { DesktopCourseStorage } from '../lib/course-storage/desktop-course-storage.ts';
+import { appendStudyNote } from '../lib/course-storage/study-tools.ts';
 import {
   publishCachedTranslation,
   sharedTranslationFromCache,
@@ -110,6 +113,50 @@ class FakeWorkspaceApi implements YeyuDesktopApi {
   }
 
   async revealWorkspace() {}
+}
+
+/** Mirror main-process short leases, with independent UI/worker owners. */
+class LockedWorkspaceApi extends FakeWorkspaceApi {
+  readonly locks: CourseLocks;
+  readonly owner: number;
+  beforeWrite?: (relativePath: string[]) => Promise<void>;
+  constructor(root: string, locks: CourseLocks, owner: number) {
+    super(root); this.locks = locks; this.owner = owner;
+  }
+  acquireCourseLock(directory: string) { return this.locks.acquire(this.owner, directory); }
+  async releaseCourseLock(token: string) { this.locks.release(this.owner, token); }
+  override writeFile(directory: string, relativePath: string[], data: Uint8Array) {
+    return this.locks.run(this.owner, directory, async () => {
+      await this.beforeWrite?.(relativePath);
+      await super.writeFile(directory, relativePath, data);
+    });
+  }
+  override ensureDirectory(directory: string, relativePath: string[]) {
+    return this.locks.run(this.owner, directory, () => super.ensureDirectory(directory, relativePath));
+  }
+  override deleteFile(directory: string, relativePath: string[]) {
+    return this.locks.run(this.owner, directory, () => super.deleteFile(directory, relativePath));
+  }
+  override deleteCourseDirectory(directory: string) {
+    return this.locks.run(this.owner, directory, () => super.deleteCourseDirectory(directory));
+  }
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return {promise, resolve};
+}
+
+function manualMutations(storage: DesktopCourseStorage, courseId: string) {
+  const worker = new BackgroundImports({
+    execute:false,
+    analyze:async () => {throw new Error('AI must run outside the write transaction');},
+    synthesize:async () => {throw new Error('AI must run outside the write transaction');},
+    onBundle:() => undefined,
+  });
+  worker.register(courseId, storage);
+  return worker;
 }
 
 function makeDigest(overrides: Partial<DocumentDigest> = {}): DocumentDigest {
@@ -591,5 +638,156 @@ void test('desktop raw save survives restart, persists processing, and writes a 
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('desktop notes reject external edits and history exposes actual artifact versions', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-study-'));
+  try {
+    const api = new FakeWorkspaceApi(root); await api.getWorkspaceInfo();
+    const {directoryName} = await api.createCourseDirectory('学习');
+    const storage = new DesktopCourseStorage(api, directoryName);
+    await storage.initialize('学习');
+    const initial = await storage.loadNotes();
+    await api.writeFile(directoryName, ['我的课程笔记.md'], new TextEncoder().encode('外部编辑的笔记'));
+    await assert.rejects(storage.saveNotes('旧草稿', initial.token), /外部修改/);
+    assert.equal((await storage.loadNotes()).content, '外部编辑的笔记');
+    await appendStudyNote(storage, {text:'保留的新摘记',sources:[{documentId:'doc',fileName:'lesson.pdf',pageStart:2,type:'pdf'}]});
+    assert.match((await storage.loadNotes()).content, /^外部编辑的笔记/);
+    const imported = await storage.importDocument(pdfFile(), makeDigest(), {generateSummary:true,generateMindmap:true,mergeIntoCourse:true,includeConversationInsights:false}, 0);
+    await storage.updateDocumentArtifacts(imported.document.id, imported.bundle.manifest.revision);
+    const history = await storage.listHistory();
+    assert.ok(history.some(entry => entry.revision === 0 && entry.knowledge.version === 0));
+    assert.ok(history.some(entry => entry.revision === 1 && entry.summary.includes('极限')));
+    await api.writeFile(directoryName, ['History','revision-99-1.json'], new TextEncoder().encode('{corrupt'));
+    assert.equal((await storage.listHistory()).length, history.length);
+    // Legacy courses have only immutable Knowledge versions and directory snapshots.
+    for (const file of await api.listFiles(directoryName, ['History'])) await api.deleteFile(directoryName, ['History',file]);
+    const legacyHistory = await storage.listHistory();
+    assert.ok(legacyHistory.some(entry => entry.source === 'knowledge' && entry.knowledge.version === 0));
+    assert.ok(legacyHistory.every(entry => entry.revision === undefined));
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+void test('UI multi-file publication and background import serialize across renderer owners', {timeout:10_000}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-write-transaction-'));
+  const locks = new CourseLocks();
+  const resume = deferred();
+  try {
+    const uiApi = new LockedWorkspaceApi(root, locks, 1);
+    const bgApi = new LockedWorkspaceApi(root, locks, 2);
+    await uiApi.getWorkspaceInfo();
+    const {directoryName} = await uiApi.createCourseDirectory('并发课程');
+    const uiStorage = new DesktopCourseStorage(uiApi, directoryName);
+    const bgStorage = new DesktopCourseStorage(bgApi, directoryName);
+    const initial = await uiStorage.withWriteLock(() => uiStorage.initialize('并发课程'));
+    const ui = manualMutations(uiStorage, initial.manifest.id);
+    const background = manualMutations(bgStorage, initial.manifest.id);
+    const digest = makeDigest();
+    const imported = await ui.mutate(initial.manifest.id, (storage, current) => storage.importDocument(pdfFile(), digest, importOptions, current.manifest.revision));
+    const reached = deferred();
+    uiApi.beforeWrite = async relative => {
+      if (relative[0] === 'Documents' && relative.at(-1) === 'document.json') {
+        reached.resolve(); await resume.promise;
+      }
+    };
+    const publication = ui.mutate(initial.manifest.id, storage => storage.updateDocumentArtifacts(digest.documentId, imported.bundle.manifest.revision, {...digest, overview:'重新生成'}));
+    await reached.promise;
+    let backgroundEntered = false;
+    const save = background.mutate(initial.manifest.id, async (storage, current) => {
+      backgroundEntered = true;
+      return storage.savePdf(pdfFile('第二份.pdf'), {fingerprint:'b'.repeat(64),pageCount:1}, {generateSummary:false,generateMindmap:false,mergeIntoCourse:false,includeConversationInsights:false}, current.manifest.revision);
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(backgroundEntered, false, 'another renderer must wait for all artifact/history/manifest writes');
+    resume.resolve();
+    await Promise.all([publication, save]);
+    const current = await uiStorage.load();
+    assert.equal(current.manifest.revision, 3);
+    assert.equal(current.manifest.documents.length, 2);
+    assert.equal(current.digests[digest.documentId].overview, '重新生成');
+    assert.ok((await uiStorage.listHistory()).some(entry => entry.revision === 2), 'background import must snapshot the completed UI publication');
+
+    // Model time holds no lease. The import completes while manual AI waits;
+    // its old result is then rejected before it changes any artifact file.
+    uiApi.beforeWrite = undefined;
+    const ai = deferred();
+    const oldRevision = current.manifest.revision;
+    const latePublication = ai.promise.then(() => ui.mutate(initial.manifest.id, storage => storage.updateDocumentArtifacts(digest.documentId, oldRevision, {...digest, overview:'过时 AI 结果'})));
+    await background.mutate(initial.manifest.id, (storage, latest) => storage.savePdf(pdfFile('第三份.pdf'), {fingerprint:'c'.repeat(64),pageCount:1}, {generateSummary:false,generateMindmap:false,mergeIntoCourse:false,includeConversationInsights:false}, latest.manifest.revision));
+    const courseRoot = path.join(resolveWorkspaceLayout(root).coursesRoot, directoryName);
+    const before = await snapshotFiles(courseRoot);
+    ai.resolve();
+    await assert.rejects(latePublication, /外部修改/);
+    assert.deepEqual(await snapshotFiles(courseRoot), before, 'stale AI must not partly replace document or course artifacts');
+  } finally {
+    resume.resolve(); await locks.close(); await rm(root, {recursive:true,force:true});
+  }
+});
+
+void test('translation publish checks document existence inside the deletion transaction boundary', {timeout:10_000}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-translation-race-'));
+  const locks = new CourseLocks();
+  const resume = deferred();
+  try {
+    const uiApi = new LockedWorkspaceApi(root, locks, 1);
+    const bgApi = new LockedWorkspaceApi(root, locks, 2);
+    await uiApi.getWorkspaceInfo();
+    const {directoryName} = await uiApi.createCourseDirectory('删除课程');
+    const uiStorage = new DesktopCourseStorage(uiApi, directoryName);
+    const bgStorage = new DesktopCourseStorage(bgApi, directoryName);
+    const initial = await uiStorage.withWriteLock(() => uiStorage.initialize('删除课程'));
+    const digest = makeDigest();
+    await uiStorage.withWriteLock(() => uiStorage.importDocument(pdfFile(), digest, importOptions, 0));
+    const background = manualMutations(bgStorage, initial.manifest.id);
+    const deleting = deferred();
+    const removal = background.mutate(initial.manifest.id, async (storage, current) => {
+      deleting.resolve(); await resume.promise;
+      return storage.removeDocument(digest.documentId, current.manifest.revision);
+    });
+    await deleting.promise;
+    let publicationFinished = false;
+    const publication = uiStorage.publishTranslation(digest.documentId, {
+      schemaVersion:1,documentId:digest.documentId,fingerprint:digest.fingerprint,
+      pageNumber:1,sourceHash:'1'.repeat(64),targetLanguage:'简体中文',provider:'test',model:'test',
+      promptVersion:1,paragraphs:['译文'],updatedAt:new Date().toISOString(),
+    });
+    const rejected = assert.rejects(publication, /找不到这份 PDF/).then(() => {publicationFinished = true;});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(publicationFinished, false);
+    resume.resolve(); await Promise.all([removal, rejected]);
+    assert.equal((await uiStorage.load()).manifest.documents.length, 0);
+    assert.equal(await uiApi.exists(directoryName, ['Translations',digest.documentId]), false, 'late publication must not recreate deleted translation files');
+  } finally {
+    resume.resolve(); await locks.close(); await rm(root, {recursive:true,force:true});
+  }
+});
+
+void test('same-renderer glossary save waits for course deletion and cannot recreate its directory', {timeout:10_000}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-delete-race-'));
+  const locks = new CourseLocks();
+  const resume = deferred();
+  try {
+    const api = new LockedWorkspaceApi(root, locks, 1);
+    await api.getWorkspaceInfo();
+    const {directoryName} = await api.createCourseDirectory('删除课程');
+    const storage = new DesktopCourseStorage(api, directoryName);
+    const initial = await storage.withWriteLock(() => storage.initialize('删除课程'));
+    const ui = manualMutations(storage, initial.manifest.id);
+    const deleting = deferred();
+    const removal = ui.mutate(initial.manifest.id, async currentStorage => {
+      deleting.resolve(); await resume.promise; await currentStorage.deleteCourse();
+    });
+    await deleting.promise;
+    let wrote = false;
+    api.beforeWrite = async () => {wrote = true;};
+    const rejected = assert.rejects(storage.saveGlossary({schemaVersion:1,version:0,entries:[]}), /课程目录不存在/);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(wrote, false, 'same-owner single write must not borrow an unrelated deletion lease');
+    resume.resolve(); await Promise.all([removal, rejected]);
+    assert.deepEqual(await api.listCourses(), []);
+    assert.deepEqual(await readdir(resolveWorkspaceLayout(root).coursesRoot), []);
+  } finally {
+    resume.resolve(); await locks.close(); await rm(root, {recursive:true,force:true});
   }
 });

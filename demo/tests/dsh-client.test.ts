@@ -307,3 +307,28 @@ void test('sanitizes runDsh errors without leaking key or prompt', async () => {
   assert.equal(timings[0].status, 'failure');
   assert.equal(timings[0].outputChars, 0);
 });
+
+void test('preserves explicit DSH parameters, safe diagnostic stages and structured IPC errors', async () => {
+  const bridge = new FakeDshBridge();
+  const timings: ChatCompletionTiming[] = [];
+  const partials: string[] = [];
+  bridge.runImpl = async request => {
+    bridge.emit({ requestId: request.requestId, content: '', status: { phase: 'running', task: 'background', queueMs: 10, startupMs: 5, retries: 0 } });
+    bridge.emit({ requestId: request.requestId, content: 'answer' });
+    bridge.emit({ requestId: request.requestId, content: '', status: { phase: 'completed', task: 'background', executionMs: 15, retries: 0 } });
+    return { content: 'answer', finishReason: 'stop' };
+  };
+  await requestDshCompletion(config, { messages, task: 'background', temperature: 0.1, responseFormat: 'json_object', connectionTimeoutMs: 30_000, streamStallTimeoutMs: 45_000, timeoutMs: 90_000, onPartial: value => partials.push(value), onTiming: value => timings.push(value) }, bridge);
+  assert.equal(bridge.requests[0].temperature, 0.1, 'unsupported parameters reach explicit host validation');
+  assert.equal(bridge.requests[0].responseFormat, 'json_object');
+  assert.equal(bridge.requests[0].task, 'background');
+  assert.equal(bridge.requests[0].connectionTimeoutMs, 30_000);
+  assert.equal(bridge.requests[0].streamStallTimeoutMs, 45_000);
+  assert.equal(bridge.requests[0].timeoutMs, 90_000);
+  assert.deepEqual(partials, ['answer']);
+  assert.equal(timings[0].queueMs, 10);
+  assert.equal(timings[0].startupMs, 5);
+  assert.equal(timings[0].executionMs, 15);
+  bridge.runImpl = async () => { throw new Error('IPC [DSH:runtime_version] private-key private-prompt'); };
+  await assert.rejects(requestDshCompletion(config, { messages }, bridge), error => error instanceof Error && /runtime_version/.test(error.message) && !/private/.test(error.message));
+});

@@ -13,6 +13,7 @@ import {
 import { DshEventCollector } from './dsh-events.ts';
 import { dshPrompt } from './dsh-prompt.ts';
 import { dshWebSearch } from './dsh-search.ts';
+import { DshError, classifyDshProviderError } from './dsh-errors.ts';
 
 const [runtimeRoot, taskRoot] = process.argv.slice(2);
 const send = (value: unknown) =>
@@ -38,6 +39,7 @@ try {
   }
   const request = validateDshRequest(JSON.parse(input));
   if (request.operation === 'web-search') {
+    send({ type: 'ready' });
     const content = await dshWebSearch(
       request.apiKey,
       request.messages[0].content as string,
@@ -58,10 +60,9 @@ try {
     ['dsh-llm-pi-ai', DSH_RUNTIME_VERSION],
     ['dsh-attachment-local', DSH_RUNTIME_VERSION],
   ]) {
-    const metadata = JSON.parse(
-      await readFile(path.join(packageRoot, name, 'package.json'), 'utf8'),
-    );
-    if (metadata.version !== version) throw new Error('runtime version');
+    let metadata;
+    try { metadata = JSON.parse(await readFile(path.join(packageRoot, name, 'package.json'), 'utf8')); } catch { throw new DshError('runtime_missing'); }
+    if (metadata.version !== version) throw new DshError('runtime_version');
   }
   const sdk = await import(
     pathToFileURL(path.join(packageRoot, 'dsh-sdk-client', 'lib', 'index.js'))
@@ -101,15 +102,22 @@ try {
     reasoningEffort: request.thinking === 'disabled' ? 'off' : 'high',
   });
   if (identity.serverInfo.name !== 'deepseek-harness-sdk-runtime')
-    throw new Error('identity');
+    throw new DshError('runtime_version');
+  send({ type: 'ready' });
   const sessionId = `yeyu-${randomUUID()}`;
   const subscription = runtime.subscribeSessionTree(sessionId);
   try {
     const messageId = await runtime.prompt(sessionId, blocks);
     const collector = new DshEventCollector(sessionId, messageId);
     let previous = '';
+    let firstEvent = true;
     while (!collector.done) {
-      collector.observe(await subscription.next());
+      const timeoutMs = firstEvent ? request.connectionTimeoutMs ?? 30_000 : request.streamStallTimeoutMs ?? 45_000;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        collector.observe(await Promise.race([subscription.next(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new DshError('timeout')), timeoutMs); })]));
+      } finally { if (timer) clearTimeout(timer); }
+      firstEvent = false;
       if (collector.content !== previous) {
         previous = collector.content;
         send({ type: 'progress', content: previous });
@@ -122,12 +130,8 @@ try {
   } finally {
     subscription.close();
   }
-} catch {
+} catch (error) {
   await shutdown();
-  send({
-    type: 'error',
-    message:
-      'DSH 任务未完整完成。请检查托管运行时和模型配置，或切回 API；未发布残缺成果。',
-  });
+  send({ type: 'error', code: classifyDshProviderError(error).code });
   process.exitCode = 1;
 }

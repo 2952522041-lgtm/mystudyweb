@@ -347,7 +347,8 @@ async function completeJson(
       for (;;) {
         try {
           result = await requestChatCompletion(config, {
-            messages, temperature: 0.1, maxTokens, signal: input.signal,
+            messages, maxTokens, signal: input.signal,
+            ...(config.executionBackend === 'dsh' ? {task:'background' as const} : {temperature:0.1}),
             connectionTimeoutMs: 30_000,
             streamStallTimeoutMs: 45_000,
             onTiming: timing => input.report?.({ layer, action: 'request-timing',
@@ -355,7 +356,7 @@ async function completeJson(
               droppedItems: 0, droppedBytes: 0, timing,
               detail: `AI 请求${timing.status === 'success' ? '完成' : timing.status === 'cancelled' ? '取消' : '失败'}，耗时 ${Math.round(timing.totalMs)} ms。`,
             }),
-            ...(new URL(config.baseUrl).hostname === 'open.bigmodel.cn' || isOfficialDeepSeek(config.model, config.baseUrl)
+            ...(config.executionBackend !== 'dsh' && (new URL(config.baseUrl).hostname === 'open.bigmodel.cn' || isOfficialDeepSeek(config.model, config.baseUrl))
               ? { responseFormat: 'json_object' as const } : {}),
             // Official GLM/DeepSeek automatic thinking adds latency to extraction.
             // Keep reasoning for opted-in deep synthesis/structural repair and don't send

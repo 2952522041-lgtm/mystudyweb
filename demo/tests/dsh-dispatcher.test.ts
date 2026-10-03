@@ -431,3 +431,65 @@ void test('a completed requestId can be explicitly regenerated with a fresh back
     await fixture.close();
   }
 });
+
+void test('reserves interactive capacity during a background import', async () => {
+  const fixture = createFixture();
+  try {
+    for (let index = 0; index < 5; index++) void fixture.run(1, request(`bg-${index}`, `bg-${index}`, { task: 'background' }));
+    await waitFor(() => fixture.manager.calls.length === 3);
+    const interactive = fixture.run(2, request('page-now', 'page-now', { task: 'interactive' }));
+    await waitFor(() => fixture.manager.calls.length === 4);
+    assert.equal(fixture.manager.calls[3].request.requestId, 'page-now');
+    fixture.manager.resolve('page-now', complete('ready'));
+    await interactive;
+    assert.equal(fixture.manager.calls.length, 4);
+  } finally { await fixture.close(); }
+});
+
+void test('prioritizes interactive work and lets waiting prefetch run after eight interactive starts', async () => {
+  const fixture = createFixture();
+  try {
+    for (let index = 0; index < 4; index++) void fixture.run(1, request(`busy-${index}`));
+    await waitFor(() => fixture.manager.calls.length === 4);
+    void fixture.run(1, request('prefetch', 'prefetch', { task: 'prefetch' }));
+    for (let index = 0; index < 8; index++) void fixture.run(2, request(`now-${index}`));
+    const completionOrder = ['busy-0', 'busy-1', 'busy-2', 'busy-3', 'now-0'];
+    for (let index = 0; index < completionOrder.length; index++) {
+      fixture.manager.resolve(completionOrder[index], complete('done'));
+      await waitFor(() => fixture.manager.calls.length === 5 + index);
+      assert.equal(fixture.manager.calls.at(-1)?.request.requestId, index < 4 ? `now-${index}` : 'prefetch');
+    }
+  } finally { await fixture.close(); }
+});
+
+void test('status observers cannot fail a request and structured worker errors survive dispatch', async () => {
+  const fixture = createFixture();
+  try {
+    const job = fixture.run(1, request('diagnostic-error'), () => { throw new Error('UI observer failed'); });
+    await waitFor(() => fixture.manager.calls.length === 1);
+    fixture.manager.reject('diagnostic-error', new Error('[DSH:authentication] secret-provider-text'));
+    await assert.rejects(job, error => error instanceof Error && /authentication/.test(error.message) && !/secret-provider-text/.test(error.message));
+  } finally { await fixture.close(); }
+});
+
+void test('immediate close cancels work before yielding to the next microtask', async () => {
+  const fixture = createFixture();
+  const job = fixture.run(1, request('close-immediately'));
+  await fixture.close();
+  assert.equal(fixture.manager.calls.length, 1);
+  assert.deepEqual(fixture.manager.cancelCalls, [{ owner: 1, requestId: 'close-immediately' }]);
+  assert.equal((await Promise.allSettled([job]))[0].status, 'rejected');
+});
+
+void test('queue timeout has its own safe code and never cancels an active worker', async context => {
+  const fixture = createFixture();
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    for (let index = 0; index < 4; index++) void fixture.run(1, request(`timeout-active-${index}`));
+    const queued = fixture.run(2, request('timeout-queued'));
+    const failure = assert.rejects(queued, error => error instanceof Error && /DSH:queue_timeout/.test(error.message));
+    context.mock.timers.tick(180_000);
+    await failure;
+    assert.deepEqual(fixture.manager.cancelCalls, []);
+  } finally { context.mock.timers.reset(); await fixture.close(); }
+});

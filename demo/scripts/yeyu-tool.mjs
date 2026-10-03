@@ -99,6 +99,9 @@ export function inspectProcessing(processing) {
   if (status === 'queued' || status === 'running') {
     return { kind: 'active', status, processing: value };
   }
+  if (status === 'paused' || status === 'cancelled') {
+    return { kind: status, status, processing: value };
+  }
   if (status === 'failed') {
     return {
       kind: 'failed',
@@ -191,6 +194,14 @@ function importFailureError(error) {
   return nonEmptyString(error) ?? PDF_IMPORT_FAILED_MESSAGE;
 }
 
+function interruptedImportMessage(status) {
+  if (status === 'paused')
+    return 'PDF已保存，后台整理已暂停；已完成成果保留，可在页语「后台任务」中继续。';
+  if (status === 'cancelled')
+    return 'PDF已保存，后台整理已取消；已完成成果保留，可在页语「后台任务」中重试。';
+  return undefined;
+}
+
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -213,6 +224,9 @@ export async function waitForImportCompletion({
   const initial = inspectProcessing(details.processing);
   if (initial.kind === 'none') {
     return { status: 'completed', source: 'import-result' };
+  }
+  if (initial.kind === 'paused' || initial.kind === 'cancelled') {
+    return { status: initial.status, source: 'import-result' };
   }
   if (initial.kind === 'failed') {
     return {
@@ -259,6 +273,9 @@ export async function waitForImportCompletion({
     if (current.kind === 'none') {
       return { status: 'completed', source: 'state', state, document };
     }
+    if (current.kind === 'paused' || current.kind === 'cancelled') {
+      return { status: current.status, source: 'state', state, document };
+    }
     if (current.kind === 'failed') {
       return {
         status: 'failed',
@@ -283,6 +300,8 @@ function defaultImportMessage(importResult) {
     return 'PDF已保存，后台整理已排队；本次返回仅表示已入队，不表示 AI 总结、脑图或课程合并已完成。';
   }
   if (processing.kind === 'failed') return PDF_IMPORT_FAILED_MESSAGE;
+  const interrupted = interruptedImportMessage(processing.status);
+  if (interrupted) return interrupted;
   return 'PDF已保存，当前没有后台整理任务；成果状态请查看文档标记。';
 }
 
@@ -346,11 +365,13 @@ export async function main(args, dependencies = {}) {
           errorLog(PDF_IMPORT_FAILED_MESSAGE);
           throw new Error(importFailureError(completion.error));
         }
-        errorLog(
-          completion.source === 'state'
-            ? 'PDF已保存，后台整理已完成。'
-            : 'PDF已保存，当前没有后台整理任务；成果状态请查看文档标记。',
-        );
+        if (completion.status === 'completed') {
+          errorLog(
+            completion.source === 'state'
+              ? 'PDF已保存，后台整理已完成。'
+              : 'PDF已保存，当前没有后台整理任务；成果状态请查看文档标记。',
+          );
+        }
       } else {
         errorLog(defaultImportMessage(result));
       }
@@ -369,6 +390,10 @@ export async function main(args, dependencies = {}) {
         : {}),
     };
     log(JSON.stringify(output));
+    // Keep the machine-readable stopped status, then let the CLI entry point
+    // report it on stderr and exit nonzero. Never resume or reimport here.
+    const interrupted = interruptedImportMessage(completion?.status);
+    if (interrupted) throw new Error(interrupted);
   } finally {
     await client.close();
   }

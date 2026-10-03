@@ -2,6 +2,7 @@ import { EMPTY_GLOSSARY, parseGlossary, type Glossary } from '../glossary.ts';
 import { rawPdfRecord, artifactsReady, processingBundle } from './background-records.ts';
 import type { DocumentProcessing, PdfMetadata } from './types.ts';
 import type { YeyuDesktopApi } from '../../electron/api';
+import { assertNotesUnchanged, isHistoryKnowledge, notesSnapshot, withLocalWriteLock, type CourseHistoryEntry } from './study-tools.ts';
 import {
   assertSafeArtifactContent,
   createCourseId,
@@ -105,7 +106,54 @@ export class DesktopCourseStorage implements CourseStorage {
     return parseGlossary(await readJson(this.api, this.directoryName, ['glossary.json']));
   }
   async saveGlossary(glossary: Glossary): Promise<void> {
-    await this.api.writeFile(this.directoryName, ['glossary.json'], encodeJson(parseGlossary(glossary)));
+    const content = encodeJson(parseGlossary(glossary));
+    await this.withWriteLock(() => this.api.writeFile(this.directoryName, ['glossary.json'], content));
+  }
+
+  async withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
+    if (!this.api.acquireCourseLock || !this.api.releaseCourseLock) return withLocalWriteLock(this, operation);
+    const token = await this.api.acquireCourseLock(this.directoryName);
+    try { return await operation(); }
+    finally { await this.api.releaseCourseLock(token); }
+  }
+
+  async loadNotes() {
+    const path = ['我的课程笔记.md'];
+    return notesSnapshot(await this.api.exists(this.directoryName, path)
+      ? decoder.decode(await this.api.readFile(this.directoryName, path)) : '');
+  }
+
+  async saveNotes(content: string, expectedToken: string) {
+    return this.withWriteLock(async () => {
+      assertSafeArtifactContent(content);
+      assertNotesUnchanged(await this.loadNotes(), expectedToken);
+      await writeText(this.api, this.directoryName, ['我的课程笔记.md'], content);
+      return notesSnapshot(content);
+    });
+  }
+
+  async listHistory(): Promise<CourseHistoryEntry[]> {
+    if (!this.api.listFiles) return [];
+    const history: CourseHistoryEntry[] = [];
+    for (const file of await this.api.listFiles(this.directoryName, ['History'])) {
+      if (!/^revision-\d+-\d+\.json$/.test(file)) continue;
+      try {
+        const entry = await readJson<CourseHistoryEntry>(this.api, this.directoryName, ['History', file]);
+        if (isHistoryKnowledge(entry.knowledge) && typeof entry.summary === 'string' && typeof entry.updatedAt === 'string') history.push({...entry, id:file, source:'snapshot'});
+      } catch { /* A partial external snapshot must not hide valid versions. */ }
+    }
+    // Older desktop versions did not index History subdirectories. Their
+    // immutable Knowledge files still provide honest artifact-only previews.
+    const bundle = await this.load();
+    for (const file of await this.api.listFiles(this.directoryName, ['Knowledge'])) {
+      if (!/^knowledge-v\d+\.json$/.test(file)) continue;
+      try {
+        const knowledge = await readJson<unknown>(this.api, this.directoryName, ['Knowledge', file]);
+        if (!isHistoryKnowledge(knowledge) || knowledge.courseId !== bundle.manifest.id || knowledge.version === bundle.knowledge.version || history.some(entry => entry.knowledge.version === knowledge.version)) continue;
+        history.push({ id:file, updatedAt:knowledge.updatedAt, knowledge, summary:'', source:'knowledge' });
+      } catch { /* Ignore damaged individual versions. */ }
+    }
+    return history.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   async initialize(name: string): Promise<CourseBundle> {
@@ -426,26 +474,30 @@ export class DesktopCourseStorage implements CourseStorage {
     documentId: string,
     translation: SharedTranslationRecord,
   ): Promise<void> {
-    const bundle = await this.load();
-    const document = bundle.manifest.documents.find(
-      (item) => item.id === documentId,
-    );
-    if (!document) throw new Error('课程中找不到这份 PDF，译文未发布。');
-    if (translation.provider === 'mock') {
-      throw new Error('演示译文不能发布到课程共享目录。');
-    }
-    const valid = validateSharedTranslation(translation, {
-      documentId,
-      fingerprint: document.fingerprint,
-      pageCount: document.pageCount,
+    // A document deletion must not run between validation and publication and
+    // leave an orphaned Translations directory behind. AI has already finished.
+    await this.withWriteLock(async () => {
+      const bundle = await this.load();
+      const document = bundle.manifest.documents.find(
+        (item) => item.id === documentId,
+      );
+      if (!document) throw new Error('课程中找不到这份 PDF，译文未发布。');
+      if (translation.provider === 'mock') {
+        throw new Error('演示译文不能发布到课程共享目录。');
+      }
+      const valid = validateSharedTranslation(translation, {
+        documentId,
+        fingerprint: document.fingerprint,
+        pageCount: document.pageCount,
+      });
+      if (!valid) throw new Error('译文记录格式不正确，未发布。');
+      const fileName = await sharedTranslationFileName(valid);
+      await this.api.writeFile(
+        this.directoryName,
+        ['Translations', documentId, fileName],
+        encodeSharedTranslation(valid),
+      );
     });
-    if (!valid) throw new Error('译文记录格式不正确，未发布。');
-    const fileName = await sharedTranslationFileName(valid);
-    await this.api.writeFile(
-      this.directoryName,
-      ['Translations', documentId, fileName],
-      encodeSharedTranslation(valid),
-    );
   }
 
   async removeDocument(
@@ -460,15 +512,6 @@ export class DesktopCourseStorage implements CourseStorage {
     );
     if (!document) throw new Error('课程中找不到这份 PDF。');
     const now = new Date().toISOString();
-    await this.api.deleteFile(this.directoryName, [
-      'PDFs',
-      document.storedFileName,
-    ]);
-    await this.api.deleteFile(
-      this.directoryName,
-      documentDirectory(documentId),
-    );
-    await this.api.deleteFile(this.directoryName, ['Translations', documentId]);
     const knowledge = aiKnowledge
       ? applyAiCourseKnowledge(current.knowledge, aiKnowledge, now)
       : removeDocumentContribution(current.knowledge, documentId, now);
@@ -489,6 +532,12 @@ export class DesktopCourseStorage implements CourseStorage {
     };
     await this.createRevision(current);
     await this.writeBundle(bundle, true);
+    // Publish the removal before irreversible cleanup. A close/crash before
+    // manifest commit keeps the old PDF readable; after commit it can only
+    // leave unreferenced files, never a manifest pointing at deleted bytes.
+    await this.api.deleteFile(this.directoryName, ['PDFs', document.storedFileName]);
+    await this.api.deleteFile(this.directoryName, documentDirectory(documentId));
+    await this.api.deleteFile(this.directoryName, ['Translations', documentId]);
     return bundle;
   }
 
@@ -569,6 +618,10 @@ export class DesktopCourseStorage implements CourseStorage {
       [...base, '课程总结.md'],
       renderCourseSummary(current.manifest, current.knowledge),
     );
+    await this.api.writeFile(this.directoryName, ['History', `${name}.json`], encodeJson({
+      id:name, revision:current.manifest.revision, updatedAt:current.manifest.updatedAt,
+      knowledge:current.knowledge, summary:renderCourseSummary(current.manifest, current.knowledge), source:'snapshot',
+    } satisfies CourseHistoryEntry));
   }
 
   private async writeBundle(

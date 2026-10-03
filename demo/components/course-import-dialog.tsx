@@ -152,9 +152,8 @@ function requestedArtifactLabel(options: ImportOptions) {
 /**
  * Shows the durable background task for a document or a course.
  *
- * There is intentionally no cancel action here: once the import dialog has
- * saved a PDF, this task is independent and can be resumed after reopening
- * the app.
+ * Saved tasks are independent of this dialog. Pause/cancel and bulk controls
+ * live in the global task center, including while the reader is open.
  */
 export function DocumentProcessingStatus({
   processing,
@@ -171,7 +170,8 @@ export function DocumentProcessingStatus({
       ? '后台排队中'
       : processing.status === 'running'
         ? '后台生成中'
-        : '后台生成失败';
+        : processing.status === 'paused' ? '后台已暂停'
+          : processing.status === 'cancelled' ? '后台已取消' : '后台生成失败';
   const timeLabel = (() => {
     const date = new Date(processing.updatedAt);
     return Number.isNaN(date.getTime())
@@ -192,7 +192,7 @@ export function DocumentProcessingStatus({
         {processing.status === 'failed' ? (
           <TriangleAlert className="mt-0.5 size-4 shrink-0 text-rose-600" />
         ) : (
-          <LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin text-violet-600" />
+          <LoaderCircle className={`mt-0.5 size-4 shrink-0 text-violet-600 ${processing.status === 'queued' || processing.status === 'running' ? 'animate-spin' : ''}`} />
         )}
         <div className="min-w-0 flex-1">
           <p
@@ -202,6 +202,8 @@ export function DocumentProcessingStatus({
           >
             {phaseLabel} · {statusLabel}
           </p>
+          {processing.message ? <p className="mt-1 text-xs text-slate-500">{processing.message}</p> : null}
+          {processing.status === 'paused' || processing.status === 'cancelled' ? <p className="mt-1 text-xs text-slate-500">可在后台任务中心继续或重新开始；PDF 与已完成成果保留。</p> : null}
           <p className="mt-1 text-xs leading-5 text-slate-600">
             PDF 已保存，可直接阅读。
             {processing.phase === 'document'

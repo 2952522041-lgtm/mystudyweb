@@ -39,6 +39,8 @@ import type { PDFDocumentProxy } from '@/lib/pdfjs';
 import { selectionExplanationQuestion, type SelectionQuestion } from '@/lib/selection-translation';
 import { readDocumentChatIndex, retrieveDocumentChunks } from '@/lib/document-chat';
 import { extractPageText, renderPageImage } from '@/lib/page-vision';
+import { useChatDraft, type QuestionDraft } from '@/components/use-chat-draft';
+import { useChatScroll } from '@/components/use-chat-scroll';
 
 interface PageChatState {
   loaded: boolean;
@@ -82,6 +84,8 @@ export function AIChatPanel({
   onNavigate,
   selectionQuestion,
   onSelectionQuestionHandled,
+  questionDraft,
+  onQuestionDraftHandled,
 }: {
   pdfDoc: PDFDocumentProxy | null;
   fingerprint: string | null;
@@ -93,20 +97,36 @@ export function AIChatPanel({
   onNavigate?: (page: number) => void;
   selectionQuestion?: SelectionQuestion | null;
   onSelectionQuestionHandled?: () => void;
+  questionDraft?: QuestionDraft | null;
+  onQuestionDraftHandled?: () => void;
 }) {
   const service = useMemo(() => createChatService(), []);
   const [states, setStates] = useState<Record<string, PageChatState>>({});
-  const [input, setInput] = useState('');
   const [scope, setScope] = useState<ChatScope>('page');
   const conversationPage = scope === 'document' ? 0 : pageNumber;
   const pendingSavesRef = useRef(new Map<string, PageConversation>());
   const [loadRetry, setLoadRetry] = useState(0);
   const controllersRef = useRef(new Map<string, AbortController>());
   const handledSelectionRef = useRef<number | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
   const key = fingerprint ? chatStateKey(fingerprint, conversationPage, scope) : '';
   const state = (key && states[key]) || emptyState();
+  const [input, setInput] = useChatDraft(key);
+  const { scrollRef, showLatest, onScroll, jumpToLatest } = useChatScroll(key, state.messages, state.partial);
+  const composingRef = useRef(false);
+  const handledDraftRef = useRef<string | null>(null);
   const configured = chatSettingsConfigured(settings);
+
+  useEffect(() => {
+    if (!questionDraft || handledDraftRef.current === questionDraft.id) return;
+    const frame = requestAnimationFrame(() => {
+      if (scope !== 'page') { setScope('page'); return; }
+      if (!key || (questionDraft.pageNumber && questionDraft.pageNumber !== pageNumber)) return;
+      handledDraftRef.current = questionDraft.id;
+      setInput(questionDraft.text);
+      onQuestionDraftHandled?.();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [questionDraft, scope, key, pageNumber, setInput, onQuestionDraftHandled]);
 
   useEffect(() => {
     if (!fingerprint) return;
@@ -139,14 +159,6 @@ export function AIChatPanel({
       cancelled = true;
     };
   }, [fingerprint, conversationPage, scope, service, key, loadRetry]);
-
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => {
-      const scroll = scrollRef.current;
-      if (scroll) scroll.scrollTop = scroll.scrollHeight;
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [state.messages, state.partial]);
 
   useEffect(
     () => () => {
@@ -379,7 +391,7 @@ export function AIChatPanel({
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <select aria-label="提问范围" value={scope} onChange={(event) => { setScope(event.target.value as ChatScope); setInput(''); }} className="max-w-24 rounded border p-1 text-xs">
+          <select aria-label="提问范围" value={scope} onChange={(event) => setScope(event.target.value as ChatScope)} className="max-w-24 rounded border p-1 text-xs">
             <option value="page">当前页</option>
             <option value="document">全文</option>
           </select>
@@ -416,7 +428,7 @@ export function AIChatPanel({
         </div>
       ) : null}
 
-      <div ref={scrollRef} className="ai-message-scroll">
+      <div ref={scrollRef} onScroll={onScroll} className="ai-message-scroll" style={{ overflowAnchor: 'none' }}>
         {!pdfDoc ? (
           <div className="ai-empty-state">
             <Bot className="size-6 text-slate-400" />
@@ -528,6 +540,7 @@ export function AIChatPanel({
         )}
       </div>
 
+      {showLatest ? <Button type="button" size="sm" variant="outline" className="mx-auto my-1" onClick={jumpToLatest}>回到最新回答</Button> : null}
       <form
         className="ai-composer"
         onSubmit={(event) => {
@@ -538,8 +551,10 @@ export function AIChatPanel({
         <Textarea
           value={input}
           onChange={(event) => setInput(event.target.value)}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            if (event.key === 'Enter' && !event.shiftKey && !composingRef.current && !event.nativeEvent.isComposing && Reflect.get(event.nativeEvent, 'keyCode') !== 229) {
               event.preventDefault();
               if (!generating) void sendQuestion(input);
             }

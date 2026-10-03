@@ -2,6 +2,7 @@
  * Selects the execution backend independently of each task's model provider.
  * Existing settings retain their scope; allAi explicitly enables every task.
  */
+import { dshConfigurationIssue } from './dsh-capabilities.ts';
 export type AgentBackend = 'api' | 'dsh';
 
 export interface AgentSettings {
@@ -132,4 +133,32 @@ export function useDshForTask(task: AiTask): boolean {
       settings.allAi === true ||
       (task === 'document-chat' && settings.dshDocumentChat))
   );
+}
+
+export interface DshTaskAvailability {
+  task: AiTask;
+  label: string;
+  tab: 'translation' | 'chat' | 'knowledge';
+  backend: 'api' | 'dsh' | 'demo';
+  issue: ReturnType<typeof dshConfigurationIssue>;
+}
+
+/** Assess the draft before changing any persisted settings. Keys stay scoped. */
+export function assessDshSettings(settings: AgentSettings, configs: {
+  translation: { providerMode: string; baseUrl: string; model: string; apiKey: string };
+  chat: { baseUrl: string; model: string; apiKey: string };
+  knowledge: { baseUrl: string; model: string; apiKey: string };
+}): DshTaskAvailability[] {
+  const tasks: Array<{ task: AiTask; label: string; tab: DshTaskAvailability['tab']; image?: boolean }> = [
+    { task: 'translation', label: '页面翻译', tab: 'translation' },
+    { task: 'page-chat', label: '图片答疑', tab: 'chat', image: true },
+    { task: 'ocr', label: '文字识别', tab: 'chat', image: true },
+    { task: 'knowledge', label: '知识整理', tab: 'knowledge' },
+    { task: 'document-chat', label: '全文问答', tab: 'knowledge' },
+  ];
+  return tasks.map(({ task, label, tab, image }) => {
+    const demo = task === 'translation' && configs.translation.providerMode === 'mock';
+    const enabled = settings.backend === 'dsh' && (settings.allAi || task === 'knowledge' || (task === 'document-chat' && settings.dshDocumentChat));
+    return { task, label, tab, backend: demo ? 'demo' : enabled ? 'dsh' : 'api', issue: enabled && !demo ? dshConfigurationIssue(configs[tab], image) : null };
+  });
 }

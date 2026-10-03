@@ -234,11 +234,12 @@ void test('settings dialog keeps backend selection outside the three service tab
   assert.match(dialogSource, /DSH 支持已接入的官方 DeepSeek \/ 智谱模型/);
   assert.match(
     dialogSource,
-    /整份文档问答使用知识库的 DeepSeek 配置（页面图片问答仍用原配置）/,
+    /整份文档问答使用知识库配置（页面图片问答使用答疑配置）/,
   );
   assert.match(dialogSource, /agent-dsh-document-chat/);
-  assert.match(dialogSource, /必须安装页语托管的 DSH 运行时/);
-  assert.match(dialogSource, /本设置页不检测运行时状态/);
+  assert.match(dialogSource, /inspectDshRuntime/);
+  assert.match(dialogSource, /重新自检/);
+  assert.match(dialogSource, /测试当前栏目 DSH 连接/);
 
   const sectionIndex = dialogSource.indexOf(
     'aria-labelledby="agent-backend-heading"',

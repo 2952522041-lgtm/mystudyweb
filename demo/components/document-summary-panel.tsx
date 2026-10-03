@@ -7,14 +7,20 @@ import {
   KnowledgeSection,
 } from '@/components/knowledge-section';
 import { Button } from '@/components/ui/button';
+import { MarkdownActions, StudyActions } from '@/components/study-actions';
+import { renderDocumentSummary } from '@/lib/knowledge/artifact-renderer';
 import type { DocumentDigest } from '@/lib/course-storage/types';
 
 export function DocumentSummaryPanel({
   digest,
   onOpenSource,
+  onAskQuestion,
+  onSaveNote,
 }: {
   digest: DocumentDigest;
   onOpenSource: (page: number) => void;
+  onAskQuestion?: (question: { text: string; pageNumber?: number }) => void;
+  onSaveNote?: (text: string, pageNumber?: number) => Promise<void>;
 }) {
   return (
     <article className="mx-auto max-w-3xl px-6 py-7 sm:px-10">
@@ -31,6 +37,10 @@ export function DocumentSummaryPanel({
         · {digest.sourcePages.length} 页 · 来源可追溯
       </p>
 
+      <MarkdownActions
+        content={renderDocumentSummary(digest)}
+        fileName={`${digest.title}-总结.md`}
+      />
       <section className="mt-8">
         <h3 className="text-sm font-semibold text-slate-900">内容概览</h3>
         <KnowledgeMarkdown onNavigate={onOpenSource}>
@@ -67,6 +77,22 @@ export function DocumentSummaryPanel({
                     : ''}{' '}
                   页
                 </Button>
+                <StudyActions
+                  onAsk={
+                    onAskQuestion
+                      ? () =>
+                          onAskQuestion({
+                            text: `请结合这份资料解释这个要点：${point.text}`,
+                            pageNumber: point.pageStart,
+                          })
+                      : undefined
+                  }
+                  onSave={
+                    onSaveNote
+                      ? () => onSaveNote(point.text, point.pageStart)
+                      : undefined
+                  }
+                />
               </div>
             ))}
             <Button
@@ -81,13 +107,43 @@ export function DocumentSummaryPanel({
                 : ''}{' '}
               页
             </Button>
+            <StudyActions
+              onAsk={
+                onAskQuestion
+                  ? () =>
+                      onAskQuestion({
+                        text: `请进一步解释“${section.title}”：${section.summary}`,
+                        pageNumber: section.pageStart,
+                      })
+                  : undefined
+              }
+              onSave={
+                onSaveNote
+                  ? () =>
+                      onSaveNote(
+                        `${section.title}\n\n${section.summary}`,
+                        section.pageStart,
+                      )
+                  : undefined
+              }
+            />
           </KnowledgeSection>
         ))}
       </div>
       {digest.unresolvedQuestions.length > 0 ? (
         <KnowledgeSection title="待解决问题">
           {digest.unresolvedQuestions.map((question, index) => (
-            <KnowledgeMarkdown key={index}>{question}</KnowledgeMarkdown>
+            <div key={index}>
+              <KnowledgeMarkdown>{question}</KnowledgeMarkdown>
+              <StudyActions
+                onAsk={
+                  onAskQuestion
+                    ? () => onAskQuestion({ text: question })
+                    : undefined
+                }
+                onSave={onSaveNote ? () => onSaveNote(question) : undefined}
+              />
+            </div>
           ))}
         </KnowledgeSection>
       ) : null}

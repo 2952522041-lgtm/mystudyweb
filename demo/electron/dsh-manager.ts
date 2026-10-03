@@ -8,6 +8,7 @@ import {
   validateDshRequest,
 } from './dsh-policy.ts';
 import type { DshCompletionResult, DshProgress } from './dsh-types.ts';
+import { DshError, isDshErrorCode } from './dsh-errors.ts';
 
 /** Only trusted main-process code supplies executable paths. Renderer supplies text. */
 export class DshManager {
@@ -59,10 +60,13 @@ export class DshManager {
     progress: (value: DshProgress) => void,
   ): Promise<DshCompletionResult> {
     const request = validateDshRequest(value);
-    if (this.jobs.has(request.requestId)) throw new Error('DSH 请求重复。');
+    if (this.jobs.has(request.requestId)) throw new DshError('duplicate');
     if (this.jobs.size >= 4)
       throw new Error('DSH 正在处理其他任务，请稍后重试。');
     let cancelled = false;
+    let timedOut = false;
+    const startedAt = Date.now();
+    let startupMs: number | undefined;
     let child: ChildProcessWithoutNullStreams | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const kill = (signal: NodeJS.Signals) => {
@@ -82,12 +86,12 @@ export class DshManager {
     };
     this.jobs.set(request.requestId, { owner, cancel });
     let root: string | undefined;
-    const timer = setTimeout(cancel, this.timeoutMs);
+    const timer = setTimeout(() => { timedOut = true; cancel(); }, request.timeoutMs ?? this.timeoutMs);
     try {
       root = await mkdtemp(path.join(tmpdir(), 'yeyu-dsh-'));
       const worker = path.join(root, 'worker.mjs');
       await copyFile(this.workerPath, worker);
-      if (cancelled) throw new Error('DSH 任务已取消或超时。');
+      if (cancelled) throw new DshError(timedOut ? 'timeout' : 'cancelled');
       child = spawn(this.nodeCommand, [worker, this.runtimeRoot, root], {
         cwd: root,
         detached: process.platform !== 'win32',
@@ -106,6 +110,7 @@ export class DshManager {
           let buffer = '';
           let final: DshCompletionResult | undefined;
           let invalid = false;
+          let failure: DshError | undefined;
           child!.stderr.resume(); // Runtime diagnostics may contain supplied text or credentials.
           child!.stdout.setEncoding('utf8');
           child!.stdout.on('data', (chunk: string) => {
@@ -121,15 +126,20 @@ export class DshManager {
               buffer = buffer.slice(newline + 1);
               try {
                 const frame = JSON.parse(line);
-                if (
+                if (frame.type === 'ready' && startupMs === undefined) {
+                  startupMs = Date.now() - startedAt;
+                  try { progress({ requestId: request.requestId, content: '', status: { phase: 'running', task: request.task ?? 'interactive', startupMs, retries: 0 } }); } catch { /* diagnostic only */ }
+                } else if (frame.type === 'error' && isDshErrorCode(frame.code)) {
+                  failure = new DshError(frame.code);
+                } else if (
                   frame.type === 'progress' &&
                   typeof frame.content === 'string' &&
                   !cancelled
                 )
-                  progress({
+                  { try { progress({
                     requestId: request.requestId,
                     content: frame.content,
-                  });
+                  }); } catch { /* UI observers cannot fail work */ } }
                 else if (
                   frame.type === 'result' &&
                   !final &&
@@ -151,14 +161,17 @@ export class DshManager {
             }
           });
           child!.on('error', () =>
-            reject(new Error('DSH 运行时未安装或无法启动，请运行安装脚本。')),
+            reject(new DshError('runtime_missing')),
           );
           child!.on('close', (code) => {
-            if (cancelled || invalid || code !== 0 || !final || buffer.trim())
-              reject(
-                new Error('DSH 未完整完成、已取消或超时；未保存残缺结果。'),
-              );
-            else resolve(final);
+            if (cancelled || invalid || failure || code !== 0 || !final || buffer.trim())
+              reject(invalid ? new DshError('protocol') : timedOut ? new DshError('timeout') : cancelled ? new DshError('cancelled') : failure ?? new DshError('incomplete'));
+            else {
+              if (startupMs !== undefined) {
+                try { progress({ requestId: request.requestId, content: '', status: { phase: 'completed', task: request.task ?? 'interactive', startupMs, executionMs: Date.now() - startedAt - startupMs, retries: 0 } }); } catch { /* diagnostic only */ }
+              }
+              resolve(final);
+            }
           });
           child!.stdin.on('error', () => {});
           child!.stdin.end(JSON.stringify(request));

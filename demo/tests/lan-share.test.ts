@@ -611,13 +611,16 @@ void test('LAN share persists versioned reading state and rejects stale writes',
       method: 'PUT',
       cookie,
       headers: { 'X-Yeyu-CSRF': session.csrfToken },
-      body: JSON.stringify({ page: 2, zoom: 110, expectedVersion: 0 }),
+      body: JSON.stringify({ page: 2, zoom: 110, expectedVersion: 0, pageFraction: .42, rightMode: 'chat', pdfPanelPercent: 62, unknownField: 'must-not-persist' }),
     });
     assert.equal(first.status, 200);
     assert.deepEqual(json(first), {
       state: {
         page: 2,
         zoom: 110,
+        pageFraction: .42,
+        rightMode: 'chat',
+        pdfPanelPercent: 62,
         version: 1,
         updatedAt: '2026-09-28T01:00:00.000Z',
       },
@@ -635,6 +638,11 @@ void test('LAN share persists versioned reading state and rejects stale writes',
       json<{ state: { version: number } }>(conflict).state.version,
       1,
     );
+    assert.equal(json<{ state: { pageFraction: number } }>(conflict).state.pageFraction, .42);
+    for (const fields of [{ pageFraction: -1 }, { pageFraction: 1.1 }, { pageFraction: '0.5' }, { pdfPanelPercent: 39 }, { pdfPanelPercent: 71 }, { rightMode: 'settings' }]) {
+      const invalidView = await request(started.port!, endpoint, { method: 'PUT', cookie, headers: { 'X-Yeyu-CSRF': session.csrfToken }, body: JSON.stringify({ page: 2, zoom: 110, expectedVersion: 1, ...fields }) });
+      assert.equal(invalidView.status, 400, JSON.stringify(fields));
+    }
 
     const invalidPage = await request(started.port!, endpoint, {
       method: 'PUT',
@@ -657,6 +665,9 @@ void test('LAN share persists versioned reading state and rejects stale writes',
     });
     assert.equal(restored.status, 200);
     assert.equal(json<{ state: { page: number } }>(restored).state.page, 2);
+    assert.equal(json<{ state: { pageFraction: number } }>(restored).state.pageFraction, .42);
+    assert.equal(json<{ state: { rightMode: string } }>(restored).state.rightMode, 'chat');
+    assert.equal(json<{ state: { pdfPanelPercent: number } }>(restored).state.pdfPanelPercent, 62);
 
     const persisted = JSON.parse(
       await readFile(
@@ -668,6 +679,7 @@ void test('LAN share persists versioned reading state and rejects stale writes',
     assert.equal(persisted.states[0]?.courseId, fixture.manifest.id);
     assert.equal(persisted.states[0]?.documentId, fixture.document.id);
     assert.equal('csrfToken' in persisted.states[0]!, false);
+    assert.equal('unknownField' in persisted.states[0]!, false);
   } finally {
     await server.stop();
     await rm(root, { recursive: true, force: true });
@@ -681,6 +693,7 @@ void test('LAN share imports a validated PDF through the host renderer bridge', 
   const fixture = await createFixture(root);
   await writeFile(path.join(client, 'index.html'), 'share');
   const captured: LanSharePdfImportRequest[] = [];
+  let processingStatus = 'queued';
   const server = new LanShareServer(fixture.layout, client, {
     host: '127.0.0.1',
     importPdf: async (requestValue) => {
@@ -690,6 +703,7 @@ void test('LAN share imports a validated PDF through the host renderer bridge', 
         courseName: fixture.manifest.name,
         fileName: requestValue.fileName,
         documentId: 'new-document',
+        processing: { phase: 'document', status: processingStatus, updatedAt: '2026-10-02T00:00:00Z', error: 'private-task-details' },
         message: 'PDF 已保存，可立即阅读；AI 整理已加入后台队列。',
         apiKey: 'sk-must-not-leak',
         workspacePath: '/private/course/path',
@@ -832,6 +846,13 @@ void test('LAN share imports a validated PDF through the host renderer bridge', 
     assert.equal(received.generateMindmap, false);
     assert.equal(received.mergeIntoCourse, true);
     assert.deepEqual(Buffer.from(received.fileData), pdf);
+    for (const status of ['paused', 'cancelled']) {
+      processingStatus = status;
+      const result = await request(started.port!, endpoint, { method: 'POST', cookie, headers: { 'X-Yeyu-CSRF': session.csrfToken }, body: pdf, contentType: 'application/pdf' });
+      assert.equal(result.status, 202);
+      assert.equal(json<{import:{processing:{status:string}}}>(result).import.processing.status, status);
+      assert.doesNotMatch(result.body.toString('utf8'), /private-task-details/);
+    }
   } finally {
     await server.stop();
     await rm(root, { recursive: true, force: true });

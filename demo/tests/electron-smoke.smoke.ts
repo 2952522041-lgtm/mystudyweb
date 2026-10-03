@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
@@ -118,6 +118,9 @@ interface SmokeProbePayload {
   origin?: string;
   storedBefore?: string | null;
   storedAfter?: string | null;
+  backgroundRoleBlocked?: boolean;
+  backgroundSnapshotValid?: boolean;
+  courseLockRoundtrip?: boolean;
   error?: string;
 }
 
@@ -172,6 +175,9 @@ async function launchAndProbe(
     `preload 桥接不可用：${result.error ?? '未知原因'}\nstderr:\n${stderr}`,
   );
   assert.deepEqual(result.methods, EXPECTED_METHODS);
+  assert.equal(result.backgroundRoleBlocked, true, 'visible renderer cannot forge worker snapshots');
+  assert.equal(result.backgroundSnapshotValid, true, 'background snapshot IPC returns explicit availability');
+  assert.equal(result.courseLockRoundtrip, true, 'course transaction lock completes over actual preload IPC');
   assert.equal(
     result.popupDenied,
     true,
@@ -257,5 +263,26 @@ void test(
   { skip: noDisplay || missingPackagedBinary },
   async () => {
     await assertCourseLifecycle(PACKAGED_LINUX_BINARY, []);
+  },
+);
+
+void test('real hidden background host survives UI reload, persists controls, and bounds crash recovery',
+  { skip: noDisplay || missingCompiledEntry, timeout: LAUNCH_TIMEOUT_MS }, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-background-smoke-'));
+    const profile = path.join(root, 'profile');
+    await mkdir(profile);
+    try {
+      const env = {...launchEnvironment(path.join(root, 'workspace')), YEYU_DEV_URL:'', YEYU_SMOKE_BACKGROUND:'1', YEYU_SMOKE_PROFILE:profile};
+      let result = await launchElectron(electronBinary(), [COMPILED_MAIN_ENTRY], env);
+      if (!result.stdout.includes('YEYU_BACKGROUND_SMOKE_RESULT') && /SUID sandbox|chrome-sandbox/i.test(result.stderr))
+        result = await launchElectron(electronBinary(), [COMPILED_MAIN_ENTRY, '--no-sandbox'], env);
+      const line = result.stdout.split('\n').find(value => value.startsWith('YEYU_BACKGROUND_SMOKE_RESULT '));
+      assert.ok(line, `missing background smoke result: ${result.stderr}`);
+      const probe = JSON.parse(line.slice('YEYU_BACKGROUND_SMOKE_RESULT '.length));
+      assert.equal(probe.ok, true, probe.error);
+      assert.equal(result.code, 0, result.stderr);
+      for (const key of ['registered','hidden','roleBlocked','pausePersisted','survivesUiReload','cancellationPersisted','boundedRestart','closed']) assert.equal(probe[key], true, key);
+      assert.equal(probe.recovered, 3);
+    } finally { await rm(root, {recursive:true,force:true}); }
   },
 );

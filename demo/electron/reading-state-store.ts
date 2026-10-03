@@ -1,16 +1,22 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { validReaderView, readerViewFields, type ReaderViewState } from './reader-view-state.ts';
 
 const STORE_FILE_NAME = 'shared-reading-state.json';
 const STORE_SCHEMA_VERSION = 1;
 const MAX_STORE_BYTES = 2 * 1024 * 1024;
 const MAX_RECORDS = 20_000;
 
-export interface SharedReadingState {
+export interface SharedReadingState extends ReaderViewState {
   page: number;
   zoom: number;
   version: number;
   updatedAt: string;
+}
+export interface ReadingStateInput extends ReaderViewState {
+  page: number;
+  zoom: number;
+  expectedVersion: number;
 }
 
 interface StoredReadingState extends SharedReadingState {
@@ -54,7 +60,8 @@ function validState(value: unknown): value is StoredReadingState {
     Number.isInteger(value.version) &&
     (value.version as number) >= 1 &&
     typeof value.updatedAt === 'string' &&
-    Number.isFinite(Date.parse(value.updatedAt))
+    Number.isFinite(Date.parse(value.updatedAt)) &&
+    validReaderView(value)
   );
 }
 
@@ -64,6 +71,7 @@ function publicState(state: StoredReadingState): SharedReadingState {
     zoom: state.zoom,
     version: state.version,
     updatedAt: state.updatedAt,
+    ...readerViewFields(state),
   };
 }
 
@@ -100,9 +108,15 @@ export class ReadingStateStore {
   async put(
     courseId: string,
     documentId: string,
-    value: { page: number; zoom: number; expectedVersion: number },
+    value: ReadingStateInput,
   ): Promise<SharedReadingState> {
     return this.serialized(async () => {
+      if (typeof courseId !== 'string' || !courseId || courseId.length > 255 || typeof documentId !== 'string' || !documentId || documentId.length > 255 ||
+        !value || !Number.isSafeInteger(value.page) || value.page < 1 ||
+        !Number.isInteger(value.zoom) || value.zoom < 50 || value.zoom > 200 ||
+        !Number.isSafeInteger(value.expectedVersion) || value.expectedVersion < 0 || !validReaderView(value)) {
+        throw new Error('阅读进度、面板或页内位置不合法。');
+      }
       const data = await this.readFile();
       const index = data.states.findIndex(
         (item) => item.courseId === courseId && item.documentId === documentId,
@@ -124,6 +138,9 @@ export class ReadingStateStore {
         zoom: value.zoom,
         version: currentVersion + 1,
         updatedAt: new Date(this.now()).toISOString(),
+        ...(current ? readerViewFields(current) : {}),
+        ...(current?.pageFraction !== undefined && current.page !== value.page ? { pageFraction: 0 } : {}),
+        ...readerViewFields(value),
       };
       if (index >= 0) data.states[index] = next;
       else data.states.push(next);

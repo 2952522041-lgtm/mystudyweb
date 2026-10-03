@@ -1,3 +1,5 @@
+import { classifyDshProviderError, type DshError } from './dsh-errors.ts';
+
 /**
  * Small, side-effect-free collector for the DSH SDK notification stream.
  *
@@ -100,6 +102,7 @@ function hasToolCall(content: unknown): boolean {
 type StreamObservation = {
   finish?: Terminal | 'tool-calls' | 'unknown';
   sawToolCall: boolean;
+  failure?: DshError;
 };
 
 function observeStreamChunk(chunk: unknown): StreamObservation {
@@ -107,7 +110,8 @@ function observeStreamChunk(chunk: unknown): StreamObservation {
     return { sawToolCall: false, finish: 'unknown' };
   }
   if (chunk.type === 'finish') {
-    return { sawToolCall: false, finish: finishKind(chunk.reason) ?? 'unknown' };
+    const reason = asRecord(chunk.reason);
+    return { sawToolCall: false, finish: finishKind(chunk.reason) ?? 'unknown', ...(reason?.kind === 'error' ? { failure: classifyDshProviderError(reason.failure) } : {}) };
   }
   if (chunk.type === 'tool-call-delta') return { sawToolCall: true };
   return { sawToolCall: false };
@@ -123,6 +127,7 @@ function streamObservation(stream: unknown): StreamObservation {
 
   let sawToolCall = false;
   let finish: StreamObservation['finish'];
+  let failure: DshError | undefined;
   for (const record of stream) {
     if (!isRecord(record)) return { sawToolCall, finish: 'unknown' };
 
@@ -143,6 +148,7 @@ function streamObservation(stream: unknown): StreamObservation {
       const result = observeStreamChunk(record.chunk);
       sawToolCall ||= result.sawToolCall;
       if (result.finish !== undefined) finish = result.finish;
+      if (result.failure) failure = result.failure;
       continue;
     }
 
@@ -155,11 +161,12 @@ function streamObservation(stream: unknown): StreamObservation {
     if (record.type === 'finish') {
       const result = observeStreamChunk(record);
       if (result.finish !== undefined) finish = result.finish;
+      if (result.failure) failure = result.failure;
       continue;
     }
     return { sawToolCall, finish: 'unknown' };
   }
-  return { sawToolCall, finish };
+  return { sawToolCall, finish, ...(failure ? { failure } : {}) };
 }
 
 function error(): Error {
@@ -172,6 +179,7 @@ export class DshEventCollector {
   private readonly messageId: string;
   private receiptSeen = false;
   private terminal: Terminal | undefined;
+  private failure: DshError | undefined;
   private targetTurn: number | undefined;
   private outputIdentity: string | undefined;
   private outputFromMessage = false;
@@ -224,7 +232,7 @@ export class DshEventCollector {
 
   result(): DshEventResult {
     if (!this.done || (this.terminal !== 'stop' && this.terminal !== 'length')) {
-      throw error();
+      throw this.failure ?? error();
     }
     // Reasoning may exhaust the limit before any visible text. Preserve length
     // so the application can split/retry; this is not a successful empty answer.
@@ -323,6 +331,7 @@ export class DshEventCollector {
     }
 
     const stream = streamObservation(data.stream);
+    if (stream.failure) this.failure = stream.failure;
     this.sawToolCall ||= stream.sawToolCall;
     this.observeExplicitFinish(stream.finish, this.sawToolCall);
     if (this.done) return;
@@ -355,6 +364,7 @@ export class DshEventCollector {
         this.sawToolCall = true;
         break;
       case 'finish':
+        if (asRecord(chunk.reason)?.kind === 'error') this.failure = classifyDshProviderError(asRecord(chunk.reason)?.failure);
         this.observeExplicitFinish(finishKind(chunk.reason), this.sawToolCall);
         break;
       default:
@@ -376,6 +386,7 @@ export class DshEventCollector {
       this.terminal = 'error';
       return;
     }
+    if (terminal === 'error' && isRecord(reason) && reason.kind === 'error') this.failure = classifyDshProviderError(reason.error);
     this.terminal = terminal;
   }
 

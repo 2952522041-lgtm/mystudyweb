@@ -1,4 +1,7 @@
 import { EMPTY_GLOSSARY, parseGlossary, type Glossary } from '../glossary.ts';
+import { assertSafeArtifactContent } from './file-utils.ts';
+import { assertNotesUnchanged, notesSnapshot, withLocalWriteLock, type CourseHistoryEntry } from './study-tools.ts';
+import { renderCourseSummary } from '../knowledge/artifact-renderer.ts';
 import { rawPdfRecord, artifactsReady, processingBundle } from './background-records.ts';
 import type { DocumentProcessing, PdfMetadata } from './types.ts';
 import { createCourseId, sanitizeFileName } from './file-utils.ts';
@@ -23,6 +26,19 @@ export class MemoryCourseStorage implements CourseStorage {
   readonly label = '测试课程文件夹';
   private bundle: CourseBundle | null = null;
   private files = new Map<string, File>();
+  private notes = '';
+  private history: CourseHistoryEntry[] = [];
+
+  async loadNotes() { return notesSnapshot(this.notes); }
+  async saveNotes(content: string, expectedToken: string) {
+    return withLocalWriteLock(this, async () => {
+      assertSafeArtifactContent(content);
+      assertNotesUnchanged(await this.loadNotes(), expectedToken);
+      this.notes = content;
+      return this.loadNotes();
+    });
+  }
+  async listHistory() { return structuredClone(this.history).reverse(); }
 
   private glossary: Glossary = structuredClone(EMPTY_GLOSSARY);
   async loadGlossary(): Promise<Glossary> { return structuredClone(this.glossary); }
@@ -60,6 +76,7 @@ export class MemoryCourseStorage implements CourseStorage {
     this.assertRevision(current, expectedRevision);
     const document = rawPdfRecord(current, file, metadata, options);
     this.files.set(document.id, file);
+    this.recordHistory();
     this.bundle = {...current, manifest:{...current.manifest, revision:current.manifest.revision+1, updatedAt:document.updatedAt, documents:[...current.manifest.documents, document]}};
     return {bundle:await this.load(), document};
   }
@@ -67,6 +84,7 @@ export class MemoryCourseStorage implements CourseStorage {
   async setDocumentProcessing(documentId: string, processing: DocumentProcessing | undefined, expectedRevision: number): Promise<CourseBundle> {
     const current = await this.load();
     this.assertRevision(current, expectedRevision);
+    this.recordHistory();
     this.bundle = processingBundle(current, documentId, processing);
     return this.load();
   }
@@ -77,6 +95,7 @@ export class MemoryCourseStorage implements CourseStorage {
     if (!documentIds.length || documentIds.some(id => !current.digests[id] || !current.manifest.documents.some(doc => doc.id === id))) throw new Error('文档摘要不存在。');
     const now = new Date().toISOString();
     const knowledge = applyAiCourseKnowledge(current.knowledge, aiKnowledge, now);
+    this.recordHistory();
     this.bundle = {...current, knowledge, manifest:{...current.manifest, revision:current.manifest.revision+1, activeKnowledgeVersion:knowledge.version, updatedAt:now,
       documents:current.manifest.documents.map(doc => documentIds.includes(doc.id) ? {...doc, processing:undefined, includedInCourse:true, status:'course-merged', updatedAt:now} : doc)}};
     return this.load();
@@ -124,6 +143,7 @@ export class MemoryCourseStorage implements CourseStorage {
     current.manifest.updatedAt = now;
     current.knowledge = knowledge;
     current.digests[document.id] = digest;
+    this.recordHistory();
     this.bundle = current;
     this.files.set(document.id, file);
     return { bundle: await this.load(), document };
@@ -144,6 +164,7 @@ export class MemoryCourseStorage implements CourseStorage {
     if (!current.digests[documentId]) throw new Error('文档摘要不存在。');
     Object.assign(document, artifactsReady(document));
     current.manifest.revision += 1;
+    this.recordHistory();
     this.bundle = current;
     return this.load();
   }
@@ -167,6 +188,7 @@ export class MemoryCourseStorage implements CourseStorage {
       : mergeDocumentDigest(current.knowledge, digest);
     current.manifest.activeKnowledgeVersion = current.knowledge.version;
     current.manifest.revision += 1;
+    this.recordHistory();
     this.bundle = current;
     return this.load();
   }
@@ -200,6 +222,7 @@ export class MemoryCourseStorage implements CourseStorage {
     current.manifest.updatedAt = now;
     delete current.digests[documentId];
     this.files.delete(documentId);
+    this.recordHistory();
     this.bundle = current;
     return this.load();
   }
@@ -207,6 +230,8 @@ export class MemoryCourseStorage implements CourseStorage {
   async deleteCourse(): Promise<void> {
     this.bundle = null;
     this.files.clear();
+    this.notes = '';
+    this.history = [];
     this.glossary = structuredClone(EMPTY_GLOSSARY);
   }
 
@@ -214,5 +239,13 @@ export class MemoryCourseStorage implements CourseStorage {
     if (bundle.manifest.revision !== expectedRevision) {
       throw new Error('课程文件已在外部修改，请重新加载后再操作。');
     }
+  }
+
+  private recordHistory() {
+    const bundle = this.bundle;
+    if (!bundle) return;
+    this.history.push({id:`revision-${bundle.manifest.revision}-${Date.now()}`, revision:bundle.manifest.revision,
+      updatedAt:bundle.manifest.updatedAt, knowledge:structuredClone(bundle.knowledge),
+      summary:renderCourseSummary(bundle.manifest, bundle.knowledge), source:'snapshot'});
   }
 }

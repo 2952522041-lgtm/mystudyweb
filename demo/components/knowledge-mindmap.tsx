@@ -4,9 +4,11 @@ import { useMemo, useRef, useState } from 'react';
 import { BookOpen, CircleHelp, Network, Sparkles } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { StudyActions } from '@/components/study-actions';
 import type {
   CourseKnowledge,
   KnowledgeNode,
+  SourceReference,
 } from '@/lib/course-storage/types';
 import { KnowledgeMarkdown } from '@/components/knowledge-section';
 import {
@@ -30,9 +32,16 @@ function NodeIcon({ node }: { node: KnowledgeNode }) {
 export function KnowledgeMindmap({
   knowledge,
   onOpenSource,
+  onAskQuestion,
+  onSaveNote,
 }: {
   knowledge: CourseKnowledge;
   onOpenSource: (documentId: string, page: number) => void;
+  onAskQuestion?: (question: {
+    text: string;
+    sources: SourceReference[];
+  }) => void;
+  onSaveNote?: (text: string, sources: SourceReference[]) => Promise<void>;
 }) {
   const [selectedId, setSelectedId] = useState('');
   const [query, setQuery] = useState('');
@@ -330,6 +339,26 @@ export function KnowledgeMindmap({
                 {selected.label}
               </h3>
               <KnowledgeMarkdown>{selected.description}</KnowledgeMarkdown>
+              <StudyActions
+                onAsk={
+                  onAskQuestion
+                    ? () =>
+                        onAskQuestion({
+                          text: `请解释“${selected.label}”：${selected.description}`,
+                          sources: selected.sources,
+                        })
+                    : undefined
+                }
+                onSave={
+                  onSaveNote
+                    ? () =>
+                        onSaveNote(
+                          `${selected.label}\n\n${selected.description}`,
+                          selected.sources,
+                        )
+                    : undefined
+                }
+              />
               <Button
                 variant="outline"
                 size="xs"

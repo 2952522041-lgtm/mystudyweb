@@ -6,8 +6,9 @@ import type {
 import type { Glossary } from './glossary.ts';
 import type { ChatScope, PageConversation } from './chat-cache.ts';
 import type { SharedTranslationRecord } from './shared-translation.ts';
+import { validReaderView, type ReaderViewState } from './reader-view-state.ts';
 
-export interface SharedReadingState {
+export interface SharedReadingState extends ReaderViewState {
   page: number;
   zoom: number;
   version: number;
@@ -28,7 +29,7 @@ export interface SharedSession {
   capabilities: SharedSessionCapabilities;
 }
 
-export interface SaveSharedReadingStateInput {
+export interface SaveSharedReadingStateInput extends ReaderViewState {
   page: number;
   zoom: number;
   expectedVersion: number;
@@ -115,7 +116,7 @@ function isSharedReadingState(value: unknown): value is SharedReadingState {
     Number(state.zoom) <= 200 &&
     Number.isInteger(state.version) &&
     Number(state.version) >= 1 &&
-    typeof state.updatedAt === 'string'
+    typeof state.updatedAt === 'string' && validReaderView(state)
   );
 }
 

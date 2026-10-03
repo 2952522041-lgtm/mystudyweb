@@ -584,6 +584,71 @@ void test('browser storage removeDocument deletes stored files and artifacts', a
   await assert.rejects(() => storage.openPdf(imported.document.id));
 });
 
+void test('desktop deletion preserves referenced PDFs when manifest commit fails and commits before cleanup', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-delete-failure-'));
+  try {
+    const api = new FakeWorkspaceApi(root);
+    await api.getWorkspaceInfo();
+    const {directoryName} = await api.createCourseDirectory('删除故障');
+    const storage = new DesktopCourseStorage(api, directoryName);
+    await storage.initialize('删除故障');
+    const imported = await storage.importDocument(pdfFile('原文.pdf'), makeDigest(), importOptions, 0);
+    const write = api.writeFile.bind(api);
+    api.writeFile = async (directory, relative, data) => {
+      if (relative.length === 1 && relative[0] === 'course.json') throw new Error('manifest write failure');
+      await write(directory, relative, data);
+    };
+    await assert.rejects(storage.removeDocument(imported.document.id, 1), /manifest write failure/);
+    assert.deepEqual((await storage.load()).manifest, imported.bundle.manifest);
+    assert.equal(await (await storage.openPdf(imported.document.id)).text(), await pdfFile('原文.pdf').text());
+    assert.ok((await storage.load()).digests[imported.document.id], 'failed manifest must preserve document digest');
+
+    api.writeFile = write;
+    api.deleteFile = async () => {
+      const committed = await storage.load();
+      assert.equal(committed.manifest.documents.length, 0, 'cleanup must observe the committed removal');
+      assert.equal(committed.manifest.revision, 2);
+      throw new Error('cleanup interrupted');
+    };
+    await assert.rejects(storage.removeDocument(imported.document.id, 1), /cleanup interrupted/);
+    assert.equal((await storage.load()).manifest.documents.length, 0);
+    assert.equal(await api.exists(directoryName, ['PDFs','原文.pdf']), true, 'interrupted cleanup leaves recoverable bytes, not missing referenced bytes');
+  } finally { await rm(root, {recursive:true,force:true}); }
+});
+
+void test('browser deletion preserves referenced PDFs when manifest commit fails and commits before cleanup', async () => {
+  const root = newDeletionRoot();
+  const storage = new BrowserDirectoryStorage(root);
+  await storage.initialize('删除故障');
+  const imported = await storage.importDocument(pdfFile('原文.pdf'), makeDigest(), importOptions, 0);
+  const getFile = root.getFileHandle.bind(root);
+  root.getFileHandle = async (name, options) => {
+    if (name === 'course.json' && options?.create) throw new Error('manifest write failure');
+    return getFile(name, options);
+  };
+  await assert.rejects(storage.removeDocument(imported.document.id, 1), /manifest write failure/);
+  assert.deepEqual((await storage.load()).manifest, imported.bundle.manifest);
+  assert.equal(await (await storage.openPdf(imported.document.id)).text(), await pdfFile('原文.pdf').text());
+  assert.ok((await storage.load()).digests[imported.document.id]);
+
+  root.getFileHandle = getFile;
+  const pdfs = await root.getDirectoryHandle('PDFs');
+  const getDirectory = root.getDirectoryHandle.bind(root);
+  root.getDirectoryHandle = async (name, options) => {
+    const directory = await getDirectory(name, options);
+    if (name === 'PDFs') directory.removeEntry = async () => {
+      const committed = await storage.load();
+      assert.equal(committed.manifest.documents.length, 0, 'cleanup must observe the committed removal');
+      assert.equal(committed.manifest.revision, 2);
+      throw new Error('cleanup interrupted');
+    };
+    return directory;
+  };
+  await assert.rejects(storage.removeDocument(imported.document.id, 1), /cleanup interrupted/);
+  assert.equal((await storage.load()).manifest.documents.length, 0);
+  assert.equal(await (await pdfs.getFileHandle('原文.pdf')).getFile().then(file => file.text()), await pdfFile('原文.pdf').text());
+});
+
 void test('browser storage deleteCourse empties the course folder', async () => {
   const root = newDeletionRoot();
   const storage = new BrowserDirectoryStorage(root);

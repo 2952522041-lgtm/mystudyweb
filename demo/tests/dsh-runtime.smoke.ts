@@ -14,6 +14,8 @@ import {
 } from '../electron/dsh-policy.ts';
 
 const smokeFixtures = [
+  { label: 'DeepSeek translation preset', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', provider: 'deepseek-official' },
+  { label: 'GLM translation preset', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.7-flashx', provider: 'yeyu-zhipu' },
   {
     label: 'official DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',

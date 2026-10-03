@@ -19,6 +19,7 @@ import {
   type DocumentProgress,
 } from '../lib/reader-cache.ts';
 import { sha256Hex } from '../lib/pdf-text.ts';
+import { readingFraction, readingPanelMode, readingPanelPercent } from '../lib/reader-view-state.ts';
 import {
   publishCachedTranslationForReader,
   sharedTranslationFromCache,
@@ -31,6 +32,24 @@ import {
   TranslationError,
   type TranslationRequest,
 } from '../lib/translation.ts';
+
+void test('reading views preserve optional fields and list only progress in recency order', async () => {
+  const store = createMemoryStore<DocumentProgress>();
+  const progress = createProgressStore(store);
+  const base = { fingerprint:'older', fileName:'old.pdf', pageCount:8, lastPage:3, zoom:100, targetLanguage:'简体中文', updatedAt:'2026-09-01T00:00:00Z' };
+  await progress.save(base);
+  const recent = { ...base, fingerprint:'recent', fileName:'new.pdf', pageFraction:.65, rightMode:'chat' as const, pdfPanelPercent:62, updatedAt:'2026-10-01T00:00:00Z' };
+  await progress.save(recent);
+  await store.set('unrelated:entry', base);
+  assert.deepEqual(await progress.load('recent'), recent);
+  assert.deepEqual(await progress.list(), [recent, base]);
+  assert.equal(readingFraction(undefined), 0);
+  assert.equal(readingFraction(NaN), 0);
+  assert.equal(readingFraction(2), 1);
+  assert.equal(readingPanelPercent(undefined), 55);
+  assert.equal(readingPanelPercent(120), 70);
+  assert.equal(readingPanelMode('removed-mode', 'translation'), 'translation');
+});
 
 void test('translation cache stores and retrieves by document, page, language, and provider', async () => {
   const cache = createTranslationCache(createMemoryStore<CachedTranslation>());

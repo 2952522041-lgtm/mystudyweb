@@ -49,6 +49,13 @@ function end(sessionId: string, kind: string): Notification {
   return event(sessionId, 'turn/end', { turn: 1, reason: { kind } });
 }
 
+void test('preserves structured terminal authentication failure without exposing provider text', () => {
+  const collector = new DshEventCollector('safe', 'm-safe');
+  collector.observe(receipt('safe', 'm-safe'));
+  collector.observe(event('safe', 'turn/end', { turn: 1, reason: { kind: 'error', error: { code: 'HTTP_ERROR', status: 401, message: 'private-key private-body' } } }));
+  assert.throws(() => collector.result(), error => error instanceof Error && /authentication/.test(error.message) && !/private/.test(error.message));
+});
+
 void test('preserves truncation when reasoning consumes the entire visible-output budget', () => {
   const collector = new DshEventCollector('s-1', 'm-1');
   collector.observe(receipt('s-1', 'm-1'));
@@ -115,7 +122,7 @@ void test('does not turn partial error output into success or leak provider erro
     () => collector.result(),
     (value: unknown) => {
       assert.ok(value instanceof Error);
-      assert.equal(value.message, 'DSH 任务未完整完成。');
+      assert.match(value.message, /DSH/);
       assert.equal(value.message.includes(secret), false);
       return true;
     },

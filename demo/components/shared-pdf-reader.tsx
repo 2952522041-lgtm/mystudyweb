@@ -26,6 +26,9 @@ import {
 } from 'lucide-react';
 
 import { DocumentSummaryPanel } from '@/components/document-summary-panel';
+import { useChatDraft, type QuestionDraft } from '@/components/use-chat-draft';
+import { useChatScroll } from '@/components/use-chat-scroll';
+import { readingFraction, readingPanelMode, readingPanelPercent, type ReaderPanelMode } from '@/lib/reader-view-state';
 import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -603,18 +606,27 @@ function SharedChatPanel({
   page,
   canUseAi,
   onSessionExpired,
+  questionDraft,
+  active = true,
+  onQuestionDraftHandled,
 }: {
   courseId: string;
   documentId: string;
   page: number;
   canUseAi: boolean;
   onSessionExpired?: () => void;
+  questionDraft?: QuestionDraft | null;
+  active?: boolean;
+  onQuestionDraftHandled?: () => void;
 }) {
   const [scope, setScope] = useState<ChatScope>('page');
   const [conversation, setConversation] = useState<PageConversation | null>(
     null,
   );
-  const [input, setInput] = useState('');
+  const draftKey = `shared:${courseId}:${documentId}:${scope}:${scope === 'document' ? 0 : page}`;
+  const [input, setInput] = useChatDraft(draftKey);
+  const composingRef = useRef(false);
+  const handledDraftRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -623,6 +635,19 @@ function SharedChatPanel({
   const requestGenerationRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
   const onSessionExpiredRef = useRef(onSessionExpired);
+  const { scrollRef, showLatest, onScroll, jumpToLatest } = useChatScroll(draftKey, conversation, pendingQuestion);
+
+  useEffect(() => {
+    if (!active || !questionDraft || handledDraftRef.current === questionDraft.id) return;
+    const frame = requestAnimationFrame(() => {
+      if (scope !== 'page') { setScope('page'); return; }
+      if (questionDraft.pageNumber && questionDraft.pageNumber !== page) return;
+      handledDraftRef.current = questionDraft.id;
+      setInput(questionDraft.text);
+      onQuestionDraftHandled?.();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [active, questionDraft, scope, page, setInput, onQuestionDraftHandled]);
 
   useEffect(() => {
     onSessionExpiredRef.current = onSessionExpired;
@@ -634,7 +659,6 @@ function SharedChatPanel({
     requestAbortRef.current?.abort();
     requestAbortRef.current = null;
     setConversation(null);
-    setInput('');
     setPendingQuestion(null);
     setError(null);
     setLoading(canUseAi);
@@ -824,7 +848,7 @@ function SharedChatPanel({
         </div>
       ) : (
         <>
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+          <div ref={scrollRef} onScroll={onScroll} style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
             {loading ? (
               <div className="flex min-h-32 items-center justify-center text-xs text-slate-500">
                 <LoaderCircle className="mr-2 size-4 animate-spin" />{' '}
@@ -881,14 +905,17 @@ function SharedChatPanel({
               </>
             )}
           </div>
+          {showLatest ? <Button type="button" size="sm" variant="outline" className="mx-auto my-1" onClick={jumpToLatest}>回到最新回答</Button> : null}
           <div className="border-t border-slate-200/80 p-4">
             <textarea
               aria-label="提问内容"
               className="min-h-16 w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-5 text-slate-800 outline-none placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
               value={input}
               onChange={(event) => setInput(event.target.value)}
+              onCompositionStart={() => { composingRef.current = true; }}
+              onCompositionEnd={() => { composingRef.current = false; }}
               onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
+                if (event.key === 'Enter' && !event.shiftKey && !composingRef.current && !event.nativeEvent.isComposing && Reflect.get(event.nativeEvent, 'keyCode') !== 229) {
                   event.preventDefault();
                   void sendQuestion();
                 }
@@ -938,7 +965,7 @@ export function SharedPdfReader({
   hasSummary,
   hasMindmap,
   canUseAi = false,
-  initialPage = 1,
+  initialPage,
   onBack,
   onSessionExpired,
 }: {
@@ -963,7 +990,7 @@ export function SharedPdfReader({
     media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
   }, []);
-  const initialPageTarget = Number.isFinite(initialPage)
+  const initialPageTarget = typeof initialPage === 'number' && Number.isFinite(initialPage)
     ? Math.max(1, Math.floor(initialPage))
     : 1;
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
@@ -978,6 +1005,13 @@ export function SharedPdfReader({
   const [panel, setPanel] = useState<
     'summary' | 'mindmap' | 'translation' | 'chat'
   >(hasSummary ? 'summary' : hasMindmap ? 'mindmap' : 'translation');
+  const [pdfPanelPercent, setPdfPanelPercent] = useState(55);
+  const [questionDraft, setQuestionDraft] = useState<QuestionDraft | null>(null);
+  const currentFractionRef = useRef(0);
+  const pendingFractionRef = useRef(0);
+  const currentPanelRef = useRef<ReaderPanelMode>(hasSummary ? 'summary' : hasMindmap ? 'mindmap' : 'translation');
+  const currentPanelPercentRef = useRef(55);
+  const readingViewDirtyRef = useRef(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLElement>());
   const pendingPageRef = useRef<number | null>(initialPageTarget);
@@ -1006,22 +1040,25 @@ export function SharedPdfReader({
         !readingStateReadyRef.current ||
         readingSyncDisabledRef.current ||
         readingSaveInFlightRef.current ||
-        (!readingPageDirtyRef.current && !readingZoomDirtyRef.current)
+        (!readingPageDirtyRef.current && !readingZoomDirtyRef.current && !readingViewDirtyRef.current)
       ) {
         return;
       }
 
       const savedPage = currentPageRef.current;
       const savedZoom = currentZoomRef.current;
+      const savedView = { pageFraction: currentFractionRef.current, rightMode: currentPanelRef.current, pdfPanelPercent: currentPanelPercentRef.current };
       const expectedVersion = readingVersionRef.current;
       readingPageDirtyRef.current = false;
       readingZoomDirtyRef.current = false;
+      readingViewDirtyRef.current = false;
       readingSaveInFlightRef.current = true;
       try {
         const result = await saveSharedReadingState(courseId, documentId, {
           page: savedPage,
           zoom: savedZoom,
           expectedVersion,
+          ...savedView,
         });
         if (generation === readingGenerationRef.current) {
           readingVersionRef.current = result.state.version;
@@ -1047,7 +1084,8 @@ export function SharedPdfReader({
           if (currentZoomRef.current !== savedZoom) {
             readingZoomDirtyRef.current = true;
           }
-          if (readingPageDirtyRef.current || readingZoomDirtyRef.current) {
+          if (currentFractionRef.current !== savedView.pageFraction || currentPanelRef.current !== savedView.rightMode || currentPanelPercentRef.current !== savedView.pdfPanelPercent) readingViewDirtyRef.current = true;
+          if (readingPageDirtyRef.current || readingZoomDirtyRef.current || readingViewDirtyRef.current) {
             scheduleReadingSaveRef.current(generation);
           }
         }
@@ -1062,7 +1100,7 @@ export function SharedPdfReader({
         generation !== readingGenerationRef.current ||
         !readingStateReadyRef.current ||
         readingSyncDisabledRef.current ||
-        (!readingPageDirtyRef.current && !readingZoomDirtyRef.current)
+        (!readingPageDirtyRef.current && !readingZoomDirtyRef.current && !readingViewDirtyRef.current)
       ) {
         return;
       }
@@ -1083,7 +1121,7 @@ export function SharedPdfReader({
   useEffect(() => {
     const generation = ++readingGenerationRef.current;
     let cancelled = false;
-    const explicitPage = initialPageTarget > 1;
+    const explicitPage = initialPage !== undefined && Number.isFinite(initialPage);
     const clampPage = (value: number, pageCount = pageCountRef.current) => {
       const normalized = Number.isFinite(value) ? Math.floor(value) : 1;
       const atLeastOne = Math.max(normalized, 1);
@@ -1102,13 +1140,15 @@ export function SharedPdfReader({
           : 0;
       readingStateReadyRef.current = true;
       readingSyncDisabledRef.current = false;
-      if (!readingPageDirtyRef.current) {
+      if (!readingPageDirtyRef.current && !readingViewDirtyRef.current) {
         const restoredPage = explicitPage
           ? initialPageTarget
           : (state?.page ?? 1);
         const nextPage = clampPage(restoredPage);
         currentPageRef.current = nextPage;
         pendingPageRef.current = nextPage;
+        currentFractionRef.current = explicitPage ? 0 : readingFraction(state?.pageFraction);
+        pendingFractionRef.current = currentFractionRef.current;
         setPage(nextPage);
         setVisiblePages(new Set([nextPage]));
       }
@@ -1116,6 +1156,13 @@ export function SharedPdfReader({
         const nextZoom = clampZoom(state?.zoom ?? 95);
         currentZoomRef.current = nextZoom;
         setZoom(nextZoom);
+      }
+      if (!readingViewDirtyRef.current) {
+        const restoredMode = readingPanelMode(state?.rightMode, hasSummary ? 'summary' : hasMindmap ? 'mindmap' : 'translation');
+        currentPanelRef.current = (restoredMode === 'summary' && !hasSummary) || (restoredMode === 'mindmap' && !hasMindmap) ? 'translation' : restoredMode;
+        setPanel(currentPanelRef.current);
+        currentPanelPercentRef.current = readingPanelPercent(state?.pdfPanelPercent);
+        setPdfPanelPercent(currentPanelPercentRef.current);
       }
       scheduleReadingSave(generation);
     };
@@ -1131,6 +1178,8 @@ export function SharedPdfReader({
         const nextPage = clampPage(explicitPage ? initialPageTarget : 1);
         currentPageRef.current = nextPage;
         pendingPageRef.current = nextPage;
+        currentFractionRef.current = 0;
+        pendingFractionRef.current = 0;
         setPage(nextPage);
         setVisiblePages(new Set([nextPage]));
       }
@@ -1152,6 +1201,14 @@ export function SharedPdfReader({
     setPageSizes([]);
     currentPageRef.current = initialPageTarget;
     currentZoomRef.current = 95;
+    currentFractionRef.current = 0;
+    pendingFractionRef.current = 0;
+    currentPanelRef.current = hasSummary ? 'summary' : hasMindmap ? 'mindmap' : 'translation';
+    currentPanelPercentRef.current = 55;
+    setPanel(currentPanelRef.current);
+    setPdfPanelPercent(55);
+    setQuestionDraft(null);
+    readingViewDirtyRef.current = false;
     pageCountRef.current = 0;
     hostReadingStateRef.current = null;
     readingStateReadyRef.current = false;
@@ -1243,6 +1300,9 @@ export function SharedPdfReader({
     file,
     fileKey,
     initialPageTarget,
+    initialPage,
+    hasSummary,
+    hasMindmap,
     onSessionExpired,
     scheduleReadingSave,
   ]);
@@ -1270,36 +1330,32 @@ export function SharedPdfReader({
       ),
     [pageSizes, pageWidth],
   );
+  const previousPageWidthRef = useRef(0);
 
   // A source link can arrive before PDF.js has committed the page elements.
   // Wait until the complete page layout exists, then scroll the actual target
   // element; changing the numeric page state alone does not move the viewport.
   useLayoutEffect(() => {
+    if (previousPageWidthRef.current && previousPageWidthRef.current !== pageWidth && pendingPageRef.current === null) {
+      pendingPageRef.current = currentPageRef.current;
+      pendingFractionRef.current = currentFractionRef.current;
+    }
+    previousPageWidthRef.current = pageWidth;
     const target = pendingPageRef.current;
     if (!pdfDoc || pageSizes.length !== pdfDoc.numPages || target === null) {
       return;
     }
-    let scrollFrame = 0;
-    const layoutFrame = requestAnimationFrame(() => {
-      scrollFrame = requestAnimationFrame(() => {
-        if (pendingPageRef.current !== target) return;
-        const element = pageRefs.current.get(target);
-        const stage = stageRef.current;
-        if (!element || !stage) return;
-        const stageRect = stage.getBoundingClientRect();
-        const pageRect = element.getBoundingClientRect();
-        stage.scrollTo({
-          top: Math.max(0, stage.scrollTop + pageRect.top - stageRect.top - 12),
-          behavior: 'auto',
-        });
-        pendingPageRef.current = null;
-      });
+    const element = pageRefs.current.get(target);
+    const stage = stageRef.current;
+    if (!element || !stage) return;
+    const stageRect = stage.getBoundingClientRect();
+    const pageRect = element.getBoundingClientRect();
+    stage.scrollTo({
+      top: Math.max(0, stage.scrollTop + pageRect.top - stageRect.top - 12 + pendingFractionRef.current * pageHeights[target - 1]),
+      behavior: 'auto',
     });
-    return () => {
-      cancelAnimationFrame(layoutFrame);
-      cancelAnimationFrame(scrollFrame);
-    };
-  }, [pdfDoc, pageSizes.length, pageWidth, visiblePages]);
+    pendingPageRef.current = null;
+  }, [pdfDoc, pageSizes.length, pageWidth, pageHeights, visiblePages]);
 
   const pageNumbers = Array.from(
     { length: pdfDoc?.numPages ?? 0 },
@@ -1334,10 +1390,12 @@ export function SharedPdfReader({
     (next: number) => {
       const normalized = Number.isFinite(next) ? Math.floor(next) : 1;
       const target = Math.min(Math.max(normalized, 1), pdfDoc?.numPages ?? 1);
-      if (target !== currentPageRef.current) {
+      if (target !== currentPageRef.current || currentFractionRef.current !== 0) {
         readingPageDirtyRef.current = true;
       }
       currentPageRef.current = target;
+      currentFractionRef.current = 0;
+      pendingFractionRef.current = 0;
       pendingPageRef.current = target;
       setPage(target);
       setVisiblePages((previous) => new Set([...previous, target]));
@@ -1354,13 +1412,18 @@ export function SharedPdfReader({
     let closest = currentPageRef.current;
     let distance = Number.POSITIVE_INFINITY;
     for (const [number, element] of pageRefs.current) {
-      const nextDistance = Math.abs(
-        element.getBoundingClientRect().top - stageTop - 12,
-      );
+      const top = element.getBoundingClientRect().top - stageTop - 12;
+      const nextDistance = top <= 1 ? Math.abs(top) : Number.POSITIVE_INFINITY;
       if (nextDistance < distance) {
         closest = number;
         distance = nextDistance;
       }
+    }
+    const currentElement = pageRefs.current.get(closest);
+    const fraction = currentElement ? readingFraction((stageTop + 12 - currentElement.getBoundingClientRect().top) / (pageHeights[closest - 1] || 1)) : 0;
+    if (Math.abs(currentFractionRef.current - fraction) > 0.0001) {
+      currentFractionRef.current = fraction;
+      readingViewDirtyRef.current = true;
     }
     setVisiblePages((previous) =>
       previous.has(closest) ? previous : new Set([...previous, closest]),
@@ -1371,6 +1434,7 @@ export function SharedPdfReader({
       setPage(closest);
       scheduleReadingSave();
     }
+    if (readingViewDirtyRef.current) scheduleReadingSave();
   };
 
   const changeZoom = useCallback(
@@ -1381,6 +1445,8 @@ export function SharedPdfReader({
       );
       if (target === currentZoomRef.current) return;
       currentZoomRef.current = target;
+      pendingPageRef.current = currentPageRef.current;
+      pendingFractionRef.current = currentFractionRef.current;
       readingZoomDirtyRef.current = true;
       setZoom(target);
       scheduleReadingSave();
@@ -1391,6 +1457,19 @@ export function SharedPdfReader({
   const hasArtifactPanel = Boolean(digest && (hasSummary || hasMindmap));
   const hasTranslationPanel = Boolean(courseId && documentId);
   const panelContent = hasArtifactPanel || hasTranslationPanel;
+  const changePanel = (value: string) => {
+    const next = readingPanelMode(value, 'translation');
+    currentPanelRef.current = next;
+    setPanel(next);
+    readingViewDirtyRef.current = true;
+    scheduleReadingSave();
+  };
+  const askAboutArtifact = (question: {text:string; pageNumber?:number}) => {
+    const target = question.pageNumber ?? page;
+    goToPage(target);
+    setQuestionDraft({ id: `${Date.now()}:${Math.random()}`, text: question.text, pageNumber: target });
+    changePanel('chat');
+  };
 
   return (
     <main className="flex h-screen min-h-[620px] flex-col overflow-hidden bg-background text-foreground">
@@ -1472,6 +1551,17 @@ export function SharedPdfReader({
       </header>
 
       <section className="relative flex min-h-0 flex-1 flex-col">
+        {wideLayout ? <label className="flex items-center justify-end gap-2 border-b px-4 py-1 text-[11px] text-slate-500">原文宽度
+          <input aria-label="原文分栏宽度" type="range" min="40" max="70" value={pdfPanelPercent} onChange={event => {
+            const value = readingPanelPercent(Number(event.target.value));
+            pendingPageRef.current = currentPageRef.current;
+            pendingFractionRef.current = currentFractionRef.current;
+            currentPanelPercentRef.current = value;
+            setPdfPanelPercent(value);
+            readingViewDirtyRef.current = true;
+            scheduleReadingSave();
+          }} />
+        </label> : null}
         <div className="flex min-h-0 flex-1">
           <section
             className="reader-pane min-w-0 flex-1"
@@ -1575,6 +1665,7 @@ export function SharedPdfReader({
 
           <aside
             className="hidden w-[min(43vw,520px)] min-w-[320px] flex-col border-l border-slate-200 bg-[#fffdf9] lg:flex"
+            style={{ width: `${100 - pdfPanelPercent}%` }}
             aria-label="已有课程成果"
           >
             <div className="border-b border-slate-200/80 px-5 py-4">
@@ -1586,11 +1677,7 @@ export function SharedPdfReader({
             {panelContent ? (
               <Tabs
                 value={panel}
-                onValueChange={(value) =>
-                  setPanel(
-                    value as 'summary' | 'mindmap' | 'translation' | 'chat',
-                  )
-                }
+                onValueChange={changePanel}
                 className="min-h-0 flex-1 gap-0"
               >
                 <TabsList className="mx-4 mt-3">
@@ -1623,6 +1710,7 @@ export function SharedPdfReader({
                     <DocumentSummaryPanel
                       digest={digest!}
                       onOpenSource={goToPage}
+                      onAskQuestion={aiEnabled ? askAboutArtifact : undefined}
                     />
                   </TabsContent>
                 ) : null}
@@ -1634,6 +1722,7 @@ export function SharedPdfReader({
                     <KnowledgeMindmap
                       knowledge={documentKnowledge(digest!)}
                       onOpenSource={(_, sourcePage) => goToPage(sourcePage)}
+                      onAskQuestion={aiEnabled ? ({text,sources}) => askAboutArtifact({text,pageNumber:sources.find(source => source.documentId === documentId)?.pageStart}) : undefined}
                     />
                   </TabsContent>
                 ) : null}
@@ -1662,6 +1751,9 @@ export function SharedPdfReader({
                       documentId={documentId}
                       page={page}
                       canUseAi={aiEnabled}
+                      active={wideLayout && panel === 'chat'}
+                      questionDraft={questionDraft}
+                      onQuestionDraftHandled={() => setQuestionDraft(null)}
                       onSessionExpired={onSessionExpired}
                     />
                   </TabsContent>
@@ -1694,11 +1786,7 @@ export function SharedPdfReader({
           {panelContent ? (
             <Tabs
               value={panel}
-              onValueChange={(value) =>
-                setPanel(
-                  value as 'summary' | 'mindmap' | 'translation' | 'chat',
-                )
-              }
+              onValueChange={changePanel}
               className="min-h-0 flex-1 gap-0"
             >
               <TabsList className="mx-4 mt-3">
@@ -1731,6 +1819,7 @@ export function SharedPdfReader({
                   <DocumentSummaryPanel
                     digest={digest!}
                     onOpenSource={goToPage}
+                    onAskQuestion={aiEnabled ? askAboutArtifact : undefined}
                   />
                 </TabsContent>
               ) : null}
@@ -1742,6 +1831,7 @@ export function SharedPdfReader({
                   <KnowledgeMindmap
                     knowledge={documentKnowledge(digest!)}
                     onOpenSource={(_, sourcePage) => goToPage(sourcePage)}
+                    onAskQuestion={aiEnabled ? ({text,sources}) => askAboutArtifact({text,pageNumber:sources.find(source => source.documentId === documentId)?.pageStart}) : undefined}
                   />
                 </TabsContent>
               ) : null}
@@ -1770,6 +1860,9 @@ export function SharedPdfReader({
                     documentId={documentId}
                     page={page}
                     canUseAi={aiEnabled}
+                    active={!wideLayout && panel === 'chat'}
+                    questionDraft={questionDraft}
+                    onQuestionDraftHandled={() => setQuestionDraft(null)}
                     onSessionExpired={onSessionExpired}
                   />
                 </TabsContent>

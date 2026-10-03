@@ -177,10 +177,19 @@ export interface ImportOptions {
 
 export interface DocumentProcessing {
   phase: 'document' | 'course';
-  status: 'queued' | 'running' | 'failed';
+  status: 'queued' | 'running' | 'failed' | 'paused' | 'cancelled';
   options: ImportOptions;
   updatedAt: string;
   error?: string;
+  runId?: string;
+  startedAt?: string;
+  lastActivityAt?: string;
+  resumedAt?: string;
+  attempt?: number;
+  message?: string;
+  completedUnits?: number;
+  totalUnits?: number;
+  progressRevision?: number;
 }
 
 export interface PdfMetadata {
@@ -195,6 +204,10 @@ export interface ImportResult {
 
 export interface CourseStorage {
   readonly label: string;
+  withWriteLock?<T>(operation: () => Promise<T>): Promise<T>;
+  loadNotes?(): Promise<import('./study-tools.ts').CourseNotesSnapshot>;
+  saveNotes?(content: string, expectedToken: string): Promise<import('./study-tools.ts').CourseNotesSnapshot>;
+  listHistory?(): Promise<import('./study-tools.ts').CourseHistoryEntry[]>;
   loadGlossary?(): Promise<Glossary>;
   saveGlossary?(glossary: Glossary): Promise<void>;
   initialize(name: string): Promise<CourseBundle>;

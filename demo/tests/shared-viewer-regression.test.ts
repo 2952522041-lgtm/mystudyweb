@@ -1837,7 +1837,7 @@ void test('shared reader restores host state without claiming full read-only acc
   );
   assert.match(source, /loadSharedReadingState\(courseId, documentId\)/);
   assert.match(source, /hostReadingStateRef\.current\?\.page/);
-  assert.match(source, /const explicitPage = initialPageTarget > 1/);
+  assert.match(source, /const explicitPage = initialPage !== undefined && Number\.isFinite\(initialPage\)/);
   assert.match(
     source,
     /readingVersionRef\.current = saveError\.state\?\.version \?\? 0/,

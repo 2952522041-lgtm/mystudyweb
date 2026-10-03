@@ -5,7 +5,7 @@ import { alignParagraphs, mapTextItemsToParagraphs, type ParagraphAlignment } fr
 import { revealParagraph, sourceParagraphIndices } from '@/lib/paragraph-dom';
 import { TranslationParagraphs } from '@/components/translation-paragraphs';
 import { createPdfImportLifecycle } from '@/lib/pdf-import-lifecycle';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   BookOpen,
   Check,
@@ -33,7 +33,13 @@ import {
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { BackgroundTaskCenter } from '@/components/background-task-center';
+import { BackgroundTaskHost } from '@/components/background-task-host';
 import { AIChatPanel } from '@/components/ai-chat-panel';
+import type { QuestionDraft } from '@/components/use-chat-draft';
+import type { PanelImperativeHandle } from 'react-resizable-panels';
+import { readingFraction, readingPanelMode, readingPanelPercent, type ReaderViewState } from '@/lib/reader-view-state';
+import { appendStudyNote } from '@/lib/course-storage/study-tools';
 import {
   CourseLibrary,
   type CourseReaderContext,
@@ -702,7 +708,7 @@ function PdfReader({
     version: number;
     page: number | null;
     zoom: number | null;
-  } | null>(null);
+  } & ReaderViewState | null>(null);
   const hostReadingSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
     const lifecycle = importLifecycleRef.current;
@@ -721,6 +727,11 @@ function PdfReader({
   const [page, setPage] = useState(1);
   const [translationPage, setTranslationPage] = useState(1);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
+  const [readingPosition, setReadingPosition] = useState<ReadingAnchor>({ page: 1, fraction: 0 });
+  const [pdfPanelPercent, setPdfPanelPercent] = useState(55);
+  const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const pendingRestoreAnchorRef = useRef<ReadingAnchor | null>(null);
+  const progressFlushRef = useRef<(() => void) | null>(null);
   const [targetLanguage, setTargetLanguage] = useState<string>('简体中文');
   const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS);
   const [chatSettings, setChatSettings] = useState<ChatSettings>(
@@ -746,6 +757,7 @@ function PdfReader({
   );
   const [copied, setCopied] = useState(false);
   const [selectionQuestion, setSelectionQuestion] = useState<SelectionQuestion | null>(null);
+  const [questionDraft, setQuestionDraft] = useState<QuestionDraft | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -913,16 +925,29 @@ function PdfReader({
   }, [pageHeightsPx]);
 
   useLayoutEffect(() => {
+    if (suspended) return;
     const stage = documentStageRef.current;
-    if (stage && sizeAnchorRef.current) {
-      stage.scrollTop = restoreReadingAnchor(sizeAnchorRef.current, pageTops, pageHeightsPx);
+    if (stage && pageHeightsPx.length && pageHeightsPx.every(height => height > 0)) {
+      const geometry = geometryRef.current;
+      const anchor = pendingRestoreAnchorRef.current ?? sizeAnchorRef.current ??
+        (positionedRef.current && geometry.heights.length ? captureReadingAnchor(stage.scrollTop, geometry.tops, geometry.heights) : null);
+      if (anchor) {
+        stage.scrollTop = restoreReadingAnchor(anchor, pageTops, pageHeightsPx);
+        setReadingPosition(anchor);
+      }
+      pendingRestoreAnchorRef.current = null;
+      positionedRef.current = true;
     }
     if (pendingPageSizesRef.current === pageSizes) pendingPageSizesRef.current = null;
     // Keep the anchor until the latest published dimensions have committed.
     // A navigation frame (or an older render) can run while that update is pending.
     if (!pendingPageSizesRef.current) sizeAnchorRef.current = null;
     geometryRef.current = { tops: pageTops, heights: pageHeightsPx };
-  }, [pageTops, pageHeightsPx, pageSizes]);
+  }, [pageTops, pageHeightsPx, pageSizes, suspended]);
+
+  useLayoutEffect(() => {
+    if (translationVisible && pdfDoc) pdfPanelRef.current?.resize(`${pdfPanelPercent}%`);
+  }, [pdfDoc, pdfPanelPercent, translationVisible]);
 
   useEffect(() => {
     for (const visiblePage of renderedPages) void sizeLoaderRef.current?.load(visiblePage);
@@ -967,6 +992,8 @@ function PdfReader({
       setParagraphSelection(null);
       setCopied(false);
       setPage(targetPage);
+      setReadingPosition({ page: targetPage, fraction: 0 });
+      pendingRestoreAnchorRef.current = null;
       scrollTargetRef.current = targetPage;
       sizeAnchorRef.current = { page: targetPage, fraction: 0 };
       void sizeLoaderRef.current?.load(targetPage);
@@ -980,6 +1007,15 @@ function PdfReader({
     },
     [docMeta?.pageCount],
   );
+
+  const askAboutArtifact = (question: { text: string; pageNumber?: number }) => {
+    const target = clampPage(question.pageNumber ?? page, docMeta?.pageCount ?? 1);
+    goToPage(target);
+    setTranslationPage(target);
+    setQuestionDraft({ id: `${Date.now()}:${Math.random()}`, text: question.text, pageNumber: target });
+    setRightMode('chat');
+    setTranslationVisible(true);
+  };
 
   // Keyboard shortcuts: key→action mapping stays pure in lib/reader-shortcuts;
   // refs keep this subscription stable across page turns and zoom changes.
@@ -1039,12 +1075,6 @@ function PdfReader({
   }, [goToPage, importOpen, shortcutsOpen, pdfDoc]);
 
   useEffect(() => {
-    if (!pdfDoc || !stageWidth || positionedRef.current) return;
-    positionedRef.current = true;
-    pageElementsRef.current.get(page)?.scrollIntoView({ block: 'start' });
-  }, [pdfDoc, page, stageWidth]);
-
-  useEffect(() => {
     activeThumbnailRef.current?.scrollIntoView({ block: 'nearest' });
   }, [page]);
 
@@ -1054,16 +1084,18 @@ function PdfReader({
   useEffect(() => {
     if (suspended) {
       anchorOnResumeRef.current = true;
+      pendingRestoreAnchorRef.current = readingPosition;
       return;
     }
     if (!anchorOnResumeRef.current) return;
     anchorOnResumeRef.current = false;
     const frame = requestAnimationFrame(() => {
-      pageElementsRef.current.get(page)?.scrollIntoView({ block: 'start' });
+      const stage = documentStageRef.current;
+      if (stage) stage.scrollTop = restoreReadingAnchor(readingPosition, geometryRef.current.tops, geometryRef.current.heights);
       activeThumbnailRef.current?.scrollIntoView({ block: 'nearest' });
     });
     return () => cancelAnimationFrame(frame);
-  }, [suspended, page]);
+  }, [suspended, page, readingPosition]);
 
   // Display page and translated page are decoupled: translation waits for a
   // stable page so fast scrolling does not fire requests.
@@ -1085,6 +1117,10 @@ function PdfReader({
       pageHeightsPx.some((height) => height === 0)
     )
       return;
+    if (!suspendedRef.current && !pendingRestoreAnchorRef.current) {
+      const anchor = captureReadingAnchor(stage.scrollTop, pageTops, pageHeightsPx, scrollTargetRef.current);
+      setReadingPosition(previous => previous.page === anchor.page && Math.abs(previous.fraction - anchor.fraction) < 0.0001 ? previous : anchor);
+    }
     const rects = measurePageRects(
       {
         scrollTop: stage.scrollTop - 12,
@@ -1106,6 +1142,7 @@ function PdfReader({
       requestedPage?: number,
       origin: 'home' | 'dialog' = 'home',
     ) => {
+      progressFlushRef.current?.();
       const job = importLifecycleRef.current.begin();
       // A standalone import can happen while the previous course context is
       // still clearing in the parent. Disable course restore/publication
@@ -1178,7 +1215,7 @@ function PdfReader({
             ? `${courseContext.courseId}:${courseDocument.id}`
             : null;
         let hostReadingState:
-          | { page: number; zoom: number; version: number; updatedAt: string }
+          | ({ page: number; zoom: number; version: number; updatedAt: string } & ReaderViewState)
           | null = null;
         if (hostReadingKey && window.yeyuDesktop?.getReadingState) {
           try {
@@ -1223,6 +1260,9 @@ function PdfReader({
               version: hostReadingState?.version ?? 0,
               page: hostReadingState?.page ?? null,
               zoom: hostReadingState?.zoom ?? null,
+              pageFraction: hostReadingState?.pageFraction,
+              rightMode: hostReadingState?.rightMode,
+              pdfPanelPercent: hostReadingState?.pdfPanelPercent,
             }
           : null;
         prefetchedTranslationsRef.current.clear();
@@ -1230,6 +1270,7 @@ function PdfReader({
         pageElementsRef.current.clear();
         sizeLoaderRef.current?.cancel();
         sizeAnchorRef.current = null;
+        geometryRef.current = { tops: [], heights: [] };
         pendingPageSizesRef.current = null;
         const sizeLoader = createProgressivePageSizes(doc, firstViewport, (sizes) => {
           const stage = documentStageRef.current;
@@ -1254,12 +1295,20 @@ function PdfReader({
               : null,
         });
         setZoom(hostReadingState?.zoom ?? restored?.zoom ?? DEFAULT_ZOOM);
+        const restoredView = hostReadingState ?? restored;
+        setRightMode(readingPanelMode(restoredView?.rightMode, courseContext?.digest ? 'summary' : 'translation'));
+        setPdfPanelPercent(readingPanelPercent(restoredView?.pdfPanelPercent));
         setTargetLanguage(restored?.targetLanguage ?? '简体中文');
         const openingPage = clampPage(
           requestedPage ?? hostReadingState?.page ?? restored?.lastPage ?? 1,
           doc.numPages,
         );
-        sizeAnchorRef.current = { page: openingPage, fraction: 0 };
+        const openingAnchor = { page: openingPage, fraction: requestedPage !== undefined ? 0 : readingFraction(restoredView?.pageFraction) };
+        sizeAnchorRef.current = openingAnchor;
+        pendingRestoreAnchorRef.current = openingAnchor;
+        setReadingPosition(openingAnchor);
+        setQuestionDraft(courseContext?.initialQuestion && origin !== 'dialog' ? { id: `${fingerprint}:${Date.now()}`, text: courseContext.initialQuestion, pageNumber: openingPage } : null);
+        if (courseContext?.initialQuestion && origin !== 'dialog') setRightMode('chat');
         void sizeLoader.load(openingPage);
         void sizeLoader.complete();
         setPage(openingPage);
@@ -1302,6 +1351,13 @@ function PdfReader({
         setZoom(restored.zoom);
         setTargetLanguage(restored.targetLanguage);
         goToPage(recovery.requestedPage ?? restored.lastPage);
+        setRightMode(readingPanelMode(restored.rightMode, courseContext?.digest ? 'summary' : 'translation'));
+        setPdfPanelPercent(readingPanelPercent(restored.pdfPanelPercent));
+        const anchor = { page: recovery.requestedPage ?? restored.lastPage, fraction: recovery.requestedPage !== undefined ? 0 : readingFraction(restored.pageFraction) };
+        setReadingPosition(anchor);
+        requestAnimationFrame(() => {
+          if (recovery.isCurrent() && documentStageRef.current) documentStageRef.current.scrollTop = restoreReadingAnchor(anchor, geometryRef.current.tops, geometryRef.current.heights);
+        });
         setDocMeta((current) => current ? { ...current, restoredPage: restored.lastPage > 1 ? restored.lastPage : null } : current);
       }
       setProgressRecovery(null);
@@ -1315,20 +1371,31 @@ function PdfReader({
   // Do not overwrite unread progress until recovery succeeds or is ignored.
   // Persist reading progress for this fingerprint.
   useEffect(() => {
-    if (!pdfDoc || !docMeta || progressRecovery) return;
-    const timer = setTimeout(() => {
+    if (!pdfDoc || !docMeta || progressRecovery) { progressFlushRef.current = null; return; }
+    const save = () => {
       void serviceRef.current?.progress.save({
         fingerprint: docMeta.fingerprint,
         fileName: docMeta.fileName,
         pageCount: docMeta.pageCount,
-        lastPage: page,
+        lastPage: readingPosition.page,
+        pageFraction: readingPosition.fraction,
+        rightMode,
+        pdfPanelPercent,
         zoom,
         targetLanguage,
         updatedAt: new Date().toISOString(),
-      });
-    }, PROGRESS_SAVE_DELAY);
+      }).catch(() => undefined);
+    };
+    progressFlushRef.current = save;
+    const timer = setTimeout(save, PROGRESS_SAVE_DELAY);
     return () => clearTimeout(timer);
-  }, [pdfDoc, docMeta, page, zoom, targetLanguage, progressRecovery]);
+  }, [pdfDoc, docMeta, readingPosition, rightMode, pdfPanelPercent, zoom, targetLanguage, progressRecovery]);
+
+  useEffect(() => {
+    const flush = () => progressFlushRef.current?.();
+    window.addEventListener('pagehide', flush);
+    return () => { flush(); window.removeEventListener('pagehide', flush); };
+  }, []);
 
   // Course PDFs use one host-owned progress record so the desktop reader and
   // authenticated Windows viewer resume from the same page and zoom.
@@ -1345,11 +1412,14 @@ function PdfReader({
       return;
     }
     const key = `${courseContext.courseId}:${document.id}`;
+    const view = { page: readingPosition.page, zoom, pageFraction: readingPosition.fraction, rightMode, pdfPanelPercent };
+    const sameView = (current: { page: number | null; zoom: number | null } & ReaderViewState) =>
+      current.page === view.page && current.zoom === zoom && readingFraction(current.pageFraction) === view.pageFraction &&
+      current.rightMode === rightMode && current.pdfPanelPercent === pdfPanelPercent;
     const known = hostReadingRef.current;
     if (
       known?.key === key &&
-      known.page === page &&
-      known.zoom === zoom
+      sameView(known)
     ) {
       return;
     }
@@ -1359,19 +1429,17 @@ function PdfReader({
         .then(async () => {
           const current = hostReadingRef.current;
           if (current?.key !== key) return;
-          if (current.page === page && current.zoom === zoom) return;
+          if (sameView(current)) return;
           try {
             const saved = await api.saveReadingState!(
               courseContext.courseId,
               document.id,
-              { page, zoom, expectedVersion: current.version },
+              { ...view, expectedVersion: current.version },
             );
             if (hostReadingRef.current?.key === key) {
               hostReadingRef.current = {
                 key,
-                version: saved.version,
-                page: saved.page,
-                zoom: saved.zoom,
+                ...saved,
               };
             }
             return;
@@ -1388,22 +1456,18 @@ function PdfReader({
             if (!latest || hostReadingRef.current?.key !== key) return;
             hostReadingRef.current = {
               key,
-              version: latest.version,
-              page: latest.page,
-              zoom: latest.zoom,
+              ...latest,
             };
-            if (latest.page === page && latest.zoom === zoom) return;
+            if (sameView(latest)) return;
             const retried = await api.saveReadingState!(
               courseContext.courseId,
               document.id,
-              { page, zoom, expectedVersion: latest.version },
+              { ...view, expectedVersion: latest.version },
             );
             if (hostReadingRef.current?.key === key) {
               hostReadingRef.current = {
                 key,
-                version: retried.version,
-                page: retried.page,
-                zoom: retried.zoom,
+                ...retried,
               };
             }
           } catch {
@@ -1412,7 +1476,7 @@ function PdfReader({
         });
     }, PROGRESS_SAVE_DELAY);
     return () => clearTimeout(timer);
-  }, [courseContext, docMeta, page, pdfDoc, zoom]);
+  }, [courseContext, docMeta, readingPosition, rightMode, pdfPanelPercent, pdfDoc, zoom]);
 
   // Per-page pipeline: extract a text layer, fall back to cached visual OCR,
   // then use the existing translation cache/provider.
@@ -1875,6 +1939,7 @@ function PdfReader({
               sourceLanguage: 'auto',
               targetLanguage,
               pageNumber: nextPage,
+              task: 'prefetch',
             },
             signal: controller.signal,
             publishedTranslations,
@@ -2036,8 +2101,13 @@ function PdfReader({
         <section className="relative min-h-0 flex-1">
           <ResizablePanelGroup orientation="horizontal">
             <ResizablePanel
+              panelRef={pdfPanelRef}
               defaultSize={translationVisible ? '55%' : '100%'}
-              minSize="38%"
+              minSize="40%"
+              maxSize={translationVisible ? '70%' : '100%'}
+              onResize={(size, _id, previous) => {
+                if (previous && translationVisible && pdfDoc) setPdfPanelPercent(readingPanelPercent(Math.round(size.asPercentage * 100) / 100));
+              }}
             >
               <section className="reader-pane" aria-label="PDF 原文阅读区">
                 <div className="pane-heading">
@@ -2314,6 +2384,8 @@ function PdfReader({
                           onNavigate={goToPage}
                           settings={chatSettings}
                           selectionQuestion={selectionQuestion}
+                          questionDraft={questionDraft}
+                          onQuestionDraftHandled={() => setQuestionDraft(null)}
                           onSelectionQuestionHandled={() => setSelectionQuestion(null)}
                           onOpenSettings={() => openSettings('chat')}
                         />
@@ -2328,6 +2400,8 @@ function PdfReader({
                           <DocumentSummaryPanel
                             digest={courseContext.digest}
                             onOpenSource={goToPage}
+                            onAskQuestion={askAboutArtifact}
+                            onSaveNote={courseContext.storage ? (text, sourcePage) => appendStudyNote(courseContext.storage!, { text, sources: [{ documentId: courseContext.document.id, fileName: courseContext.document.fileName, pageStart: sourcePage ?? page, type: 'pdf' }] }) : undefined}
                           />
                         </TabsContent>
                       ) : null}
@@ -2351,6 +2425,8 @@ function PdfReader({
                             onOpenSource={(_, sourcePage) =>
                               goToPage(sourcePage)
                             }
+                            onAskQuestion={({ text, sources }) => askAboutArtifact({ text, pageNumber: sources.find(source => source.documentId === courseContext.document.id)?.pageStart })}
+                            onSaveNote={courseContext.storage ? (text, sources) => appendStudyNote(courseContext.storage!, { text, sources }) : undefined}
                           />
                         </TabsContent>
                       ) : null}
@@ -2609,6 +2685,10 @@ function DesktopHome() {
 
   return (
     <>
+      <BackgroundTaskCenter onOpenDocument={async (courseId,documentId) => {
+        if (!courseControlRef.current) throw new Error('课程知识库尚未就绪。');
+        return courseControlRef.current.openDocument({courseId,documentId});
+      }} />
       {/* The reader stays mounted behind the course library, so a PDF imported
           into the reader (and its in-session translations) survives the round
           trip; hidden + inert keeps it out of layout, focus and the a11y tree. */}
@@ -2679,7 +2759,12 @@ function DesktopHome() {
   );
 }
 
+const subscribeAppRole = () => () => {};
+const readAppRole = () => window.yeyuDesktop && new URLSearchParams(window.location.search).get('background-worker') === '1' ? 'worker' : 'normal';
 export default function Home() {
+  const role = useSyncExternalStore(subscribeAppRole,readAppRole,() => 'loading');
+  if (role === 'loading') return <output>正在打开页语工作区…</output>;
+  if (role === 'worker') return <BackgroundTaskHost />;
   if (isSharedView()) return <SharedCourseViewer />;
   return <DesktopHome />;
 }

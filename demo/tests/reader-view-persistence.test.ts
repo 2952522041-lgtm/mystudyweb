@@ -48,14 +48,14 @@ void test('suspension is passed down so the reader can react to being hidden', (
   assert.match(pageSource, /suspended\??: boolean/);
 });
 
-void test('returning to the reader re-anchors scroll on the page being read', () => {
+void test('returning to the reader re-anchors within the page being read', () => {
   // display:none 子树会丢失滚动位置；恢复显示时必须重新定位到当前页。
   assert.match(pageSource, /anchorOnResumeRef\.current = true/);
   assert.match(
     pageSource,
-    /anchorOnResumeRef\.current = false;[\s\S]*?scrollIntoView\(\{ block: 'start' \}\)/,
+    /anchorOnResumeRef\.current = false;[\s\S]*?restoreReadingAnchor\(readingPosition/,
   );
-  assert.match(pageSource, /\}, \[suspended, page\]\);/);
+  assert.match(pageSource, /\}, \[suspended, page, readingPosition\]\);/);
 });
 
 void test('importing inside the reader clears a stale course context', () => {

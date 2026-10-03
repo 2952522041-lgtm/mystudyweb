@@ -3,7 +3,11 @@
  * 保持一致（demo 全量 tsc 会在桌面存储的使用处校验两者兼容）。
  * 不直接跨目录 import，是为了让 Electron 编译产物完全自包含。
  */
-import type { DshCompletionRequest, DshCompletionResult, DshProgress } from './dsh-types.ts';
+import type { DshCompletionRequest, DshCompletionResult, DshProgress, DshRuntimeStatus } from './dsh-types.ts';
+
+import type { BackgroundAction, BackgroundCommand, BackgroundSnapshot } from './background-types.ts';
+import type { ReaderViewState } from './reader-view-state.ts';
+export type { ReaderViewState } from './reader-view-state.ts';
 
 export interface DesktopCourseManifest {
   schemaVersion: number;
@@ -41,6 +45,17 @@ export const DESKTOP_CHANNELS = {
   dshRun: 'yeyu:dsh-run',
   dshCancel: 'yeyu:dsh-cancel',
   dshProgress: 'yeyu:dsh-progress',
+  dshInspect: 'yeyu:dsh-inspect',
+  courseLockAcquire: 'yeyu:course-lock-acquire',
+  courseLockRelease: 'yeyu:course-lock-release',
+  coursesChanged: 'yeyu:courses-changed',
+  backgroundGet: 'yeyu:background-get',
+  backgroundPublish: 'yeyu:background-publish',
+  backgroundSnapshot: 'yeyu:background-snapshot',
+  backgroundControl: 'yeyu:background-control',
+  backgroundCommand: 'yeyu:background-command',
+  backgroundResponse: 'yeyu:background-response',
+  backgroundWake: 'yeyu:background-wake',
 } as const;
 
 export type YeyuMcpCommandName =
@@ -96,6 +111,16 @@ export const DESKTOP_METHOD_NAMES = [
   'runDsh',
   'cancelDsh',
   'onDshProgress',
+  'inspectDshRuntime',
+  'acquireCourseLock',
+  'releaseCourseLock',
+  'onCoursesChanged',
+  'getBackgroundSnapshot',
+  'publishBackgroundSnapshot',
+  'onBackgroundSnapshot',
+  'controlBackgroundTask',
+  'onBackgroundCommand',
+  'wakeBackgroundTasks',
 ] as const;
 
 export interface WorkspaceInfo {
@@ -120,7 +145,7 @@ export interface LanSharePermissions {
   manage: boolean;
 }
 
-export interface SharedReadingState {
+export interface SharedReadingState extends ReaderViewState {
   page: number;
   zoom: number;
   version: number;
@@ -129,6 +154,16 @@ export interface SharedReadingState {
 
 /** 主进程暴露给 renderer 的唯一文件入口；绝不暴露 ipcRenderer 或 fs 本身。 */
 export interface YeyuDesktopApi {
+  inspectDshRuntime?(): Promise<DshRuntimeStatus>;
+  acquireCourseLock?(directory: string): Promise<string>;
+  releaseCourseLock?(token: string): Promise<void>;
+  onCoursesChanged?(listener: (value: { directoryName: string }) => void): () => void;
+  getBackgroundSnapshot?(): Promise<BackgroundSnapshot>;
+  publishBackgroundSnapshot?(snapshot: BackgroundSnapshot): Promise<void>;
+  onBackgroundSnapshot?(listener: (snapshot: BackgroundSnapshot) => void): () => void;
+  controlBackgroundTask?(action: BackgroundAction): Promise<void>;
+  onBackgroundCommand?(handler: (command: BackgroundCommand) => Promise<void>): () => void;
+  wakeBackgroundTasks?(): Promise<void>;
   runDsh?(request: DshCompletionRequest): Promise<DshCompletionResult>;
   cancelDsh?(requestId: string): Promise<void>;
   onDshProgress?(listener: (value: DshProgress) => void): () => void;
@@ -173,7 +208,7 @@ export interface YeyuDesktopApi {
   saveReadingState?(
     courseId: string,
     documentId: string,
-    value: { page: number; zoom: number; expectedVersion: number },
+    value: { page: number; zoom: number; expectedVersion: number } & ReaderViewState,
   ): Promise<SharedReadingState>;
   /**
    * 接收 Electron 主进程转发的本机 MCP 命令。preload 只把结构化命令交给

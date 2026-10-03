@@ -4,6 +4,7 @@ import { useDshForTask as selectDshForTask } from './agent-settings.ts';
 import { requestChatCompletion } from './openai-client.ts';
 
 export interface TranslationRequest {
+  task?: 'interactive' | 'background' | 'prefetch';
   glossary?: Glossary;
   text: string;
   /** BCP-47 language name or the literal 'auto' for auto-detection. */
@@ -437,7 +438,8 @@ async function performTranslationChunk(
       { ...config, executionBackend: 'dsh' },
       {
         messages,
-        temperature: 0.1,
+        // The pinned DSH SDK uses provider sampling defaults.
+        task: request.task ?? 'interactive',
         maxTokens: recommendedMaxOutputTokens(text),
         // DSH translation is deliberately non-reasoning, matching the GLM
         // translation path and keeping output budget focused on the text.

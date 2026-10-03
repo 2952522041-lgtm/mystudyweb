@@ -226,6 +226,9 @@ export interface DocumentProgress {
   pageCount: number;
   lastPage: number;
   zoom: number;
+  pageFraction?: number;
+  rightMode?: 'translation' | 'chat' | 'summary' | 'mindmap';
+  pdfPanelPercent?: number;
   targetLanguage: string;
   updatedAt: string;
 }
@@ -237,6 +240,12 @@ export function createProgressStore(store: KVStore<DocumentProgress>) {
     },
     async save(progress: DocumentProgress): Promise<void> {
       await store.set(`progress:${progress.fingerprint}`, progress);
+      if (typeof window !== 'undefined') window.dispatchEvent(new Event('reader-progress-updated'));
+    },
+    async list(): Promise<DocumentProgress[]> {
+      const records = await Promise.all((await store.keys()).filter(key => key.startsWith('progress:')).map(key => store.get(key)));
+      return records.filter((record): record is DocumentProgress => Boolean(record?.fingerprint && record.fileName && typeof record.updatedAt === 'string' && Number.isInteger(record.lastPage) && record.lastPage >= 1))
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     },
   };
 }

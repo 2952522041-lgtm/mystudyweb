@@ -39,6 +39,7 @@ export interface PageImageInput {
 }
 
 export interface PageChatRequest {
+  task?: 'interactive' | 'background' | 'prefetch';
   fingerprint: string;
   pageNumber: number;
   pageText: string;
@@ -199,7 +200,7 @@ export function createOpenAICompatibleChatProvider(
             }
             options?.onPartial?.(content);
           },
-          temperature: 0.2,
+          ...(completionConfig.executionBackend === 'dsh' ? {task:request.task ?? 'interactive'} : {temperature:0.2}),
           maxTokens: 4096,
           ...(useDshDocumentChat || useDshPageChat ? { thinking: 'disabled' as const } : {}),
         },

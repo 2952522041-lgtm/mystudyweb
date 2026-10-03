@@ -16,6 +16,7 @@ const mockSources: Record<string, string> = {
   '@/lib/course-storage/desktop-course-storage': `
     export class DesktopCourseStorage {
       label = 'fixture';
+      async withWriteLock(operation) { window.fixture.lockCalls++; return operation(); }
       async openPdf(id) { return window.fixture.files.get(id) ?? new File(['pdf'], 'lesson.pdf', {type:'application/pdf'}); }
       async loadGlossary() { return structuredClone(window.fixture.glossary); }
       async saveGlossary(value) { window.fixture.glossary = structuredClone(value); }
@@ -100,17 +101,26 @@ const mockSources: Record<string, string> = {
   '@/lib/ocr': `
     export function createOcrProviderForSettings() { window.fixture.calls.ocr++; return {}; }
     export function createOcrService() { return {}; }
+    export function pageNeedsOcr() { throw new Error('unexpected OCR inspection'); }
     export async function resolvePageOcr() { throw new Error('unexpected OCR request'); }
   `,
 };
 const mockDependencies: import('esbuild').Plugin = {
   name: 'course-import-mocks',
   setup(builder) {
-    builder.onResolve({ filter: /^@\/lib\// }, (args) =>
-      args.path in mockSources
-        ? { path: args.path, namespace: 'mock' }
-        : undefined,
-    );
+    // Match module identity rather than the importing file's spelling. The
+    // shared background processor uses relative .ts imports, while components
+    // use aliases; both must hit the same expensive-boundary fixture.
+    const mockedFiles = new Map(Object.keys(mockSources).map(source => [
+      path.resolve(root, source.slice(2)), source,
+    ]));
+    builder.onResolve({ filter: /^(?:@\/lib\/|\.{1,2}\/)/ }, (args) => {
+      const resolved = args.path.startsWith('@/')
+        ? path.resolve(root, args.path.slice(2))
+        : path.resolve(args.resolveDir, args.path);
+      const source = mockedFiles.get(resolved.replace(/\.tsx?$/, ''));
+      return source ? {path:source, namespace:'mock'} : undefined;
+    });
     builder.onLoad({ filter: /.*/, namespace: 'mock' }, (args) => ({
       contents: mockSources[args.path],
       loader: 'js',
@@ -129,6 +139,7 @@ const f = window.fixture = {
   glossary: {schemaVersion:1,version:0,entries:[]},
   configured: false,
   files: new Map(),
+  lockCalls: 0,
   calls: {provider:0, analyze:0, synthesize:0, extract:0, save:0, ocr:0},
   record(fingerprint, fileName) {
     return {id:stableDocumentId(fingerprint), fingerprint, fileName, storedFileName:fileName,
@@ -146,7 +157,7 @@ window.yeyuDesktop = {
   listCourses: async () => [{directoryName:'fixture', manifest:f.bundle.manifest}],
 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve,ms));
-const text = () => document.body.textContent;
+const text = () => document.body.innerText;
 const button = (label) => [...document.querySelectorAll('button')].find((node) => node.textContent.trim() === label);
 const check = (value, message) => {if (!value) throw new Error(message)};
 async function waitFor(label, predicate) {
@@ -171,6 +182,12 @@ window.runImportRegression = async () => {
     onOpenDocument={(_file,context)=>{f.opened=context;}}
     onControlReady={control=>{if(control)f.control=control;}} />);
   await waitFor('loaded',()=>button('导入 PDF')&&f.control);
+  check(text().includes('阅读资料与查看整理进度'),'existing PDF still shows first-import empty state');
+  await createReaderService().progress.save({fingerprint,fileName:'lesson.pdf',pageCount:1,lastPage:1,zoom:1,targetLanguage:'zh',updatedAt:'2026-01-02T00:00:00Z'});
+  await waitFor('recent reading refreshed',()=>document.querySelector('[aria-label="继续学习"]')?.textContent.includes('上次读到第 1 / 1 页'));
+  document.querySelector('[aria-label="继续学习"] .grid button').click();
+  await waitFor('continue opens reader',()=>f.opened?.document.fingerprint===fingerprint);
+  check(f.opened.initialPage===undefined,'continue reading should restore saved page fraction rather than force a page jump');
   const before=JSON.stringify(f.bundle);
   const mcpDuplicate=await f.control.importPdf({courseName:'测试课程',fileName:'mcp-duplicate.pdf',fileData:new TextEncoder().encode(original)});
   check(mcpDuplicate.message.includes('已存在，已跳过'),'MCP duplicate result incorrect');
@@ -183,12 +200,20 @@ window.runImportRegression = async () => {
   await submit(external,'external-renamed.pdf',true);
   await submit('different PDF bytes','lesson.pdf',false);
   await waitFor('unconfigured job failed',()=>f.bundle.manifest.documents[2]?.processing?.status==='failed');
+  check(f.bundle.manifest.documents[2].processing.error==='mock provider is unconfigured','shared background processor bypassed the AI boundary fixture');
   check(f.bundle.manifest.documents.length===3&&f.calls.save===1,'unconfigured AI prevented PDF saving');
   check(!f.bundle.digests[f.bundle.manifest.documents[2].id],'failed AI produced a fake digest');
   const raw=f.bundle.manifest.documents[2];
   await f.control.openDocument({courseName:'测试课程',documentId:raw.id});
   check(f.opened.document.id===raw.id,'saved PDF could not open before AI completion');
   [...document.querySelectorAll('[role=tab]')].find(node=>node.textContent.includes('PDF 资料')).click();
+  await waitFor('document search mounted',()=>document.querySelector('[aria-label="搜索 PDF 文件名"]'));
+  const search=document.querySelector('[aria-label="搜索 PDF 文件名"]');
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(search,'EXTERNAL'); search.dispatchEvent(new Event('input',{bubbles:true}));
+  await waitFor('filename filtered',()=>search.closest('[role=tabpanel]').textContent.includes('1 份资料'));
+  check(!search.closest('[role=tabpanel]').textContent.includes('lesson.pdf'),'file search left unrelated document rows visible');
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(search,''); search.dispatchEvent(new Event('input',{bubbles:true}));
+  await waitFor('filter cleared',()=>search.closest('[role=tabpanel]').textContent.includes('3 份资料'));
   f.configured=true;f.blockAnalysis=true;
   await waitFor('retry task visible',()=>button('重试'));
   button('重试').click();
@@ -288,6 +313,7 @@ window.runImportRegression = async () => {
   await waitFor('single digest reused',()=>f.bundle.manifest.documents.some(doc=>doc.id===reused.documentId&&doc.includedInCourse&&!doc.processing));
   check(f.calls.analyze===beforeReuse.analyze+1,'single document not analyzed');
   check(f.calls.synthesize===beforeReuse.synthesize,'single document redundantly synthesized');
+  check(f.lockCalls>=f.calls.save,'course mutations bypassed the desktop write-lock boundary');
   return {...f.calls,quickImport:true,courseRetry:true,batchMergedOnce:true};
 };
 `;

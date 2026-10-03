@@ -35,9 +35,16 @@ import {
 } from '@/lib/glossary';
 import { CourseImportDialog } from '@/components/course-import-dialog';
 import { DocumentProcessingStatus } from '@/components/document-processing-status';
-import { BackgroundImports } from '@/lib/background-imports';
+import { processingIsActive, type BackgroundImports } from '@/lib/background-imports';
+import { createBackgroundProcessor } from '@/lib/background-processor';
+import { registerTaskControl,removeTaskCourse,updateTaskBundle } from '@/lib/background-task-store';
 import { KnowledgeMarkdown, KnowledgeSection } from '@/components/knowledge-section';
 import { KnowledgeMindmap } from '@/components/knowledge-mindmap';
+import { CourseNotesPanel } from '@/components/course-notes-panel';
+import { CourseHistoryPanel } from '@/components/course-history-panel';
+import { MarkdownActions, StudyActions } from '@/components/study-actions';
+import { renderCourseSummary } from '@/lib/knowledge/artifact-renderer';
+import { appendStudyNote, artifactStatus, selectStudyDocuments, type DocumentSort } from '@/lib/course-storage/study-tools';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -66,8 +73,9 @@ import type {
   DocumentDigest,
   DocumentRecord,
   ImportOptions,
+  SourceReference,
 } from '@/lib/course-storage/types';
-import { createReaderService } from '@/lib/reader-cache';
+import { createReaderService, type DocumentProgress } from '@/lib/reader-cache';
 import { publishCachedTranslation } from '@/lib/shared-translation';
 import { loadChatSettings, type ChatSettings } from '@/lib/chat-cache';
 import type { ChatScope } from '@/lib/chat-cache';
@@ -86,7 +94,6 @@ import {
   createKnowledgeProviderForSettings,
   describeKnowledgeError,
 } from '@/lib/knowledge/ai-knowledge-provider';
-import { courseKnowledgeFromSingleDigest } from '@/lib/knowledge/single-document-course';
 import { extractPdfPages, inspectPdf } from '@/lib/knowledge/document-digest';
 import {
   createOcrProviderForSettings,
@@ -115,6 +122,7 @@ export interface CourseReaderContext {
   document: DocumentRecord;
   digest?: DocumentDigest;
   initialPage?: number;
+  initialQuestion?: string;
   onBack: () => void;
   storage?: CourseStorage;
 }
@@ -214,6 +222,10 @@ export function CourseLibrary({
   const [entries, setEntries] = useState<CourseEntry[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [studyTab, setStudyTab] = useState('summary');
+  const [documentQuery, setDocumentQuery] = useState('');
+  const [documentSort, setDocumentSort] = useState<DocumentSort>('recent-read');
+  const [readingProgress, setReadingProgress] = useState<DocumentProgress[]>([]);
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -254,50 +266,47 @@ export function CourseLibrary({
   >(undefined);
   const importProgressRef = useRef<ImportProgressRuntime | null>(null);
   const backgroundRef = useRef<BackgroundImports | null>(null);
-  if (!backgroundRef.current) backgroundRef.current = new BackgroundImports({
+  if (!backgroundRef.current) backgroundRef.current = createBackgroundProcessor({
     onBundle: (id, next) => setEntryBundle(id, next),
     onProgress: message => setMessage(message),
     onError: message => setError(message),
-    analyze: async (storage, document, signal, progress) => {
-      const provider = createKnowledgeProviderForSettings(loadKnowledgeSettings());
-      const glossary = await storage.loadGlossary?.() ?? EMPTY_GLOSSARY;
-      const file = await storage.openPdf(document.id);
-      const extracted = await extractPdfPages(file, {signal,
-        recognizePage: makeOcrRecognizer(loadChatSettings()),
-        onProgress: (page, count, stage) => progress(`${stage === 'ocr' ? 'OCR' : '提取文字'} ${page}/${count}`),
-      });
-      if (extracted.fingerprint !== document.fingerprint) throw new Error('课程中的 PDF 已被外部替换；请重新导入新文件，原任务未覆盖已有成果。');
-      return provider.analyzeDocument({signal, glossary, fingerprint:document.fingerprint,
-        documentId:document.id, fileName:document.fileName, pages:extracted.pages,
-        onStage: (stage, detail) => progress(knowledgeStageMessage(stage, detail)),
-      });
-    },
-    synthesize: async (current, ids, storage, signal) => {
-      const digests = current.manifest.documents.filter(doc => doc.includedInCourse || ids.includes(doc.id))
-        .map(doc => current.digests[doc.id]).filter((digest): digest is DocumentDigest => Boolean(digest));
-      const userNodeLabels = current.knowledge.nodes.filter(node => node.ownership === 'user').map(node => node.label);
-      // A single validated document already contains the full course hierarchy.
-      // Explicit regeneration still uses the AI provider; only initial import reuses it.
-      const reused = courseKnowledgeFromSingleDigest(digests, userNodeLabels);
-      if (reused) return reused;
-      const provider = createKnowledgeProviderForSettings(loadKnowledgeSettings());
-      return provider.synthesizeCourseKnowledge({signal,
-        glossary:await storage.loadGlossary?.() ?? EMPTY_GLOSSARY,
-        courseId:current.manifest.id, courseName:current.manifest.name,
-        digests, userNodeLabels,
-      });
-    },
+    execute: !(typeof window !== 'undefined' && window.yeyuDesktop?.getBackgroundSnapshot),
+    onWake: () => { void window.yeyuDesktop?.wakeBackgroundTasks?.().catch(() => undefined); },
   });
   useEffect(() => {
     const worker = backgroundRef.current!;
     worker.resume();
-    return () => worker.stop();
+    const unregister = window.yeyuDesktop?.controlBackgroundTask ? undefined : registerTaskControl(command => worker.control(command));
+    return () => { worker.stop(); unregister?.(); };
   }, []);
   useEffect(() => {
     const worker = backgroundRef.current!;
-    for (const entry of entries) if (entry.bundle && entry.permission === 'granted') worker.register(entry.id, entry.storage);
+    for (const entry of entries) if (entry.bundle && entry.permission === 'granted') {
+      worker.register(entry.id, entry.storage);
+      if (!window.yeyuDesktop?.getBackgroundSnapshot) updateTaskBundle(entry.bundle);
+    }
     worker.wake();
   }, [entries]);
+  useEffect(() => {
+    const api = window.yeyuDesktop;
+    if (!api?.onCoursesChanged) return;
+    let live = true;
+    const refresh = async (directoryName: string) => {
+      const entry = entries.find(item => item.storage.label === directoryName);
+      if (!entry) return;
+      try {
+        const next = await entry.storage.load();
+        if (live) setEntries(previous => {
+          const current = previous.find(item => item.id === entry.id);
+          if (!current || (current.bundle && current.bundle.manifest.revision >= next.manifest.revision)) return previous;
+          return previous.map(item => item.id === entry.id ? {...item,bundle:next,name:next.manifest.name,updatedAt:next.manifest.updatedAt} : item);
+        });
+        if (live && next.manifest.revision > (entry.bundle?.manifest.revision ?? -1)) onBundleUpdated?.(next);
+      } catch { /* The next notification or explicit refresh can recover a disconnected course. */ }
+    };
+    const unsubscribe = api.onCoursesChanged(({directoryName}) => { void refresh(directoryName); });
+    return () => {live=false;unsubscribe();};
+  },[entries,onBundleUpdated]);
 
   const beginImportProgress = (fileName: string) => {
     const now = Date.now();
@@ -492,7 +501,20 @@ export function CourseLibrary({
 
   const active = entries.find((entry) => entry.id === activeId) ?? null;
   const bundle = active?.bundle ?? null;
-  const backgroundBusy = Boolean(bundle?.manifest.documents.some(doc => doc.processing && doc.processing.status !== 'failed'));
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      const documents = bundle?.manifest.documents ?? [];
+      void Promise.all(documents.map(document => createReaderService().progress.load(document.fingerprint)))
+        .then(values => {if (!cancelled) setReadingProgress(values.filter((value): value is DocumentProgress => Boolean(value)));})
+        .catch(() => {if (!cancelled) setReadingProgress([]);});
+    };
+    refresh(); window.addEventListener('focus', refresh); window.addEventListener('reader-progress-updated', refresh);
+    return () => {cancelled = true; window.removeEventListener('focus', refresh); window.removeEventListener('reader-progress-updated', refresh);};
+  }, [bundle?.manifest.documents]);
+  const visibleDocuments = selectStudyDocuments(bundle?.manifest.documents ?? [], readingProgress, documentQuery, documentSort);
+  const recentDocuments = selectStudyDocuments(bundle?.manifest.documents ?? [], readingProgress).filter(document => readingProgress.some(progress => progress.fingerprint === document.fingerprint)).slice(0,3);
+  const backgroundBusy = Boolean(bundle?.manifest.documents.some(doc => processingIsActive(doc.processing)));
   const includedCount =
     bundle?.manifest.documents.filter((document) => document.includedInCourse)
       .length ?? 0;
@@ -526,7 +548,7 @@ export function CourseLibrary({
         courseName.trim(),
       );
       const storage = new DesktopCourseStorage(desktopApi, directoryName);
-      const nextBundle = await storage.initialize(courseName.trim());
+      const nextBundle = await storage.withWriteLock(() => storage.initialize(courseName.trim()));
       setEntries((previous) => [
         {
           id: nextBundle.manifest.id,
@@ -868,6 +890,7 @@ export function CourseLibrary({
 
   const regenerateDocument = async (document: DocumentRecord, retry = false) => {
     if (!active?.bundle) return;
+    const expectedRevision = active.bundle.manifest.revision;
     if (backgroundBusy) { setError('本课程正在后台整理，可继续阅读；完成后可手动重新生成。'); return; }
     setBusy(true);
     setError(null);
@@ -910,11 +933,10 @@ export function CourseLibrary({
       });
       if (controller.signal.aborted) throw new Error('生成已取消；旧成果保留，已完成层可在重试时复用。');
       setGenerationAbort(null);
-      const next = await active.storage.updateDocumentArtifacts(
-        document.id,
-        active.bundle.manifest.revision,
-        digest,
-      );
+      const next = await backgroundRef.current!.mutate(active.id, storage => {
+        if (controller.signal.aborted) throw new Error('生成已取消。');
+        return storage.updateDocumentArtifacts(document.id, expectedRevision, digest);
+      });
       setEntryBundle(active.id, next);
       setMessage('已用 AI 重新生成这份 PDF 的总结和脑图。');
     } catch (mutationError) {
@@ -963,11 +985,10 @@ export function CourseLibrary({
       });
       if (controller.signal.aborted) throw new Error('生成已取消；旧成果保留，已完成层可在重试时复用。');
       setGenerationAbort(null);
-      const next = await active.storage.mergeDocument(
-        document.id,
-        bundle.manifest.revision,
-        aiKnowledge,
-      );
+      const next = await backgroundRef.current!.mutate(active.id, storage => {
+        if (controller.signal.aborted) throw new Error('生成已取消。');
+        return storage.mergeDocument(document.id, bundle.manifest.revision, aiKnowledge);
+      });
       setEntryBundle(active.id, next);
       setMessage('这份 PDF 已并入 AI 综合的课程总结和脑图。');
     } catch (mutationError) {
@@ -984,6 +1005,7 @@ export function CourseLibrary({
     document: DocumentRecord,
     initialPage?: number,
     propagateError = false,
+    initialQuestion?: string,
   ) => {
     if (!entry.bundle) throw new Error('目标课程当前无法读取。');
     setBusy(true);
@@ -1000,6 +1022,7 @@ export function CourseLibrary({
         document,
         digest: entry.bundle.digests[document.id],
         initialPage,
+        initialQuestion,
         onBack: () => undefined,
         storage: entry.storage,
       });
@@ -1062,11 +1085,11 @@ export function CourseLibrary({
           synthesisWarning = describeKnowledgeError(synthesisError);
         }
       }
-      const next = await active.storage.removeDocument(
+      const next = await backgroundRef.current!.mutate(active.id, storage => storage.removeDocument(
         document.id,
         bundle.manifest.revision,
         aiKnowledge,
-      );
+      ));
       setEntryBundle(active.id, next);
       if (synthesisWarning) {
         setMessage(
@@ -1088,14 +1111,19 @@ export function CourseLibrary({
   };
 
   const deleteCourseEntry = async (entry: CourseEntry) => {
-    if (entry.bundle?.manifest.documents.some(doc => doc.processing && doc.processing.status !== 'failed')) {
+    if (entry.bundle?.manifest.documents.some(doc => processingIsActive(doc.processing))) {
       setError('请在本课程后台整理结束后删除课程。'); return;
     }
     setBusy(true);
     setError(null);
     try {
-      await entry.storage.deleteCourse();
+      await backgroundRef.current!.mutate(entry.id, async (storage, current) => {
+        if (current.manifest.documents.some(doc => processingIsActive(doc.processing)))
+          throw new Error('请在本课程后台整理结束后删除课程。');
+        await storage.deleteCourse();
+      });
       backgroundRef.current!.unregister(entry.id);
+      removeTaskCourse(entry.id);
       if (!isDesktop && entry.handle) await removeRecentCourse(entry.id);
       const remaining = entries.filter((item) => item.id !== entry.id);
       setEntries(remaining);
@@ -1118,6 +1146,17 @@ export function CourseLibrary({
       ),
     [bundle?.manifest.documents],
   );
+
+  const askFromArtifact = (text: string, sources: SourceReference[] = []) => {
+    if (!active || !bundle) return;
+    const source = sources.find(item => sourceDocuments.has(item.documentId));
+    const document = source ? sourceDocuments.get(source.documentId) : bundle.manifest.documents.find(item => item.includedInCourse) ?? bundle.manifest.documents[0];
+    if (document) void openDocumentForEntry(active, document, source?.pageStart, false, text);
+  };
+  const saveArtifactNote = (text: string, sources: SourceReference[] = []) => {
+    if (!active) return Promise.reject(new Error('请先选择课程。'));
+    return appendStudyNote(active.storage, {text, sources});
+  };
 
   useEffect(() => {
     if (!onControlReady) return;
@@ -1347,7 +1386,7 @@ export function CourseLibrary({
             const { directoryName } =
               await desktopApi.createCourseDirectory(nameValue);
             const storage = new DesktopCourseStorage(desktopApi, directoryName);
-            const nextBundle = await storage.initialize(nameValue);
+            const nextBundle = await storage.withWriteLock(() => storage.initialize(nameValue));
             const entry: CourseEntry = {
               id: nextBundle.manifest.id,
               name: nextBundle.manifest.name,
@@ -1388,16 +1427,13 @@ export function CourseLibrary({
         }
         if (name === 'remove_course') {
           return runExclusive(async () => {
-            if (
-              entry.bundle?.manifest.documents.some(
-                (item) =>
-                  item.processing && item.processing.status !== 'failed',
-              )
-            ) {
-              throw new Error('请在本课程后台整理结束后删除课程。');
-            }
-            await entry.storage.deleteCourse();
+            await backgroundRef.current!.mutate(entry.id, async (storage, current) => {
+              if (current.manifest.documents.some(item => processingIsActive(item.processing)))
+                throw new Error('请在本课程后台整理结束后删除课程。');
+              await storage.deleteCourse();
+            });
             backgroundRef.current!.unregister(entry.id);
+      removeTaskCourse(entry.id);
             setEntries((previous) =>
               previous.filter((item) => item.id !== entry.id),
             );
@@ -1470,21 +1506,16 @@ export function CourseLibrary({
         }
         if (name === 'remove_document') {
           return runExclusive(async () => {
-            const current = await entry.storage.load();
-            const currentDocument = current.manifest.documents.find(
-              (item) => item.id === document.id,
-            );
-            if (!currentDocument) throw new Error('这份 PDF 已不存在。');
-            if (
-              currentDocument.processing &&
-              currentDocument.processing.status !== 'failed'
-            ) {
-              throw new Error('请在这份 PDF 后台整理结束后再删除。');
-            }
-            const next = await entry.storage.removeDocument(
-              document.id,
-              current.manifest.revision,
-            );
+            const next = await backgroundRef.current!.mutate(entry.id, async (storage, current) => {
+              const currentDocument = current.manifest.documents.find(
+                (item) => item.id === document.id,
+              );
+              if (!currentDocument) throw new Error('这份 PDF 已不存在。');
+              if (processingIsActive(currentDocument.processing)) {
+                throw new Error('请在这份 PDF 后台整理结束后再删除。');
+              }
+              return storage.removeDocument(document.id, current.manifest.revision);
+            });
             setEntryBundle(entry.id, next);
             setMessage(`已删除“${document.fileName}”及其成果。`);
             return { removed: true, documentId: document.id };
@@ -1493,6 +1524,9 @@ export function CourseLibrary({
         if (name === 'regenerate_document') {
           return runExclusive(() => withSharedController(args, async (controller) => {
             setGenerationAbort(controller);
+            // Keep the pre-analysis revision: a concurrent import or background
+            // publication must invalidate this result instead of being overwritten.
+            const current = await entry.storage.load();
             const glossary =
               (await entry.storage.loadGlossary?.()) ?? EMPTY_GLOSSARY;
             const file = await entry.storage.openPdf(document.id);
@@ -1511,12 +1545,11 @@ export function CourseLibrary({
               pages: extracted.pages,
               bypassCache: true,
             });
-            const current = await entry.storage.load();
-            const next = await entry.storage.updateDocumentArtifacts(
-              document.id,
-              current.manifest.revision,
-              digest,
-            );
+            if (controller.signal.aborted) throw new Error('生成已取消。');
+            const next = await backgroundRef.current!.mutate(entry.id, storage => {
+              if (controller.signal.aborted) throw new Error('生成已取消。');
+              return storage.updateDocumentArtifacts(document.id, current.manifest.revision, digest);
+            });
             setEntryBundle(entry.id, next);
             setMessage(`已重新生成“${document.fileName}”的总结和脑图。`);
             return { document: toControlItem({ ...entry, bundle: next }).documents.find((item) => item.id === document.id) };
@@ -1547,11 +1580,11 @@ export function CourseLibrary({
                   .filter((node) => node.ownership === 'user')
                   .map((node) => node.label),
               });
-            const next = await entry.storage.mergeDocuments(
-              documents.map((item) => item.id),
-              current.manifest.revision,
-              aiKnowledge,
-            );
+            if (controller.signal.aborted) throw new Error('生成已取消。');
+            const next = await backgroundRef.current!.mutate(entry.id, storage => {
+              if (controller.signal.aborted) throw new Error('生成已取消。');
+              return storage.mergeDocuments(documents.map(item => item.id), current.manifest.revision, aiKnowledge);
+            });
             setEntryBundle(entry.id, next);
             setMessage(`课程“${entry.name}”的总总结和总脑图已重新生成。`);
             return { course: toControlItem({ ...entry, bundle: next }) };
@@ -1872,6 +1905,17 @@ export function CourseLibrary({
                 </div>
               ) : null}
 
+              {bundle.manifest.documents.length > 0 ? <section aria-label="继续学习" className="mt-6 rounded-2xl border border-blue-100 bg-blue-50/60 p-5">
+                <div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-semibold text-slate-900">继续学习</h2><p className="mt-1 text-xs text-slate-500">{recentDocuments.length ? '从上次阅读的位置继续。' : '打开一份资料开始阅读，整理成果会在后台更新。'}</p></div><Button variant="outline" size="sm" onClick={() => setStudyTab('documents')}>查看全部资料</Button></div>
+                <div className="mt-4 grid gap-3 md:grid-cols-3">{(recentDocuments.length ? recentDocuments : selectStudyDocuments(bundle.manifest.documents, [], '', 'recent-import').slice(0,3)).map(document => {
+                  const progress = readingProgress.find(item => item.fingerprint === document.fingerprint);
+                  const page = Math.min(document.pageCount || 1, Math.max(1, progress?.lastPage ?? 1));
+                  return <button key={document.id} type="button" className="rounded-xl border border-blue-100 bg-white p-4 text-left hover:border-blue-300" onClick={() => void openDocument(document)}><span className="block truncate text-sm font-semibold">{document.fileName}</span><span className="mt-2 block text-xs text-slate-500">{progress ? `上次读到第 ${page} / ${document.pageCount} 页` : `${document.pageCount} 页 · 开始阅读`}</span>{progress ? <progress aria-label={`${document.fileName}阅读位置`} className="mt-3 h-1 w-full" max={document.pageCount || 1} value={page} /> : null}</button>;
+                })}</div>
+                {bundle.manifest.documents.some(document => document.processing?.status === 'failed') ? <Button className="mt-3 text-amber-800" variant="link" size="sm" onClick={() => setStudyTab('documents')}>有整理任务需要处理，查看并重试 →</Button> : null}
+                {bundle.manifest.documents.some(document => (document.hasSummary || document.hasMindmap) && !readingProgress.some(progress => progress.fingerprint === document.fingerprint)) ? <p className="mt-3 text-xs text-blue-700">有已整理好的资料尚未开始阅读，可在 PDF 资料中打开。</p> : null}
+              </section> : null}
+
               <section className="mt-6 grid overflow-hidden rounded-2xl border border-slate-200 bg-white sm:grid-cols-4">
                 <Metric
                   icon={<FileText />}
@@ -1899,12 +1943,13 @@ export function CourseLibrary({
               </section>
 
               <Tabs
-                defaultValue="summary"
+                value={studyTab}
+                onValueChange={value => setStudyTab(String(value))}
                 className="mt-5 gap-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
               >
                 <TabsList
                   variant="line"
-                  className="h-13 w-full justify-start gap-3 border-b border-slate-200 px-4"
+                  className="h-13 w-full justify-start gap-3 overflow-x-auto border-b border-slate-200 px-4"
                 >
                   <TabsTrigger value="summary" className="flex-none px-3">
                     <Sparkles /> 课程总总结
@@ -1915,6 +1960,8 @@ export function CourseLibrary({
                   <TabsTrigger value="documents" className="flex-none px-3">
                     <FileText /> PDF 资料 {bundle.manifest.documents.length}
                   </TabsTrigger>
+                  <TabsTrigger value="notes" className="flex-none px-3">课程笔记</TabsTrigger>
+                  <TabsTrigger value="history" className="flex-none px-3">成果历史</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="summary" className="min-h-[520px]">
@@ -1925,14 +1972,13 @@ export function CourseLibrary({
                         课程总结尚未包含资料
                       </h2>
                       <p className="mt-2 max-w-sm text-xs leading-5 text-slate-500">
-                        导入第一份 PDF
-                        后，可生成独立成果，并将内部摘要合并到课程总总结和总脑图。
+                        {bundle.manifest.documents.length ? '资料已经保存，可以立即阅读。整理中的资料完成后会自动汇总；仅保存的资料可在 PDF 资料中选择“AI 并入课程”。' : '导入第一份 PDF 后，可生成独立成果，并将内部摘要合并到课程总总结和总脑图。'}
                       </p>
                       <Button
                         className="mt-6"
-                        onClick={() => setImportOpen(true)}
+                        onClick={() => bundle.manifest.documents.length ? setStudyTab('documents') : setImportOpen(true)}
                       >
-                        <FilePlus2 /> 导入第一份 PDF
+                        {bundle.manifest.documents.length ? <><BookOpen /> 阅读资料与查看整理进度</> : <><FilePlus2 /> 导入第一份 PDF</>}
                       </Button>
                     </div>
                   ) : (
@@ -1948,6 +1994,7 @@ export function CourseLibrary({
                           版本 {bundle.knowledge.version} · 汇总 {includedCount}{' '}
                           份 PDF
                         </p>
+                        <MarkdownActions content={renderCourseSummary(bundle.manifest, bundle.knowledge)} fileName={`${bundle.manifest.name}-课程总结.md`} />
                         <div className="mt-5">
                           <KnowledgeMarkdown>{bundle.knowledge.nodes.find((node) => node.kind === 'course')?.description ?? ''}</KnowledgeMarkdown>
                         </div>
@@ -1957,6 +2004,7 @@ export function CourseLibrary({
                             .map((node, index) => (
                               <KnowledgeSection key={node.id} title={`${index + 1}. ${node.label}`} initiallyOpen={index < 2}>
                                 <KnowledgeMarkdown>{node.description}</KnowledgeMarkdown>
+                                <StudyActions onAsk={() => askFromArtifact(`请解释“${node.label}”：${node.description}`, node.sources)} onSave={() => saveArtifactNote(`${node.label}\n\n${node.description}`, node.sources)} />
                                 <div className="mt-3 flex flex-wrap gap-2">
                                   {node.sources.map((source) => (
                                     <Button
@@ -1999,7 +2047,7 @@ export function CourseLibrary({
                             }}>{source.fileName} · 第 {source.pageStart} 页</Button>)}
                           </KnowledgeSection>)}
                           {bundle.knowledge.unresolvedQuestions?.length ? <KnowledgeSection title="待解决问题">
-                            {bundle.knowledge.unresolvedQuestions.map((question, index) => <KnowledgeMarkdown key={index}>{question}</KnowledgeMarkdown>)}
+                            {bundle.knowledge.unresolvedQuestions.map((question, index) => <div key={index}><KnowledgeMarkdown>{question}</KnowledgeMarkdown><StudyActions onAsk={() => askFromArtifact(question)} onSave={() => saveArtifactNote(question)} /></div>)}
                           </KnowledgeSection> : null}
                         </div>
                       </article>
@@ -2029,12 +2077,17 @@ export function CourseLibrary({
                 <TabsContent value="mindmap">
                   <KnowledgeMindmap
                     knowledge={bundle.knowledge}
+                    onAskQuestion={({text,sources}) => askFromArtifact(text,sources)}
+                    onSaveNote={saveArtifactNote}
                     onOpenSource={(documentId, page) => {
                       const document = sourceDocuments.get(documentId);
                       if (document) void openDocument(document, page);
                     }}
                   />
                 </TabsContent>
+
+                <TabsContent value="notes" keepMounted><CourseNotesPanel key={active.id} storage={active.storage} courseId={bundle.manifest.id} /></TabsContent>
+                <TabsContent value="history"><CourseHistoryPanel key={active.id} storage={active.storage} current={bundle.knowledge} /></TabsContent>
 
                 <TabsContent
                   value="documents"
@@ -2051,6 +2104,7 @@ export function CourseLibrary({
                       <FilePlus2 /> 导入 PDF
                     </Button>
                   </div>
+                  {bundle.manifest.documents.length ? <div className="mt-5 flex flex-wrap gap-3"><Input aria-label="搜索 PDF 文件名" placeholder="搜索 PDF 文件名…" className="max-w-sm" value={documentQuery} onChange={event => setDocumentQuery(event.target.value)} /><select aria-label="资料排序" className="rounded-lg border border-slate-200 bg-white px-3 text-sm" value={documentSort} onChange={event => setDocumentSort(event.target.value as DocumentSort)}><option value="recent-read">最近阅读</option><option value="recent-import">最近导入</option><option value="name">文件名</option></select><span className="self-center text-xs text-slate-500">{visibleDocuments.length} 份资料</span></div> : null}
                   {bundle.manifest.documents.length === 0 ? (
                     <div className="flex min-h-80 flex-col items-center justify-center text-center">
                       <FileText className="size-8 text-slate-400" />
@@ -2063,7 +2117,8 @@ export function CourseLibrary({
                     </div>
                   ) : (
                     <div className="mt-6 divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200">
-                      {bundle.manifest.documents.map((document) => (
+                      {!visibleDocuments.length ? <p className="p-6 text-center text-sm text-slate-500">没有匹配的 PDF，请尝试其他文件名。</p> : null}
+                      {visibleDocuments.map((document) => (
                         <div
                           key={document.id}
                           className="grid gap-4 bg-white px-4 py-4 lg:grid-cols-[minmax(220px,1fr)_190px_190px_auto] lg:items-center"
@@ -2097,14 +2152,12 @@ export function CourseLibrary({
                               : '尚未纳入课程知识库'}
                           </span>
                           <span className="flex items-center gap-2 text-xs text-slate-600">
-                            {document.hasSummary && document.hasMindmap ? (
+                            {document.hasSummary || document.hasMindmap ? (
                               <Check className="size-4 text-emerald-600" />
                             ) : (
                               <span className="size-4 text-center">—</span>
                             )}
-                            {document.hasSummary && document.hasMindmap
-                              ? '总结与脑图已生成'
-                              : '未生成独立成果'}
+                            {artifactStatus(document)}
                           </span>
                           <div className="flex flex-wrap justify-end gap-2">
                             <Button

@@ -12,10 +12,14 @@ import { build } from 'esbuild';
 const root = path.resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const entry = `
-import React from 'react';
+import React, {useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {DocumentSummaryPanel} from '@/components/document-summary-panel';
 import {KnowledgeMindmap} from '@/components/knowledge-mindmap';
+import {CourseNotesPanel} from '@/components/course-notes-panel';
+import {CourseHistoryPanel} from '@/components/course-history-panel';
+import {MemoryCourseStorage} from '@/lib/course-storage/memory-course-storage';
+import {appendStudyNote} from '@/lib/course-storage/study-tools';
 const source = {documentId:'d',fileName:'fixture.pdf',pageStart:2,type:'pdf'};
 const knowledge = {schemaVersion:2,courseId:'c',version:1,updatedAt:'today',conflicts:[],nodes:[
   {id:'root',label:'科学',kind:'course',ownership:'generated',description:'概览',sources:[]},
@@ -24,10 +28,16 @@ const knowledge = {schemaVersion:2,courseId:'c',version:1,updatedAt:'today',conf
 const scientific = '$$E=mc^2$$'+ '\\n\\n|量|单位|\\n|---|---|\\n|E|J|';
 const digest = {documentId:'d',title:'测试总结',promptVersion:'test',sourcePages:[1,2],overview:'概览',unresolvedQuestions:['边界条件？'],sections:
   Array.from({length:15},(_,i) => ({id:'s'+i,title:'章节 '+i,summary:'小节概述',pageStart:1,pageEnd:2,points:[{text:scientific,pageStart:2,pageEnd:2}]}))};
-window.sourceJumps = []; window.copied = '';
+window.sourceJumps = []; window.copied = ''; window.questions = [];
 Object.defineProperty(navigator,'clipboard',{value:{writeText:async (text) => {window.copied = text;}}});
 const jump = (...args) => window.sourceJumps.push(args);
-createRoot(document.getElementById('root')).render(<><DocumentSummaryPanel digest={digest} onOpenSource={jump}/><KnowledgeMindmap knowledge={knowledge} onOpenSource={jump}/></>);
+const storage = new MemoryCourseStorage();
+const historyStorage = {listHistory:async()=>[{id:'past',revision:0,updatedAt:'2026-01-01',source:'snapshot',summary:'历史概览',knowledge:{...knowledge,version:0,nodes:[knowledge.nodes[0],{...knowledge.nodes[1],description:'历史说明'},{...knowledge.nodes[1],id:'removed',label:'已移除概念'}],relations:[],unresolvedQuestions:['旧问题']}}]};
+function App() {
+  const [notesVisible,setNotesVisible] = useState(true); window.setNotesVisible=setNotesVisible;
+  return <><DocumentSummaryPanel digest={digest} onOpenSource={jump} onAskQuestion={question=>window.questions.push(question)} onSaveNote={(text,page)=>appendStudyNote(storage,{text,sources:[{...source,pageStart:page}]})}/><KnowledgeMindmap knowledge={knowledge} onOpenSource={jump} onAskQuestion={question=>window.questions.push(question)} onSaveNote={(text,sources)=>appendStudyNote(storage,{text,sources})}/>{notesVisible ? <CourseNotesPanel storage={storage} courseId="fixture-course"/> : null}<CourseHistoryPanel storage={historyStorage} current={knowledge}/></>;
+}
+createRoot(document.getElementById('root')).render(<App/>);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve,ms));
 async function waitFor(label,predicate) { for(let i=0;i<200;i++){if(predicate()) return;await sleep(20)} throw new Error('Timeout: '+label); }
 const check = (value,message) => {if(!value) throw new Error(message)};
@@ -39,6 +49,29 @@ window.runReaderRegression = async () => {
   button('章节 14').click(); await sleep(50);
   check(document.querySelectorAll('table').length === 3,'all later chapters reachable');
   button('要点来源').click(); check(window.sourceJumps[0][0] === 2,'point source jump');
+  button('继续追问').click(); check(window.questions[0].pageNumber === 2 && window.questions[0].text.includes('E=mc^2'),'summary follow-up preserves page and formula');
+  button('复制总结').click(); await waitFor('summary copied',()=>window.copied.includes('边界条件？')); check(window.copied.includes('章节 14'),'summary copies all sections');
+  button('加入课程笔记').click(); await waitFor('note saved',()=>document.body.textContent.includes('已加入课程笔记'));
+  check((await storage.loadNotes()).content.includes('第 2 页'),'summary note has source page');
+  button('重新加载').click(); await waitFor('notes refreshed',()=>document.querySelector('[aria-label="编辑课程笔记"]').value.includes('E=mc^2'));
+  const editor = document.querySelector('[aria-label="编辑课程笔记"]');
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(editor,'我的未保存草稿'); editor.dispatchEvent(new Event('input',{bubbles:true}));
+  await waitFor('draft dirty',()=>button('保存笔记')&&!button('保存笔记').disabled);
+  await storage.saveNotes('其他窗口的新笔记',(await storage.loadNotes()).token);
+  button('保存笔记').click(); await waitFor('conflict surfaced',()=>document.body.textContent.includes('课程笔记已在其他窗口或外部修改'));
+  check(editor.value==='我的未保存草稿','external conflict preserves editor draft');
+  check((await storage.loadNotes()).content==='其他窗口的新笔记','external note remains untouched');
+  window.setNotesVisible(false); await waitFor('notes unmounted',()=>!document.querySelector('[aria-label="编辑课程笔记"]'));
+  window.setNotesVisible(true); await waitFor('draft restored',()=>document.querySelector('[aria-label="编辑课程笔记"]')?.value==='我的未保存草稿');
+  check(document.body.textContent.includes('其他窗口的新笔记'),'remount shows latest external content for merging');
+  const history=document.querySelector('[aria-label="成果历史"]');
+  await waitFor('history versions loaded',()=>history.textContent.includes('对比版本新增 79 项'));
+  check(history.textContent.includes('移除 1 项')&&history.textContent.includes('修改 1 项'),'history node differences wrong');
+  check(history.textContent.includes('移除问题：旧问题')&&history.textContent.includes('新增关系'),'history lost questions or relation changes');
+  check(history.textContent.includes('历史概览')&&history.textContent.includes('不支持整门课程恢复'),'artifact-only history preview missing scope');
+  const comparison=document.querySelector('[aria-label="历史对比版本"]');
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(comparison,'past');comparison.dispatchEvent(new Event('change',{bubbles:true}));
+  await waitFor('history comparison selection',()=>history.textContent.includes('对比版本新增 0 项 · 移除 0 项 · 修改 0 项'));
   const canvas = document.querySelector('[aria-label="脑图画布"]');
   const conceptButton = (label) => [...canvas.querySelectorAll('button')].find(node => node.querySelector('.line-clamp-1')?.textContent === label);
   check(conceptButton('概念 2') && conceptButton('概念 2').offsetLeft > conceptButton('概念 1').offsetLeft && conceptButton('概念 1').offsetLeft > conceptButton('概念 0').offsetLeft, 'three hierarchy levels visible by default despite cross link');

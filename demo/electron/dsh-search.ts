@@ -1,3 +1,5 @@
+import { classifyDshProviderError } from './dsh-errors.ts';
+
 /** Fixed search tool behind the same backend queue. No model-selected URLs. */
 export async function dshWebSearch(
   apiKey: string,
@@ -24,7 +26,7 @@ export async function dshWebSearch(
       }),
     },
   );
-  if (!response.ok || !response.body) throw new Error('联网检索失败。');
+  if (!response.ok || !response.body) throw classifyDshProviderError({ status: response.status });
   const reader = response.body.getReader();
   let bytes = 0;
   const chunks: Uint8Array[] = [];

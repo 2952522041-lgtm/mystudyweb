@@ -37,6 +37,7 @@ import {
   resolveDevTargetUrl,
 } from './navigation.ts';
 import { isSmokeRun, probePreloadBridge } from './smoke.ts';
+import { probeBackgroundHost, BACKGROUND_SMOKE_MARKER } from './background-smoke.ts';
 import { handleSquirrelStartup } from './squirrel.ts';
 import { LanShareServer } from './lan-share.ts';
 import {
@@ -46,6 +47,10 @@ import {
 import { McpControlServer, type McpControlRequest } from './mcp-control.ts';
 import { prepareMcpRendererArgs } from './mcp-import.ts';
 import { DshDispatcher } from './dsh-dispatcher.ts';
+import { inspectDshRuntime } from './dsh-runtime.ts';
+import { BackgroundService, assertDesktopRole } from './background-service.ts';
+import { CourseLocks } from './course-locks.ts';
+import { validReaderView, readerViewFields } from './reader-view-state.ts';
 
 const dshManager = new DshDispatcher(path.join(__dirname, 'dsh-worker.mjs'));
 
@@ -57,6 +62,7 @@ if (handleSquirrelStartup()) {
 // 冒烟测试在无 GPU/显示器的环境下也要能启动，禁用硬件加速只影响该模式。
 if (isSmokeRun()) {
   app.disableHardwareAcceleration();
+  if (process.env.YEYU_SMOKE_PROFILE) app.setPath('userData', process.env.YEYU_SMOKE_PROFILE);
 }
 
 /**
@@ -64,6 +70,28 @@ if (isSmokeRun()) {
  * 主窗口的所有导航检查都以它为准。
  */
 let appOrigin = '';
+let appTarget: string | undefined;
+let mainWindow: BrowserWindow | undefined;
+let backgroundWindow: BrowserWindow | undefined;
+let quitting = false;
+const courseLocks = new CourseLocks();
+let backgroundService: BackgroundService;
+
+function releaseRendererOwner(owner: number) {
+  dshManager.cancelOwner(owner);
+  courseLocks.releaseOwner(owner);
+  backgroundService?.cancelOwner(owner);
+}
+function broadcastCoursesChanged(directoryName: string) {
+  for (const window of [mainWindow, backgroundWindow])
+    if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
+      try { window.webContents.send(DESKTOP_CHANNELS.coursesChanged, { directoryName }); } catch { /* renderer disappeared during notification */ }
+    }
+}
+function trustedSender(event: Electron.IpcMainInvokeEvent, role: 'main' | 'worker' | 'either' = 'either') {
+  assertDesktopRole({ owner: event.sender.id, mainFrame: event.senderFrame === event.sender.mainFrame, sameOrigin: Boolean(event.senderFrame && isAppOrigin(event.senderFrame.url, appOrigin)) },
+    { main: mainWindow?.webContents.id, worker: backgroundService?.owner }, role);
+}
 
 const MCP_RENDERER_TIMEOUT_MS = 15_000;
 const MCP_AI_TIMEOUT_MS = 30 * 60_000;
@@ -110,6 +138,7 @@ function createMcpRendererBridge(): {
     if (!response || typeof response.id !== 'string') return;
     const entry = pending.get(response.id);
     if (!entry || event.sender !== entry.window.webContents) return;
+    trustedSender(event, 'main');
     pending.delete(response.id);
     clearTimeout(entry.timer);
     if (response.ok) entry.resolve(response.result);
@@ -125,7 +154,7 @@ function createMcpRendererBridge(): {
     if (!MCP_COMMAND_NAMES.has(request.name)) {
       return Promise.reject(new Error(`不支持的页语命令：${request.name}`));
     }
-    const window = BrowserWindow.getAllWindows()[0];
+    const window = mainWindow;
     if (!window || window.isDestroyed()) {
       return Promise.reject(new Error('页语窗口尚未就绪。'));
     }
@@ -309,41 +338,53 @@ function registerDesktopIpc(
   lanShareServer: LanShareServer,
   readingStateStore: ReadingStateStore,
 ): void {
-  const trustedDshSender = (event: Electron.IpcMainInvokeEvent) => {
-    if (!BrowserWindow.fromWebContents(event.sender) || event.senderFrame !== event.sender.mainFrame
-      || !isAppOrigin(event.senderFrame.url, appOrigin)) throw new Error('DSH 仅允许页语桌面主窗口调用。');
+  const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1], role: 'main' | 'worker' | 'either' = 'either') => {
+    ipcMain.handle(channel, (event, ...args) => { trustedSender(event, role); return listener(event, ...args); });
   };
-  ipcMain.handle(DESKTOP_CHANNELS.dshRun, (event, request) => {
-    trustedDshSender(event);
+  handle(DESKTOP_CHANNELS.dshInspect, () => inspectDshRuntime());
+  handle(DESKTOP_CHANNELS.courseLockAcquire, async (event, directory) => {
+    const name = assertString(directory, '课程目录名不合法。');
+    await resolveCourseDirectoryPath(layout.coursesRoot, name);
+    trustedSender(event);
+    return courseLocks.acquire(event.sender.id, name);
+  });
+  handle(DESKTOP_CHANNELS.courseLockRelease, (event, token) => courseLocks.release(event.sender.id, assertString(token, '课程锁无效。')));
+  handle(DESKTOP_CHANNELS.backgroundGet, () => backgroundService.getSnapshot(), 'main');
+  handle(DESKTOP_CHANNELS.backgroundPublish, (event, value) => backgroundService.publish(event.sender.id, value), 'worker');
+  handle(DESKTOP_CHANNELS.backgroundControl, (event, value) => backgroundService.control(event.sender.id, value), 'main');
+  handle(DESKTOP_CHANNELS.backgroundResponse, (event, value) => backgroundService.respond(event.sender.id, value), 'worker');
+  handle(DESKTOP_CHANNELS.backgroundWake, () => broadcastCoursesChanged(''), 'main');
+  handle(DESKTOP_CHANNELS.dshRun, (event, request) => {
     return dshManager.run(event.sender.id, request, progress => {
       if (!event.sender.isDestroyed()) event.sender.send(DESKTOP_CHANNELS.dshProgress, progress);
     });
   });
-  ipcMain.handle(DESKTOP_CHANNELS.dshCancel, (event, requestId) => {
-    trustedDshSender(event);
+  handle(DESKTOP_CHANNELS.dshCancel, (event, requestId) => {
     if(typeof requestId === 'string') dshManager.cancel(event.sender.id, requestId);
   });
-  ipcMain.handle(
+  handle(
     DESKTOP_CHANNELS.workspaceInfo,
     async (): Promise<WorkspaceInfo> => {
       await ensureWorkspace(layout);
       return { root: layout.root, coursesRoot: layout.coursesRoot };
     },
   );
-  ipcMain.handle(DESKTOP_CHANNELS.listCourses, async () => {
+  handle(DESKTOP_CHANNELS.listCourses, async () => {
     await ensureWorkspace(layout);
     return scanCourses(layout.coursesRoot);
   });
-  ipcMain.handle(DESKTOP_CHANNELS.createCourse, async (_event, name) => {
+  handle(DESKTOP_CHANNELS.createCourse, async (_event, name) => {
     assertString(name, '课程名称不合法。');
     await ensureWorkspace(layout);
     try {
-      return await createCourseDirectory(layout.coursesRoot, name);
+      const created = await createCourseDirectory(layout.coursesRoot, name);
+      broadcastCoursesChanged(created.directoryName);
+      return created;
     } catch (error) {
       throw toIpcError(error);
     }
   });
-  ipcMain.handle(
+  handle(
     DESKTOP_CHANNELS.exists,
     async (_event, courseDirectory, relativePath) => {
       try {
@@ -357,21 +398,21 @@ function registerDesktopIpc(
       }
     },
   );
-  ipcMain.handle(
+  handle(
     DESKTOP_CHANNELS.ensureDirectory,
     async (_event, courseDirectory, relativePath) => {
       try {
-        await ensureCourseDirectory(
+        await courseLocks.run(_event.sender.id, assertString(courseDirectory, '课程目录名不合法。'), () => ensureCourseDirectory(
           layout.coursesRoot,
           assertString(courseDirectory, '课程目录名不合法。'),
           Array.isArray(relativePath) ? relativePath : [],
-        );
+        ));
       } catch (error) {
         throw toIpcError(error);
       }
     },
   );
-  ipcMain.handle(
+  handle(
     DESKTOP_CHANNELS.readFile,
     async (_event, courseDirectory, relativePath) => {
       try {
@@ -385,7 +426,7 @@ function registerDesktopIpc(
       }
     },
   );
-  ipcMain.handle(
+  handle(
     DESKTOP_CHANNELS.listFiles,
     async (_event, courseDirectory, relativePath) => {
       try {
@@ -399,7 +440,7 @@ function registerDesktopIpc(
       }
     },
   );
-  ipcMain.handle(
+  handle(
     DESKTOP_CHANNELS.writeFile,
     async (_event, courseDirectory, relativePath, data) => {
       if (!(data instanceof Uint8Array)) {
@@ -408,60 +449,63 @@ function registerDesktopIpc(
         );
       }
       try {
-        await writeCourseFile(
+        await courseLocks.run(_event.sender.id, assertString(courseDirectory, '课程目录名不合法。'), () => writeCourseFile(
           layout.coursesRoot,
           assertString(courseDirectory, '课程目录名不合法。'),
           Array.isArray(relativePath) ? relativePath : [],
           data,
-        );
+        ));
+        if (Array.isArray(relativePath) && relativePath.length === 1 && relativePath[0] === 'course.json') broadcastCoursesChanged(courseDirectory);
       } catch (error) {
         throw toIpcError(error);
       }
     },
   );
-  ipcMain.handle(
+  handle(
     DESKTOP_CHANNELS.deleteFile,
     async (_event, courseDirectory, relativePath) => {
       try {
-        await deleteCourseEntry(
+        await courseLocks.run(_event.sender.id, assertString(courseDirectory, '课程目录名不合法。'), () => deleteCourseEntry(
           layout.coursesRoot,
           assertString(courseDirectory, '课程目录名不合法。'),
           Array.isArray(relativePath) ? relativePath : [],
-        );
+        ));
+        if (Array.isArray(relativePath) && relativePath.length === 1 && relativePath[0] === 'course.json') broadcastCoursesChanged(courseDirectory);
       } catch (error) {
         throw toIpcError(error);
       }
     },
   );
-  ipcMain.handle(
+  handle(
     DESKTOP_CHANNELS.deleteCourse,
     async (_event, courseDirectory) => {
       const name = assertString(courseDirectory, '课程目录名不合法。');
       try {
-        const target = await resolveCourseDirectoryPath(
-          layout.coursesRoot,
-          name,
-        );
-        try {
+        await courseLocks.run(_event.sender.id, name, async () => {
+          const target = await resolveCourseDirectoryPath(layout.coursesRoot, name);
+          try {
           // 先移入系统回收站，误删可以从回收站恢复；无回收站环境退回直接删除。
           await shell.trashItem(target);
         } catch {
           await removeCourseDirectory(layout.coursesRoot, name);
-        }
+          }
+        });
+        broadcastCoursesChanged(name);
       } catch (error) {
         throw toIpcError(error);
       }
     },
   );
-  ipcMain.handle(DESKTOP_CHANNELS.revealWorkspace, async () => {
+  handle(DESKTOP_CHANNELS.revealWorkspace, async () => {
     await ensureWorkspace(layout);
     const failure = await shell.openPath(layout.root);
     if (failure) throw new Error(failure);
-  });
-  ipcMain.handle(DESKTOP_CHANNELS.lanShareStatus, () =>
+  }, 'main');
+  handle(DESKTOP_CHANNELS.lanShareStatus, () =>
     lanShareServer.getStatus(),
+    'main',
   );
-  ipcMain.handle(
+  handle(
     DESKTOP_CHANNELS.lanShareStart,
     async (_event, password, port, permissions) => {
       if (typeof password !== 'string' || typeof port !== 'number') {
@@ -469,8 +513,9 @@ function registerDesktopIpc(
       }
       return lanShareServer.start(password, port, permissions);
     },
+    'main',
   );
-  ipcMain.handle(DESKTOP_CHANNELS.lanShareStop, () => lanShareServer.stop());
+  handle(DESKTOP_CHANNELS.lanShareStop, () => lanShareServer.stop(), 'main');
   const findReadingDocument = async (
     courseIdValue: unknown,
     documentIdValue: unknown,
@@ -497,20 +542,21 @@ function registerDesktopIpc(
     }
     return { courseId, documentId, pageCount: pageCount as number };
   };
-  ipcMain.handle(
+  handle(
     DESKTOP_CHANNELS.readingStateGet,
     async (_event, courseIdValue, documentIdValue) => {
       const target = await findReadingDocument(courseIdValue, documentIdValue);
       return readingStateStore.get(target.courseId, target.documentId);
     },
   );
-  ipcMain.handle(
+  handle(
     DESKTOP_CHANNELS.readingStatePut,
     async (_event, courseIdValue, documentIdValue, value) => {
       const target = await findReadingDocument(courseIdValue, documentIdValue);
       if (
         typeof value !== 'object' ||
         value === null ||
+        !validReaderView(value as unknown) ||
         !Number.isInteger(value.page) ||
         value.page < 1 ||
         value.page > target.pageCount ||
@@ -527,6 +573,7 @@ function registerDesktopIpc(
           page: value.page,
           zoom: value.zoom,
           expectedVersion: value.expectedVersion,
+          ...readerViewFields(value),
         });
       } catch (error) {
         if (error instanceof ReadingStateConflictError) {
@@ -547,8 +594,7 @@ async function createWindow(): Promise<BrowserWindow> {
   if (devDecision.warning) {
     console.warn(`[页语] ${devDecision.warning}`);
   }
-  const target =
-    devDecision.url ?? (await startStaticServer(staticClientDirectory()));
+  const target = appTarget ??= devDecision.url ?? (await startStaticServer(staticClientDirectory()));
   appOrigin = new URL(target).origin;
   const window = new BrowserWindow({
     width: 1360,
@@ -563,11 +609,13 @@ async function createWindow(): Promise<BrowserWindow> {
       sandbox: true,
     },
   });
+  mainWindow = window;
+  window.on('closed', () => { if (mainWindow === window) mainWindow = undefined; if (!quitting) app.quit(); });
   applyNavigationGuards(window);
   const dshOwner = window.webContents.id;
-  window.webContents.on('destroyed', () => dshManager.cancelOwner(dshOwner));
+  window.webContents.on('destroyed', () => releaseRendererOwner(dshOwner));
   window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
-    if (isMainFrame && !isInPlace) dshManager.cancelOwner(dshOwner);
+    if (isMainFrame && !isInPlace) releaseRendererOwner(dshOwner);
   });
   if (!isSmokeRun()) {
     window.once('ready-to-show', () => window.show());
@@ -576,12 +624,44 @@ async function createWindow(): Promise<BrowserWindow> {
   return window;
 }
 
+function createBackgroundService() {
+  return new BackgroundService({
+    create: onFailure => {
+      if (!appTarget) throw new Error('应用地址尚未就绪。');
+      const target = new URL(appTarget);
+      target.searchParams.set('background-worker', '1');
+      const window = new BrowserWindow({ show: false, title: '页语后台任务',
+        webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
+      });
+      backgroundWindow = window;
+      applyNavigationGuards(window);
+      const owner = window.webContents.id;
+      let loaded = false;
+      window.webContents.on('did-finish-load', () => { loaded = true; });
+      window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+        if (isMainFrame && !isInPlace) { releaseRendererOwner(owner); if (loaded) onFailure(owner); }
+      });
+      window.webContents.on('render-process-gone', () => onFailure(owner));
+      window.webContents.on('destroyed', () => { releaseRendererOwner(owner); onFailure(owner); });
+      window.on('closed', () => { if (backgroundWindow === window) backgroundWindow = undefined; onFailure(owner); });
+      return { owner, load: () => window.loadURL(target.href),
+        send: command => { if (window.isDestroyed()) throw new Error('后台窗口已关闭。'); window.webContents.send(DESKTOP_CHANNELS.backgroundCommand, command); },
+        destroy: () => { if (!window.isDestroyed()) window.destroy(); },
+      };
+    },
+    broadcast: snapshot => { if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      try { mainWindow.webContents.send(DESKTOP_CHANNELS.backgroundSnapshot, snapshot); } catch { /* disappearing UI cannot stop executor cleanup */ }
+    } },
+    releaseOwner: releaseRendererOwner,
+  });
+}
+
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    const window = BrowserWindow.getAllWindows()[0];
+    const window = mainWindow;
     if (!window) return;
     if (window.isMinimized()) window.restore();
     window.show();
@@ -642,18 +722,32 @@ if (!hasSingleInstanceLock) {
         dispatch: mcpBridge.dispatch,
       });
       await ensureWorkspace(layout);
+      backgroundService = createBackgroundService();
       registerDesktopIpc(layout, lanShareServer, readingStateStore);
       let dshClosed = false;
       app.on('before-quit', event => {
-        if (!dshClosed) {
-          event.preventDefault();
-          void dshManager.close().finally(() => { dshClosed = true; app.quit(); });
-        }
-        void lanShareServer.stop();
-        void mcpControlServer.stop();
+        if (dshClosed) return;
+        event.preventDefault();
+        if (quitting) return;
+        quitting = true;
+        backgroundService.close();
+        const closingLocks = courseLocks.close();
         mcpBridge.dispose();
+        void Promise.allSettled([closingLocks, dshManager.close(), lanShareServer.stop(), mcpControlServer.stop()]).finally(() => { dshClosed = true; app.quit(); });
       });
       const window = await createWindow();
+      if (isSmokeRun() && process.env.YEYU_SMOKE_BACKGROUND === '1') {
+        try {
+          const result = await probeBackgroundHost(window, backgroundService, () => backgroundWindow, layout);
+          process.stdout.write(`${BACKGROUND_SMOKE_MARKER} ${JSON.stringify(result)}\n`);
+        } catch (error) {
+          process.stdout.write(`${BACKGROUND_SMOKE_MARKER} ${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : '后台冒烟失败。' })}\n`);
+          process.exitCode = 1;
+        }
+        app.quit();
+        return;
+      }
+      if (!quitting) backgroundService.start();
       if (isSmokeRun()) {
         // YEYU_SMOKE=1：探测完 preload 桥接后立即退出，供自动化冒烟测试断言。
         const result = await probePreloadBridge(window);
@@ -664,9 +758,9 @@ if (!hasSingleInstanceLock) {
       }
       await mcpControlServer.start();
       app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) {
-          void createWindow();
-        }
+        if (quitting) return;
+        if (!mainWindow || mainWindow.isDestroyed()) void createWindow();
+        else { mainWindow.show(); mainWindow.focus(); }
       });
     })
     .catch((error: unknown) => {

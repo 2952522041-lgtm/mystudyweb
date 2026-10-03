@@ -1,7 +1,8 @@
 import type { DshCompletionRequest } from './dsh-types.ts';
 
-export const DSH_RUNTIME_VERSION = '0.1.7-rc.2';
-export const DSH_CLIENT_VERSION = '0.1.7-rc.2';
+import { DSH_MODELS, dshModel, dshProvider } from './dsh-capabilities.ts';
+import { DshError } from './dsh-errors.ts';
+export { DSH_RUNTIME_VERSION, DSH_CLIENT_VERSION } from './dsh-capabilities.ts';
 export const DSH_REQUEST_TIMEOUT_MS = 180_000;
 
 export function dshLaunchOptions(
@@ -30,43 +31,17 @@ export function validateDshRequest(value: unknown): DshCompletionRequest {
   if (typeof r.requestId !== 'string' || !/^[\w-]{1,80}$/.test(r.requestId))
     return fail();
   if (typeof r.baseUrl !== 'string') return fail();
-  let url: URL;
-  try {
-    url = new URL(r.baseUrl);
-  } catch {
-    return fail();
-  }
-  const deepseek = url.hostname === 'api.deepseek.com';
-  const zhipu = url.hostname === 'open.bigmodel.cn';
-  if (
-    url.protocol !== 'https:' ||
-    (!deepseek && !zhipu) ||
-    url.port ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    !(
-      deepseek ? ['', '/', '/v1', '/v1/'] : ['/api/paas/v4', '/api/paas/v4/']
-    ).includes(url.pathname)
-  ) {
-    throw new Error(
-      'DSH 仅支持 DeepSeek 官方接口或智谱官方 /api/paas/v4 接口。',
-    );
-  }
+  const provider = dshProvider(r.baseUrl);
+  if (!provider) throw new Error('DSH 仅支持 DeepSeek 官方接口或智谱官方 /api/paas/v4 接口。');
+  const zhipu = provider === 'zhipu';
   if (r.operation !== undefined && r.operation !== 'web-search') return fail();
-  if (
-    !(
-      r.operation === 'web-search' && zhipu
-        ? ['web-search']
-        : deepseek
-          ? ['deepseek-flash', 'deepseek-v4-pro']
-          : ['glm-4.6v', 'glm-4.5-air']
-    ).includes(r.model)
-  )
-    throw new Error(
-      'DSH 支持 deepseek-flash / deepseek-v4-pro 或智谱 glm-4.6v / glm-4.5-air。',
-    );
+  if (r.operation === 'web-search' ? (!zhipu || r.model !== 'web-search') : !dshModel(r.baseUrl, r.model))
+    throw new DshError('unsupported_model');
+  if (r.temperature !== undefined || r.responseFormat !== undefined)
+    throw new DshError('unsupported_parameter');
+  if (r.task !== undefined && !['interactive', 'background', 'prefetch'].includes(r.task)) return fail();
+  for (const timeout of [r.timeoutMs, r.connectionTimeoutMs, r.streamStallTimeoutMs])
+    if (timeout !== undefined && (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 600_000)) return fail();
   if (
     typeof r.apiKey !== 'string' ||
     !r.apiKey.trim() ||
@@ -116,7 +91,7 @@ export function validateDshRequest(value: unknown): DshCompletionRequest {
           !match ||
           match[2].length > 8_000_000 ||
           ++imageCount > 4 ||
-          !['deepseek-flash', 'glm-4.6v'].includes(r.model)
+          !dshModel(r.baseUrl, r.model)?.image
         )
           return fail();
         const bytes = Buffer.from(match[2], 'base64');
@@ -172,6 +147,10 @@ export function validateDshRequest(value: unknown): DshCompletionRequest {
     maxTokens: r.maxTokens,
     thinking: r.thinking,
     ...(r.operation ? { operation: r.operation } : {}),
+    ...(r.task ? { task: r.task } : {}),
+    ...(r.timeoutMs !== undefined ? { timeoutMs: r.timeoutMs } : {}),
+    ...(r.connectionTimeoutMs !== undefined ? { connectionTimeoutMs: r.connectionTimeoutMs } : {}),
+    ...(r.streamStallTimeoutMs !== undefined ? { streamStallTimeoutMs: r.streamStallTimeoutMs } : {}),
   };
 }
 
@@ -196,7 +175,14 @@ export function buildDshPatch(
       'deepseek-llm-api-extensions',
     ].map((id) => ({ id, disabled: true })),
     { id: 'sandbox-policy', config: { mode: 'read-only' } },
-    { id: 'llm-deepseek', config: { streamIdleTimeoutMs: 45_000 } },
+    { id: 'llm-deepseek', config: {
+      streamIdleTimeoutMs: request?.streamStallTimeoutMs ?? 45_000,
+      retryPolicy: { mode: 'normal', maxRetries: 0 },
+      models: DSH_MODELS.filter(model => model.provider === 'deepseek').map(model => ({
+        id: model.id, contextWindow: 128000, inputModalities: model.image ? ['text', 'image'] : ['text'],
+        ...(model.image ? { systemPromptUpdate: 'in-history', toolUpdate: 'addition-only' } : {}),
+      })),
+    } },
     {
       insert: [
         { id: 'attachment-local', name: '@deepseek-ai/dsh-attachment-local' },
@@ -216,7 +202,7 @@ export function buildDshPatch(
                       apiKeyEnv: 'YEYU_PROVIDER_KEY',
                       api: 'openai-completions',
                       baseURL: 'https://open.bigmodel.cn/api/paas/v4',
-                      streamIdleTimeoutMs: 45_000,
+                      streamIdleTimeoutMs: request?.streamStallTimeoutMs ?? 45_000,
                       retryPolicy: { mode: 'normal', maxRetries: 0 },
                       compat: {
                         thinkingFormat: 'zai',

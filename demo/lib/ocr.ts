@@ -11,6 +11,7 @@ export const OCR_PROMPT_VERSION = 1;
 export const OCR_MIN_TEXT_LENGTH = 24;
 
 export interface OcrRequest {
+  task?: 'interactive' | 'background' | 'prefetch';
   fingerprint: string;
   pageNumber: number;
   pageImage: PageImageInput;
@@ -115,6 +116,7 @@ export function createOcrProviderForSettings(
       const result = await chatProvider.answer(
         {
           fingerprint: request.fingerprint,
+          task: request.task,
           pageNumber: request.pageNumber,
           pageText: '',
           pageImage: request.pageImage,
