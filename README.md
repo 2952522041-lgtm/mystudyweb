@@ -112,25 +112,28 @@ pnpm quality:check tests/fixtures/quality-example.json # 离线质量诊断示�
 ```bash
 cd demo
 pnpm install
-pnpm desktop:make          # 生成 out/make/deb/x64/yeyu_0.2.0_amd64.deb
-sudo apt install ./out/make/deb/x64/yeyu_0.2.0_amd64.deb
+pnpm desktop:make          # 生成 out/make/deb/x64/yeyu_0.2.2_amd64.deb
+sudo apt install ./out/make/deb/x64/yeyu_0.2.2_amd64.deb
 ```
 
-以后从源码更新（Linux x64，先正常退出页语）：
+以后从源码更新（Linux x64，无需每次输入 sudo 密码）：
 
 ```bash
 cd demo
 pnpm desktop:update
 # 只查看步骤：pnpm desktop:update --dry-run
-# 校验安装与当前打包产物：pnpm desktop:update --check
+# 校验当前用户安装：pnpm desktop:update --check
+# 回滚上一个用户版本：pnpm desktop:update --rollback
 ```
 
-命令重新构建并安装 DEB，备份并修正已知旧版启动入口，同时校验主进程与独立前端文件。课程页显示版本号、提交和构建时间，含未提交修改的构建会明确标注。安装可能需要 sudo 密码。
+命令在 `~/.local/opt/yeyu` 安装完整新版本，校验运行文件及现有系统沙箱 helper 后原子切换用户启动入口，旧版本保留以便回滚。更新时当前任务可继续，下次正常退出再打开后生效。课程、阅读进度和 `~/.config/页语` 配置保持原位置；系统 DEB 作为首次安装及沙箱运行基础保留。若以后 Electron 升级导致沙箱 helper 不匹配，会停止切换，并需先通过 DEB 更新系统 helper。课程页显示实际运行版本号、提交和构建时间。
+
+自动化调用 `node scripts/update-desktop.mjs --json`，已构建时加 `--skip-build`；也可导入本地更新 API。完整契约和回滚说明见[桌面免密码更新](docs/DESKTOP-USER-UPDATES.md)。
 
 安装后：
 
 - GNOME 应用菜单出现「页语」（类别：Education），命令行入口为 `yeyu`
-- 数据目录：`~/Documents/页语工作区/`；卸载：`sudo apt remove yeyu`
+- 数据目录：系统文档目录下的 `页语工作区/`；系统包卸载命令是 `sudo apt remove yeyu`，但用户安装依赖其沙箱 helper，使用用户版时应保留系统包。
 - 包名/可执行名/图标名为 `yeyu`，图标安装到 hicolor 各尺寸
 
 仅构建不安装：`pnpm desktop:build` 产出打包目录 `out/Yeyu-linux-x64/`，ZIP 产物保留在 `out/make/zip/linux/x64/`。打包目录不等于正确安装：Ubuntu 的用户命名空间限制可能导致普通用户复制的 `chrome-sandbox` 无法从桌面启动。优先安装 DEB；不要添加 `--no-sandbox`。发布前须验证沙箱权限，并在桌面会话中冷启动，不能只验证开发终端。详见 [Linux 桌面启动与沙箱验证](docs/LINUX-DESKTOP-SANDBOX.md)。

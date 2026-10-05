@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import unittest
 
 
@@ -240,12 +241,15 @@ class HandoffDocumentTest(unittest.TestCase):
 
     def test_readme_documents_desktop_install_and_boundaries(self) -> None:
         content = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        version = json.loads((PROJECT_ROOT / "demo/package.json").read_text(encoding="utf-8"))["version"]
 
         for requirement in (
             "## 桌面版（Electron）",
-            "sudo apt install ./out/make/deb/x64/yeyu_0.2.0_amd64.deb",
+            f"sudo apt install ./out/make/deb/x64/yeyu_{version}_amd64.deb",
             "GNOME 应用菜单出现「页语」",
-            "~/Documents/页语工作区",
+            "系统文档目录下的 `页语工作区/`",
+            "pnpm desktop:update --rollback",
+            "docs/DESKTOP-USER-UPDATES.md",
             "build-windows-desktop.yml",
             "sandbox: true",
             "setWindowOpenHandler` 默认 deny",
