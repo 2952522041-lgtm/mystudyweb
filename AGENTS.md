@@ -8,3 +8,9 @@
 涉及代码实现、修复或重构时，默认使用 [dsh-assisted-development](.agents/skills/dsh-assisted-development/SKILL.md) 技能。主 Agent 保留当前模型，负责架构、拆分、审查与集成；通过已安装的 DSH CLI，在独立任务目录完成范围明确的基础编码任务。
 
 主 Agent 独立验证执行者产物并统一提交；微小任务直接处理，CLI 不可用时说明限制并接手。用户本次明确指定的分工优先。
+
+## 桌面更新
+
+后续桌面功能改动在测试通过并提交后，通过用户目录更新接口同步桌面：在 `demo` 运行 `node scripts/update-desktop.mjs --json`，已有对应构建时可加 `--skip-build`，再运行 `--check --json`。不要恢复为每次通过 sudo 安装 DEB，不修改系统认证策略；无需为正常的用户目录更新重复询问。
+
+更新不会终止正在运行的应用；说明下次正常重启后生效。报告接口返回的实际版本和提交，不把构建成功当作安装成功。沙箱 helper 校验失败时保留原入口并报告具体限制。接口及回滚说明见 `docs/DESKTOP-USER-UPDATES.md`。

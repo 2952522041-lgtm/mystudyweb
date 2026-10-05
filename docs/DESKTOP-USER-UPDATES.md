@@ -50,3 +50,11 @@ await rollbackUserDesktop({home});
 Ubuntu桌面可能限制普通用户命名空间，单纯复制Electron程序不能保证冷启动。更新器使用现有只读`verifySandboxHelper`检查系统`/usr/lib/yeyu/chrome-sandbox`：root拥有、4755、父路径符合要求，且字节与新包helper完全一致后，才在release建立链接。新包原helper保留为`chrome-sandbox.bundled`。
 
 这是复用已安装的系统运行基础，不是永久绕过系统安装权限。首次安装或未来Electron升级时若helper不匹配，需要通过系统DEB安装更新；当下普通应用代码更新不再重复要求sudo密码。详见[沙箱验证记录](LINUX-DESKTOP-SANDBOX.md)。
+
+## 本机验收（2026-10-05）
+
+- 实现提交`b27aec1`，版本`0.2.2`；DSH实现启动器及特殊字符/真实Gio测试，主Agent审查集成、实现安装事务并独立验证。
+- 应用测试979/979，桌面测试19/19，文档测试16/16通过，均无跳过；TypeScript与更新器lint通过，Web及Electron打包成功。更新器回归包含全运行时校验、构建/复制失败、损坏副本、并发互斥、目录链接拒绝、激活恢复失败、同路径ASAR重建和双向回滚。
+- 已实际安装`0.2.2-815d618b6796a92e0e36d52b`，包内提交`b27aec1b9a22b4ba95ea714da8d74b156b1294da`、`dirty: false`；保留上一个`0.2.1-600922ec539eb1731a76a954`。安装、回滚、切回和`--check`全部使用用户权限，未调用sudo。
+- 从systemd用户桌面会话执行与.desktop相同的启动命令，使用隔离profile/工作区冷启动：0.2.2→0.2.1→0.2.2均完成真实桥接、课程读取和localStorage恢复。主进程`unconfined`，渲染器`NoNewPrivs: 1`、`Seccomp: 2`且独立PID命名空间，未关闭沙箱。首轮进程采样因沙箱renderer的`/proc/.../exe`不可读而断言失败；采样改为分项读取后完成上述验证，应用桥接本身始终通过。
+- 用户启动器实际解析到选中release，桌面文件通过`desktop-file-validate`。最终`--check --json`确认选中0.2.2，测试实例均已退出；原工作区和原profile未用于测试。后续仅补记本文档及开发约定，应用代码未变。
