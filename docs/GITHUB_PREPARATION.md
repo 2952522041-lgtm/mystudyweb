@@ -1,7 +1,7 @@
 # GitHub 准备检查（2026-10-05）
 
 - 起点：`master` / `b7337a9`，工作区干净，已有 137 个提交；保留全部历史。
-- Remote：`https://github.com/2952522041-lgtm/mystudyweb.git`。检查时远端 master 为 `4ebd55a`，是本地祖先；本地领先 96 个提交。
+- Remote：`https://github.com/2952522041-lgtm/mystudyweb.git`。远端 master 为 `4ebd55a`，与本地历史已分叉，并非本地祖先。整理提交 `7a63730` 后本地独有 97 个提交、远端独有 9 个提交；合并预检存在 10 个文件冲突。应先推送独立评审分支，避免覆盖远端或为上传而修改业务代码。
 - 当前跟踪文件（含历史验证压缩包解压内容）及 1,347 个历史 blob 的凭据模式检查未发现真实 API Key、访问令牌或私钥；测试中存在明确的假凭据。模式扫描不能证明不存在任何形式的秘密，二进制图片内容未进行 OCR 审计。
 - `demo/scripts/blackboard/config.json` 含个人课程范围，停止跟踪但保留本地文件；新增默认禁用的 `config.example.json`。首次克隆按 `BLACKBOARD-AUTOMATION.md` 配置可选同步。
 - `docs/validation/2026-09-26*/` 下五个 `.tar.gz` 是历史验证日志，停止跟踪但保留本地文件；旧报告中对应压缩包引用仅供原本机追溯。历史提交仍包含旧配置和日志，没有清洗或重写历史。课程标识也出现在旧文档和测试夹具中，不是登录凭据。
@@ -21,4 +21,4 @@
 
 未验证真实付费 AI 服务、个人 Blackboard 登录或跨机器局域网端到端流程。未改 UI、业务实现、API 或本机桌面安装。Gemini 阅读入口为 `GEMINI_UI_CONTEXT.md`。
 
-推送 master 会触发现有 GitHub Pages 工作流；工作流的线上结果需另行确认。
+推送 master 会触发现有 GitHub Pages 工作流；独立评审分支不触发该工作流的 master 推送条件。
