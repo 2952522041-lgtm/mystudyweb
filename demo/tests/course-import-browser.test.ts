@@ -173,6 +173,7 @@ async function submit(content, name, duplicate) {
   await waitFor('submit enabled',()=>[...document.querySelectorAll('[role=dialog] button')].some(node=>node.textContent.trim()==='导入 PDF'&&!node.disabled));
   [...document.querySelectorAll('[role=dialog] button')].find(node=>node.textContent.trim()==='导入 PDF').click();
   await waitFor('dialog closed',()=>!document.querySelector('input[type=file]'));
+  check(document.querySelector('[role=tab][aria-selected=true]')?.textContent.includes('PDF 资料'),'saved PDF is not visible in document tab');
   if(duplicate)check(text().includes('已存在，已跳过'),'duplicate feedback missing');
 }
 window.runImportRegression = async () => {

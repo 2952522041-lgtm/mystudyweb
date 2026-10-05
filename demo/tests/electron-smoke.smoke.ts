@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
@@ -53,6 +54,124 @@ function displaySessionAvailable(): boolean {
 
 function electronBinary(): string {
   return require('electron') as string;
+}
+
+const STATIC_RESULT_MARKER = 'YEYU_STATIC_SMOKE_RESULT';
+
+interface StaticSmokeResult {
+  cachePrimed: boolean;
+  staleDocument: boolean;
+  html: { status: number; cache: string | null };
+  script: { status: number; cache: string | null; type: string | null };
+  worker: { status: number; cache: string | null };
+  missing: Array<{ status: number; cache: string | null; html: boolean }>;
+  route: { status: number; cache: string | null };
+  indexedBefore: string | null;
+  indexedAfter: string | null;
+  cookieBefore: string | null;
+  cookieAfter: string | null;
+}
+
+/** Run the actual compiled main on a private, stable origin beside an open app. */
+async function isolatedCompiledLaunch(root: string): Promise<{ entry: string; origin: string }> {
+  const listener = createServer();
+  await new Promise<void>((resolve) => listener.listen(0, '127.0.0.1', resolve));
+  const address = listener.address();
+  assert.ok(address && typeof address === 'object');
+  const origin = `http://127.0.0.1:${address.port}`;
+  await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+  const entry = path.join(root, 'launch.cjs');
+  await writeFile(entry, String.raw`
+const { app, BrowserWindow, session } = require('electron');
+const { createServer } = require('node:http');
+app.setPath('userData', process.env.YEYU_SMOKE_PROFILE);
+const navigation = require(${JSON.stringify(path.join(path.dirname(COMPILED_MAIN_ENTRY), 'navigation.js'))});
+navigation.PACKAGED_APP_ORIGIN = ${JSON.stringify(origin)};
+navigation.PACKAGED_APP_PORT = ${address.port};
+const primedReady = app.whenReady().then(async () => {
+  let primingWindow;
+  let cachePrimed = false;
+  if (process.env.YEYU_SMOKE_HTTP_PROBE === '1') {
+    const legacy = createServer((_request, response) => {
+      response.setHeader('Cache-Control', 'public, max-age=31536000');
+      response.setHeader('Content-Type', 'text/html; charset=utf-8');
+      response.end('<!doctype html><body>obsolete-build-cache-marker</body>');
+    });
+    await new Promise(resolve => legacy.listen(navigation.PACKAGED_APP_PORT, '127.0.0.1', resolve));
+    primingWindow = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
+    await primingWindow.loadURL(navigation.PACKAGED_APP_ORIGIN + '/');
+    cachePrimed = (await session.defaultSession.getCacheSize()) > 0;
+    await new Promise((resolve, reject) => legacy.close(error => error ? reject(error) : resolve()));
+  }
+  const originalLoad = BrowserWindow.prototype.loadURL;
+  let inspected = false;
+  BrowserWindow.prototype.loadURL = async function (...args) {
+    const result = await originalLoad.apply(this, args);
+    if (!inspected && process.env.YEYU_SMOKE_HTTP_PROBE === '1') {
+      inspected = true;
+      const probe = await this.webContents.executeJavaScript('(' + (async (value) => {
+        const staleDocument = document.body.textContent.includes('obsolete-build-cache-marker');
+        const get = async path => {
+          const response = await fetch(path);
+          return { status: response.status, cache: response.headers.get('cache-control'),
+            type: response.headers.get('content-type'), text: await response.text() };
+        };
+        const html = await get('/');
+        const scriptPath = /src="([^"]+\.js)"/.exec(html.text)?.[1];
+        if (!scriptPath) throw new Error('current HTML must expose a real script asset');
+        const script = await get(scriptPath);
+        const worker = await get('/pdf.worker.min.mjs');
+        const missing = [];
+        for (const file of ['/_next/static/chunks/missing-old-build.js', '/missing.pdf', '/assets/missing-asset']) {
+          const response = await get(file);
+          missing.push({ status: response.status, cache: response.cache, html: /<!doctype|<html/i.test(response.text) });
+        }
+        const route = await get('/smoke-client-route');
+        const db = await new Promise((resolve, reject) => {
+          const request = indexedDB.open('yeyu-smoke-storage-preservation', 1);
+          request.onupgradeneeded = () => request.result.createObjectStore('settings');
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        const read = () => new Promise((resolve, reject) => {
+          const request = db.transaction('settings').objectStore('settings').get('marker');
+          request.onsuccess = () => resolve(request.result ?? null);
+          request.onerror = () => reject(request.error);
+        });
+        const cookie = () => document.cookie.split('; ').find(item => item.startsWith('yeyu-smoke-auth='))?.slice('yeyu-smoke-auth='.length) ?? null;
+        const indexedBefore = await read();
+        const cookieBefore = cookie();
+        if (typeof value === 'string') {
+          await new Promise((resolve, reject) => {
+            const transaction = db.transaction('settings', 'readwrite');
+            transaction.objectStore('settings').put(value, 'marker');
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error);
+          });
+          document.cookie = 'yeyu-smoke-auth=' + value + '; Path=/; Max-Age=3600; SameSite=Lax';
+        }
+        const indexedAfter = await read();
+        db.close();
+        return { staleDocument, html: {status:html.status,cache:html.cache},
+          script: {status:script.status,cache:script.cache,type:script.type},
+          worker: {status:worker.status,cache:worker.cache}, missing,
+          route: {status:route.status,cache:route.cache}, indexedBefore, indexedAfter,
+          cookieBefore, cookieAfter: cookie() };
+      }).toString() + ')(' + JSON.stringify(process.env.YEYU_SMOKE_STORAGE_VALUE) + ')');
+      await session.defaultSession.cookies.flushStore();
+      process.stdout.write(${JSON.stringify(STATIC_RESULT_MARKER + ' ')} + JSON.stringify({ cachePrimed, ...probe }) + '\n');
+      primingWindow?.destroy();
+    }
+    return result;
+  };
+}).catch(error => { console.error(error); app.exit(1); });
+// Keep main's early Electron setup before ready, but populate the legacy cache
+// before its real startup callback opens either renderer.
+app.whenReady = () => primedReady;
+require(${JSON.stringify(COMPILED_MAIN_ENTRY)});
+`);
+  return { entry, origin };
 }
 
 function launchEnvironment(workspaceRoot: string): NodeJS.ProcessEnv {
@@ -124,6 +243,7 @@ interface SmokeProbePayload {
   buildMetadataValid?: boolean;
   dshHistoryValid?: boolean;
   restoreTokenRejected?: boolean;
+  staticRuntime?: StaticSmokeResult;
   error?: string;
 }
 
@@ -146,8 +266,10 @@ async function launchAndProbe(
   workspaceRoot: string,
   createCourse: boolean,
   storageValue?: string,
+  environment: Partial<NodeJS.ProcessEnv> = {},
+  expectedOrigin = PACKAGED_APP_ORIGIN,
 ): Promise<SmokeProbePayload> {
-  const env = launchEnvironment(workspaceRoot);
+  const env = { ...launchEnvironment(workspaceRoot), ...environment };
   if (createCourse) {
     env[SMOKE_CREATE_COURSE_ENV_VAR] = '1';
   }
@@ -172,6 +294,24 @@ async function launchAndProbe(
     ));
   }
   const result = parseSmokeResult(stdout);
+  if (environment.YEYU_SMOKE_HTTP_PROBE === '1') {
+    const marker = stdout.split('\n').find((line) => line.startsWith(STATIC_RESULT_MARKER + ' '));
+    assert.ok(marker, `missing static runtime result: ${stderr}`);
+    const probe = JSON.parse(marker.slice(STATIC_RESULT_MARKER.length + 1)) as StaticSmokeResult;
+    assert.equal(probe.cachePrimed, true, 'legacy HTTP cache fixture must be populated');
+    assert.equal(probe.staleDocument, false, 'startup must clear cached HTML from the previous build');
+    for (const resource of [probe.html, probe.script, probe.worker, probe.route]) {
+      assert.equal(resource.status, 200);
+      assert.equal(resource.cache, 'no-store');
+    }
+    assert.match(probe.script.type ?? '', /javascript/);
+    for (const missing of probe.missing) {
+      assert.equal(missing.status, 404, 'missing assets must not receive the SPA shell');
+      assert.equal(missing.cache, 'no-store');
+      assert.equal(missing.html, false);
+    }
+    result.staticRuntime = probe;
+  }
   assert.equal(
     result.api,
     true,
@@ -205,7 +345,7 @@ async function launchAndProbe(
     ['Cache', 'Courses', 'Settings'],
     '首次启动应幂等创建 Courses/Cache/Settings。',
   );
-  assert.equal(result.origin, PACKAGED_APP_ORIGIN);
+  assert.equal(result.origin, expectedOrigin);
   return result;
 }
 
@@ -213,23 +353,37 @@ async function assertCourseLifecycle(
   command: string,
   args: string[],
 ): Promise<void> {
-  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'yeyu-smoke-'));
-  const storageMarker = `saved-${path.basename(workspaceRoot)}`;
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-smoke-'));
+  const workspaceRoot = path.join(root, 'workspace');
+  const profile = path.join(root, 'profile');
+  await mkdir(profile);
+  const isolated = args.includes(COMPILED_MAIN_ENTRY) ? await isolatedCompiledLaunch(root) : undefined;
+  const launchArgs = isolated ? [isolated.entry] : args;
+  const environment = { YEYU_SMOKE_PROFILE: profile, YEYU_DEV_URL: '',
+    ...(isolated ? { YEYU_SMOKE_HTTP_PROBE: '1' } : {}) };
+  const storageMarker = `saved-${path.basename(root)}`;
   try {
     // 第一次启动：通过真实桥接创建课程并写入 course.json。
     const created = await launchAndProbe(
       command,
-      args,
+      launchArgs,
       workspaceRoot,
       true,
       storageMarker,
+      environment,
+      isolated?.origin,
     );
     assert.equal(created.createdCourse, SMOKE_COURSE_NAME);
     assert.ok(created.courses?.includes(SMOKE_COURSE_NAME));
     assert.equal(created.storedAfter, storageMarker);
+    if (isolated) {
+      assert.equal(created.staticRuntime?.indexedBefore, null);
+      assert.equal(created.staticRuntime?.indexedAfter, storageMarker);
+      assert.equal(created.staticRuntime?.cookieAfter, storageMarker);
+    }
 
     // 关闭应用后重新启动：课程必须从磁盘自动恢复。
-    const restarted = await launchAndProbe(command, args, workspaceRoot, false);
+    const restarted = await launchAndProbe(command, launchArgs, workspaceRoot, false, undefined, environment, isolated?.origin);
     assert.ok(
       restarted.courses?.includes(SMOKE_COURSE_NAME),
       `重启后应恢复课程，实际：${JSON.stringify(restarted.courses)}`,
@@ -240,8 +394,12 @@ async function assertCourseLifecycle(
       storageMarker,
       '重启后应从同一 origin 恢复 localStorage 中的接口设置。',
     );
+    if (isolated) {
+      assert.equal(restarted.staticRuntime?.indexedBefore, storageMarker, 'HTTP cache clearing preserves IndexedDB');
+      assert.equal(restarted.staticRuntime?.cookieBefore, storageMarker, 'HTTP cache clearing preserves authentication cookies');
+    }
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 }
 
@@ -278,10 +436,11 @@ void test('real hidden background host survives UI reload, persists controls, an
     const profile = path.join(root, 'profile');
     await mkdir(profile);
     try {
+      const isolated = await isolatedCompiledLaunch(root);
       const env = {...launchEnvironment(path.join(root, 'workspace')), YEYU_DEV_URL:'', YEYU_SMOKE_BACKGROUND:'1', YEYU_SMOKE_PROFILE:profile};
-      let result = await launchElectron(electronBinary(), [COMPILED_MAIN_ENTRY], env);
+      let result = await launchElectron(electronBinary(), [isolated.entry], env);
       if (!result.stdout.includes('YEYU_BACKGROUND_SMOKE_RESULT') && /SUID sandbox|chrome-sandbox/i.test(result.stderr))
-        result = await launchElectron(electronBinary(), [COMPILED_MAIN_ENTRY, '--no-sandbox'], env);
+        result = await launchElectron(electronBinary(), [isolated.entry, '--no-sandbox'], env);
       const line = result.stdout.split('\n').find(value => value.startsWith('YEYU_BACKGROUND_SMOKE_RESULT '));
       assert.ok(line, `missing background smoke result: ${result.stderr}`);
       const probe = JSON.parse(line.slice('YEYU_BACKGROUND_SMOKE_RESULT '.length));

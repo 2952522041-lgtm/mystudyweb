@@ -29,7 +29,9 @@ export function stableDocumentId(fingerprint: string): string {
 }
 
 export function createCourseId(now = Date.now()): string {
-  return `course-${now.toString(36)}`;
+  // Concurrent course creation (including imports from another computer) can
+  // share a millisecond; timestamps alone can replace a queue's course entry.
+  return `course-${now.toString(36)}-${crypto.randomUUID()}`;
 }
 
 export function assertSafeArtifactContent(content: string): void {

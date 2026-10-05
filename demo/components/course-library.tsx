@@ -1,10 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
   Check,
-  Clock3,
   Copy,
   FilePlus2,
   FileText,
@@ -19,6 +18,7 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
+  Settings2,
   Sparkles,
   Trash2,
   TriangleAlert,
@@ -128,6 +128,7 @@ export interface CourseReaderContext {
   digest?: DocumentDigest;
   initialPage?: number;
   initialQuestion?: string;
+  initialPanel?: 'summary' | 'mindmap';
   onBack: () => void;
   storage?: CourseStorage;
 }
@@ -181,53 +182,24 @@ function formatUpdatedAt(value: string): string {
   }).format(date);
 }
 
-function Metric({
-  icon,
-  value,
-  label,
-  tone = 'blue',
-}: {
-  icon: React.ReactNode;
-  value: React.ReactNode;
-  label: string;
-  tone?: 'blue' | 'green' | 'violet' | 'amber';
-}) {
-  const tones = {
-    blue: 'bg-blue-50 text-blue-700',
-    green: 'bg-emerald-50 text-emerald-700',
-    violet: 'bg-violet-50 text-violet-700',
-    amber: 'bg-amber-50 text-amber-700',
-  };
-  return (
-    <div className="flex items-center gap-3 border-b border-slate-100 px-5 py-4 last:border-b-0 sm:border-r sm:border-b-0 sm:last:border-r-0">
-      <span
-        className={`flex size-9 items-center justify-center rounded-xl [&_svg]:size-4 ${tones[tone]}`}
-      >
-        {icon}
-      </span>
-      <span>
-        <span className="block text-lg font-bold leading-none text-slate-800">
-          {value}
-        </span>
-        <span className="mt-1.5 block text-[11px] text-slate-500">{label}</span>
-      </span>
-    </div>
-  );
-}
-
 export function CourseLibrary({
   onOpenDocument,
   onControlReady,
   onBundleUpdated,
+  onOpenSettings,
 }: {
   onOpenDocument: (file: File, context: CourseReaderContext) => void;
   onControlReady?: (control: CourseLibraryControl | null) => void;
   onBundleUpdated?: (bundle: CourseBundle) => void;
+  onOpenSettings?: () => void;
 }) {
   const [entries, setEntries] = useState<CourseEntry[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [studyTab, setStudyTab] = useState('summary');
+  const [reviewNavigation, setReviewNavigation] = useState<{courseId:string} | null>(null);
+  const handledReviewNavigation = useRef(reviewNavigation);
+  const reviewPanelRef = useRef<HTMLDivElement>(null);
   const [searchLocation, setSearchLocation] = useState<{id?:string;line?:number;key:number}>({key:0});
   const focusedRootSearch = useRef(0);
   const [documentQuery, setDocumentQuery] = useState('');
@@ -294,26 +266,44 @@ export function CourseLibrary({
     }
     worker.wake();
   }, [entries]);
+  const refreshedRevisions = useRef(new WeakMap<CourseStorage, number>());
+  const bundleState = useRef<{entries:CourseEntry[];onBundleUpdated:typeof onBundleUpdated} | null>(null);
+  useLayoutEffect(() => {
+    bundleState.current = {entries,onBundleUpdated};
+    return () => {bundleState.current = null;};
+  }, [entries,onBundleUpdated]);
+  const setEntryBundle = (id: string, next: CourseBundle, options: {storage?:CourseStorage;allowEqualRevision?:boolean} = {}) => {
+    const state = bundleState.current;
+    const current = state?.entries.find(item => item.id === id && (!options.storage || item.storage === options.storage));
+    if (!current) return;
+    const isOlder = (revision: number) => next.manifest.revision < revision || (options.allowEqualRevision === false && next.manifest.revision === revision);
+    const acceptedRevision = Math.max(current.bundle?.manifest.revision ?? -1, refreshedRevisions.current.get(current.storage) ?? -1);
+    if (isOlder(acceptedRevision)) return;
+    // Local operations and IPC reads share a watermark before React commits.
+    // Explicit reloads may refresh missing/restored artifacts at the same revision.
+    refreshedRevisions.current.set(current.storage, next.manifest.revision);
+    setEntries(previous => {
+      const latest = previous.find(item => item.id === id && item.storage === current.storage);
+      if (!latest || isOlder(latest.bundle?.manifest.revision ?? -1)) return previous;
+      return previous.map(item => item === latest ? {...item,bundle:next,permission:'granted',name:next.manifest.name,updatedAt:next.manifest.updatedAt} : item);
+    });
+    state?.onBundleUpdated?.(next);
+  };
+  const refreshCourse = useEffectEvent(async (directoryName: string, isLive: () => boolean) => {
+    const entry = entries.find(item => item.storage.label === directoryName);
+    if (!entry) return;
+    try {
+      const next = await entry.storage.load();
+      if (isLive()) setEntryBundle(entry.id, next, {storage:entry.storage,allowEqualRevision:false});
+    } catch { /* The next notification or explicit refresh can recover a disconnected course. */ }
+  });
   useEffect(() => {
     const api = window.yeyuDesktop;
     if (!api?.onCoursesChanged) return;
     let live = true;
-    const refresh = async (directoryName: string) => {
-      const entry = entries.find(item => item.storage.label === directoryName);
-      if (!entry) return;
-      try {
-        const next = await entry.storage.load();
-        if (live) setEntries(previous => {
-          const current = previous.find(item => item.id === entry.id);
-          if (!current || (current.bundle && current.bundle.manifest.revision >= next.manifest.revision)) return previous;
-          return previous.map(item => item.id === entry.id ? {...item,bundle:next,name:next.manifest.name,updatedAt:next.manifest.updatedAt} : item);
-        });
-        if (live && next.manifest.revision > (entry.bundle?.manifest.revision ?? -1)) onBundleUpdated?.(next);
-      } catch { /* The next notification or explicit refresh can recover a disconnected course. */ }
-    };
-    const unsubscribe = api.onCoursesChanged(({directoryName}) => { void refresh(directoryName); });
+    const unsubscribe = api.onCoursesChanged(({directoryName}) => { void refreshCourse(directoryName, () => live); });
     return () => {live=false;unsubscribe();};
-  },[entries,onBundleUpdated]);
+  },[]);
 
   const beginImportProgress = (fileName: string) => {
     const now = Date.now();
@@ -509,6 +499,18 @@ export function CourseLibrary({
   const active = entries.find((entry) => entry.id === activeId) ?? null;
   const bundle = active?.bundle ?? null;
   useEffect(() => {
+    if (!reviewNavigation || reviewNavigation.courseId !== activeId || handledReviewNavigation.current === reviewNavigation) return;
+    // Wait until the requested course and the task dialog's close have committed.
+    const frame = requestAnimationFrame(() => {
+      const preview = reviewPanelRef.current?.querySelector<HTMLButtonElement>('button');
+      if (!preview) return;
+      handledReviewNavigation.current = reviewNavigation;
+      reviewPanelRef.current?.scrollIntoView({block:'start'});
+      preview.focus({preventScroll:true});
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeId, reviewNavigation]);
+  useEffect(() => {
     let cancelled = false;
     const refresh = () => {
       const documents = bundle?.manifest.documents ?? [];
@@ -528,23 +530,6 @@ export function CourseLibrary({
   const conceptCount =
     bundle?.knowledge.nodes.filter((node) => node.kind !== 'course').length ??
     0;
-
-  const setEntryBundle = (id: string, nextBundle: CourseBundle) => {
-    onBundleUpdated?.(nextBundle);
-    setEntries((previous) =>
-      previous.map((entry) =>
-        entry.id === id
-          ? {
-              ...entry,
-              bundle: nextBundle,
-              permission: 'granted',
-              name: nextBundle.manifest.name,
-              updatedAt: nextBundle.manifest.updatedAt,
-            }
-          : entry,
-      ),
-    );
-  };
 
   const createDesktopCourse = async () => {
     if (!desktopApi) return;
@@ -882,7 +867,7 @@ export function CourseLibrary({
     }
     controlTaskRef.current = true;
     try {
-      return await importPdfForEntry(
+      const result = await importPdfForEntry(
         active,
         file,
         options,
@@ -890,6 +875,10 @@ export function CourseLibrary({
         signal,
         onImportDiagnostic,
       );
+      setDocumentQuery('');
+      setDocumentSort('recent-import');
+      setStudyTab('documents');
+      return result;
     } finally {
       controlTaskRef.current = false;
     }
@@ -1016,6 +1005,7 @@ export function CourseLibrary({
     initialPage?: number,
     propagateError = false,
     initialQuestion?: string,
+    initialPanel?: 'summary' | 'mindmap',
   ) => {
     if (!entry.bundle) throw new Error('目标课程当前无法读取。');
     setBusy(true);
@@ -1033,6 +1023,7 @@ export function CourseLibrary({
         digest: entry.bundle.digests[document.id],
         initialPage,
         initialQuestion,
+        initialPanel,
         onBack: () => undefined,
         storage: entry.storage,
       });
@@ -1295,6 +1286,7 @@ export function CourseLibrary({
         const entry = selectCourse(args, true);
         if (!entry.bundle) throw new Error('目标课程当前无法读取。');
         setActiveId(entry.id);
+        if (entry.bundle.manifest.pendingReview) setReviewNavigation({courseId:entry.id});
         return toControlItem(entry);
       },
       openDocument: async (args) => {
@@ -1316,7 +1308,7 @@ export function CourseLibrary({
         setActiveId(entry.id);
         controlTaskRef.current = true;
         try {
-          await openDocumentForEntry(entry, document, page, true);
+          await openDocumentForEntry(entry, document, page, true, undefined, args.panel === 'summary' || args.panel === 'mindmap' ? args.panel : undefined);
           return {
             courseId: entry.id,
             courseName: entry.name,
@@ -1625,10 +1617,10 @@ export function CourseLibrary({
   );
 
   return (
-    <div className="flex min-h-0 flex-1 bg-[#f5f7fa] text-slate-800">
-      <aside className="hidden w-64 shrink-0 flex-col border-r border-slate-200 bg-[#fafbfc] p-4 md:flex">
+    <div className="course-workspace flex min-h-0 flex-1 bg-[#f3f6f8] text-slate-800">
+      <aside className="hidden min-h-0 w-56 shrink-0 flex-col border-r border-slate-200 bg-white p-4 md:flex">
         <div className="flex items-center justify-between px-2 py-2">
-          <p className="text-[11px] font-bold tracking-[0.13em] text-slate-500 uppercase">
+          <p className="text-xs font-semibold text-slate-600">
             我的课程
           </p>
           <Button
@@ -1640,24 +1632,25 @@ export function CourseLibrary({
             <Plus />
           </Button>
         </div>
-        <div className="mt-2 space-y-1">
+        <div aria-label="课程目录" className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
           {entries.map((entry) => (
             <button
               key={entry.id}
               type="button"
-              className={`flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left transition ${entry.id === activeId ? 'border-slate-200 bg-white shadow-sm' : 'border-transparent hover:bg-white'}`}
+              className={`flex w-full items-center gap-3 rounded-md border border-l-[3px] px-3 py-3 text-left transition-colors ${entry.id === activeId ? 'border-slate-200 border-l-[#315d7c] bg-slate-50' : 'border-transparent hover:bg-slate-50'}`}
+              aria-current={entry.id === activeId ? 'page' : undefined}
               onClick={() => setActiveId(entry.id)}
             >
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-violet-100 font-bold text-violet-700">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-slate-100 font-semibold text-[#315d7c]">
                 {entry.name.slice(0, 1)}
               </span>
               <span className="min-w-0">
                 <span className="block truncate text-sm font-semibold">
                   {entry.name}
                 </span>
-                <span className="mt-0.5 block text-[10px] text-slate-500">
-                  {entry.bundle?.manifest.documents.length ?? 0} 份 PDF ·{' '}
-                  {permissionLabel(entry.permission)}
+                <span className="mt-0.5 flex flex-wrap gap-x-1 text-xs text-slate-500">
+                  <span className="whitespace-nowrap">{entry.bundle?.manifest.documents.length ?? 0} 份 PDF</span>
+                  <span className="whitespace-nowrap">· {permissionLabel(entry.permission)}</span>
                 </span>
               </span>
             </button>
@@ -1668,7 +1661,9 @@ export function CourseLibrary({
                       const document = bundle.manifest.documents.find((item) => item.id === documentId);
                       if (document) void openDocument(document, page);
                     }} /></div> : null}
-        <div className="mt-auto rounded-xl border border-slate-200 bg-white p-4">
+        <details className="mt-3 max-h-[45vh] shrink-0 overflow-y-auto border-t border-slate-200 pt-3 text-xs">
+          <summary className="cursor-pointer rounded-md px-2 py-2 font-medium focus-visible:outline-2 focus-visible:outline-offset-2">工作区与共享</summary>
+          <div className="px-2 py-3">
           {isDesktop ? (
             <>
               <p className="flex items-center gap-2 text-xs font-semibold text-slate-700">
@@ -1727,7 +1722,8 @@ export function CourseLibrary({
               </p>
             </>
           )}
-        </div>
+          </div>
+        </details>
       </aside>
 
       <main className="min-w-0 flex-1 overflow-auto px-4 py-6 sm:px-7 lg:px-10">
@@ -1735,6 +1731,9 @@ export function CourseLibrary({
           <CourseSwitcher courses={entries} activeId={activeId} disabled={loading}
             onSelect={setActiveId} onCreate={() => setCreateOpen(true)}
             onConnect={isDesktop ? undefined : () => void connectHandle('existing')} />
+          <details className="mb-4 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm">
+            <summary className="cursor-pointer text-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2">课程管理与备份</summary>
+            <div className="pt-4">
           <DesktopBuildInfo />
           <CourseBackupActions directoryName={active?.permission === 'granted' ? active.storage.label : undefined} onRestored={async result => {
             if (!desktopApi) throw new Error('桌面工作区未连接。');
@@ -1743,6 +1742,15 @@ export function CourseLibrary({
             setEntries(previous => [...previous.filter(entry=>entry.id !== restored.manifest.id),{id:restored.manifest.id,name:restored.manifest.name,updatedAt:restored.manifest.updatedAt,storage,bundle:restored,permission:'granted'}]);
             setActiveId(restored.manifest.id);
           }} />
+              {active && bundle ? <div className="flex flex-wrap items-center gap-2 pb-3">
+                <Button variant="outline" size="sm" onClick={() => void reloadActive()} disabled={busy}><RefreshCw className={busy ? 'animate-spin' : ''} />重新加载</Button>
+                {isDesktop && active.storage.publishTranslation ? <Button variant="outline" size="sm" onClick={() => void publishExistingTranslations()} disabled={busy}>发布已有译文</Button> : null}
+                <Button variant="outline" size="sm" className="text-rose-700" onClick={() => setPendingDelete({kind:'course',entry:active})} disabled={busy}><Trash2 />删除课程</Button>
+                <span className="break-all text-xs text-slate-500">版本 {bundle.manifest.revision} / 文件夹 {active.storage.label}</span>
+              </div> : null}
+              {onOpenSettings ? <Button variant="outline" size="sm" onClick={onOpenSettings}><Settings2 />知识库 AI 设置</Button> : null}
+            </div>
+          </details>
           {loading ? (
             <div className="flex min-h-[65vh] items-center justify-center text-sm text-slate-500">
               <LoaderCircle className="mr-2 size-4 animate-spin" />{' '}
@@ -1831,44 +1839,16 @@ export function CourseLibrary({
           ) : bundle && active ? (
             <>
               <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-start">
-                <div>
-                  <p className="text-xs text-slate-500">
-                    {isDesktop ? '工作区课程' : '本地课程'} /{' '}
-                    {bundle.manifest.name}
-                  </p>
-                  <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-900">
+                <div className="min-w-0 flex-1">
+                  <h1 className="break-words text-[28px] leading-tight font-semibold text-[#243746]">
                     {bundle.manifest.name}
                   </h1>
-                  <p className="mt-1 text-xs text-slate-500">
-                    版本 {bundle.manifest.revision} · 文件夹{' '}
-                    {active.storage.label}
+                  <p aria-label="课程概况" className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+                    <span>{bundle.manifest.documents.length} 份 PDF</span><span>{includedCount} 份纳入课程</span><span>{conceptCount} 个知识节点</span><span>更新于 {formatUpdatedAt(bundle.manifest.updatedAt)}</span>
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-                    <span className="size-2 rounded-full bg-emerald-500" />{' '}
-                    已连接
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void reloadActive()}
-                    disabled={busy}
-                  >
-                    <RefreshCw className={busy ? 'animate-spin' : ''} />{' '}
-                    重新加载
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-rose-700"
-                    onClick={() =>
-                      setPendingDelete({ kind: 'course', entry: active })
-                    }
-                    disabled={busy}
-                  >
-                    <Trash2 /> 删除课程
-                  </Button>
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  {onOpenSettings ? <Button variant="ghost" size="sm" onClick={onOpenSettings}><Settings2 />AI 设置</Button> : null}
                   <span className="md:hidden"><CourseGlossary key={active.id} storage={active.storage} bundle={bundle} disabled={busy}
                     onLocate={(documentId, page) => {
                       const document = bundle.manifest.documents.find((item) => item.id === documentId);
@@ -1880,13 +1860,13 @@ export function CourseLibrary({
                 </div>
               </div>
 
-              <CourseReviewPanel key={`review:${active.id}:${bundle.manifest.pendingReview?.id ?? ''}`} bundle={bundle} onResolve={async (id,accept) => {
+              <div ref={reviewPanelRef}><CourseReviewPanel key={`review:${active.id}:${bundle.manifest.pendingReview?.id ?? ''}`} bundle={bundle} onResolve={async (id,accept) => {
                 if (!active.storage.resolveCourseReview) throw new Error('请更新桌面版后再审阅。');
                 const next = await active.storage.resolveCourseReview(id,accept);
                 setEntryBundle(active.id,next);
                 backgroundRef.current?.wake();
                 setMessage(accept ? '已应用审阅后的课程更新。' : '已保留原课程成果，PDF 和单篇成果仍可使用。');
-              }} />
+              }} /></div>
               <CourseContentSearch key={active.id} bundle={bundle} storage={active.storage} onSelect={async hit => {
                 if (hit.kind === 'note') { setStudyTab('notes'); setSearchLocation({line:hit.line ?? 1,key:Date.now()}); }
                 else if (hit.kind === 'knowledge') { setStudyTab('summary'); setSearchLocation({id:hit.nodeId,key:Date.now()}); }
@@ -1896,30 +1876,6 @@ export function CourseLibrary({
                   await openDocument(document,hit.page ?? 1);
                 }
               }} />
-              {isDesktop && active.storage.publishTranslation ? (
-                <div className="mt-5 flex flex-col gap-3 rounded-xl border border-violet-200 bg-violet-50/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="text-xs font-semibold text-violet-900">
-                      共享已生成的 PDF 页面译文
-                    </p>
-                    <p className="mt-1 text-[11px] leading-5 text-violet-800/80">
-                      首次发布会在课程目录新增 Translations 文件，不修改
-                      PDF、course.json、总结、脑图或笔记。
-                    </p>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="shrink-0 border-violet-300 bg-white text-violet-800"
-                    onClick={() => void publishExistingTranslations()}
-                    disabled={busy}
-                  >
-                    {busy ? <LoaderCircle className="animate-spin" /> : null}
-                    发布已有译文
-                  </Button>
-                </div>
-              ) : null}
-
               {error || message ? (
                 <div
                   role="status"
@@ -1944,63 +1900,37 @@ export function CourseLibrary({
                 </div>
               ) : null}
 
-              {bundle.manifest.documents.length > 0 ? <section aria-label="继续学习" className="mt-6 rounded-2xl border border-blue-100 bg-blue-50/60 p-5">
+              {studyTab === 'summary' && bundle.manifest.documents.length > 0 ? <section aria-label="继续学习" className="mt-5 border-y border-slate-200 py-4">
                 <div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-semibold text-slate-900">继续学习</h2><p className="mt-1 text-xs text-slate-500">{recentDocuments.length ? '从上次阅读的位置继续。' : '打开一份资料开始阅读，整理成果会在后台更新。'}</p></div><Button variant="outline" size="sm" onClick={() => setStudyTab('documents')}>查看全部资料</Button></div>
-                <div className="mt-4 grid gap-3 md:grid-cols-3">{(recentDocuments.length ? recentDocuments : selectStudyDocuments(bundle.manifest.documents, [], '', 'recent-import').slice(0,3)).map(document => {
+                <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{(recentDocuments.length ? recentDocuments : selectStudyDocuments(bundle.manifest.documents, [], '', 'recent-import').slice(0,3)).map(document => {
                   const progress = readingProgress.find(item => item.fingerprint === document.fingerprint);
                   const page = Math.min(document.pageCount || 1, Math.max(1, progress?.lastPage ?? 1));
-                  return <button key={document.id} type="button" className="rounded-xl border border-blue-100 bg-white p-4 text-left hover:border-blue-300" onClick={() => void openDocument(document)}><span className="block truncate text-sm font-semibold">{document.fileName}</span><span className="mt-2 block text-xs text-slate-500">{progress ? `上次读到第 ${page} / ${document.pageCount} 页` : `${document.pageCount} 页 · 开始阅读`}</span>{progress ? <progress aria-label={`${document.fileName}阅读位置`} className="mt-3 h-1 w-full" max={document.pageCount || 1} value={page} /> : null}</button>;
+                  return <button key={document.id} type="button" className="min-w-0 rounded-md border border-slate-200 bg-white px-3 py-3 text-left hover:border-[#315d7c] focus-visible:outline-2 focus-visible:outline-offset-2" onClick={() => void openDocument(document)}><span className="block truncate text-sm font-semibold">{document.fileName}</span><span className="mt-2 block text-xs text-slate-500">{progress ? `上次读到第 ${page} / ${document.pageCount} 页` : `${document.pageCount} 页 · 开始阅读`}</span>{progress ? <progress aria-label={`${document.fileName}阅读位置`} className="mt-3 h-1 w-full" max={document.pageCount || 1} value={page} /> : null}</button>;
                 })}</div>
-                {bundle.manifest.documents.some(document => document.processing?.status === 'failed') ? <Button className="mt-3 text-amber-800" variant="link" size="sm" onClick={() => setStudyTab('documents')}>有整理任务需要处理，查看并重试 →</Button> : null}
-                {bundle.manifest.documents.some(document => (document.hasSummary || document.hasMindmap) && !readingProgress.some(progress => progress.fingerprint === document.fingerprint)) ? <p className="mt-3 text-xs text-blue-700">有已整理好的资料尚未开始阅读，可在 PDF 资料中打开。</p> : null}
-              </section> : null}
+                {bundle.manifest.documents.some(document => document.processing?.status === 'failed') ? <Button className="mt-3 text-amber-800" variant="link" size="sm" onClick={() => setStudyTab('documents')}>有整理任务需要处理，查看并重试</Button> : null}
 
-              <section className="mt-6 grid overflow-hidden rounded-2xl border border-slate-200 bg-white sm:grid-cols-4">
-                <Metric
-                  icon={<FileText />}
-                  value={bundle.manifest.documents.length}
-                  label="课程 PDF"
-                />
-                <Metric
-                  icon={<GitMerge />}
-                  value={includedCount}
-                  label="已纳入课程"
-                  tone="green"
-                />
-                <Metric
-                  icon={<Network />}
-                  value={conceptCount}
-                  label="知识节点"
-                  tone="violet"
-                />
-                <Metric
-                  icon={<Clock3 />}
-                  value={`v${bundle.knowledge.version}`}
-                  label={`更新于 ${formatUpdatedAt(bundle.manifest.updatedAt)}`}
-                  tone="amber"
-                />
-              </section>
+              </section> : null}
 
               <Tabs
                 value={studyTab}
                 onValueChange={value => setStudyTab(String(value))}
-                className="mt-5 gap-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+                className="mt-5 gap-0 overflow-hidden rounded-lg border border-slate-200 bg-white"
               >
                 <TabsList
                   variant="line"
-                  className="h-13 w-full justify-start gap-3 overflow-x-auto border-b border-slate-200 px-4"
+                  className="group-data-horizontal/tabs:h-12 w-full justify-start gap-3 overflow-x-auto overflow-y-hidden border-b border-slate-200 px-4"
                 >
-                  <TabsTrigger value="summary" className="flex-none px-3">
+                  <TabsTrigger value="summary" className="flex-none px-3 after:bottom-0">
                     <Sparkles /> 课程总总结
                   </TabsTrigger>
-                  <TabsTrigger value="mindmap" className="flex-none px-3">
+                  <TabsTrigger value="mindmap" className="flex-none px-3 after:bottom-0">
                     <Network /> 课程脑图
                   </TabsTrigger>
-                  <TabsTrigger value="documents" className="flex-none px-3">
+                  <TabsTrigger value="documents" className="flex-none px-3 after:bottom-0">
                     <FileText /> PDF 资料 {bundle.manifest.documents.length}
                   </TabsTrigger>
-                  <TabsTrigger value="notes" className="flex-none px-3">课程笔记</TabsTrigger>
-                  <TabsTrigger value="history" className="flex-none px-3">成果历史</TabsTrigger>
+                  <TabsTrigger value="notes" className="flex-none px-3 after:bottom-0">课程笔记</TabsTrigger>
+                  <TabsTrigger value="history" className="flex-none px-3 after:bottom-0">成果历史</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="summary" className="min-h-[520px]">
@@ -2021,14 +1951,9 @@ export function CourseLibrary({
                       </Button>
                     </div>
                   ) : (
-                    <div className="grid lg:grid-cols-[minmax(0,1fr)_300px]">
-                      <article className="px-6 py-8 sm:px-10">
-                        <p className="text-xs font-bold tracking-[0.12em] text-violet-600 uppercase">
-                          课程总总结
-                        </p>
-                        <h2 className="mt-2 text-2xl font-semibold tracking-tight">
-                          {bundle.manifest.name}知识框架
-                        </h2>
+                    <div>
+                      <article className="mx-auto max-w-4xl px-5 py-6 sm:px-8">
+                        <h2 className="text-xl font-semibold text-[#243746]">课程总总结</h2>
                         <p className="mt-1 text-xs text-slate-500">
                           版本 {bundle.knowledge.version} · 汇总 {includedCount}{' '}
                           份 PDF
@@ -2095,25 +2020,7 @@ export function CourseLibrary({
                           </KnowledgeSection> : null}
                         </div>
                       </article>
-                      <aside className="border-t border-slate-200 bg-slate-50/70 p-6 lg:border-t-0 lg:border-l">
-                        <h3 className="text-xs font-semibold text-slate-800">
-                          本次课程版本
-                        </h3>
-                        <div className="mt-4 space-y-3 text-xs text-slate-600">
-                          <p className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
-                            + {conceptCount} 个可追溯知识节点
-                          </p>
-                          <p className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
-                            ✓ {includedCount} 份 PDF 来源已合并
-                          </p>
-                          <p className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
-                            ! {bundle.knowledge.conflicts.length} 个资料冲突
-                          </p>
-                        </div>
-                        <p className="mt-6 text-[11px] leading-5 text-slate-500">
-                          每次更新前都会把上一版课程成果保存到 History 目录。
-                        </p>
-                      </aside>
+
                     </div>
                   )}
                 </TabsContent>
@@ -2165,14 +2072,14 @@ export function CourseLibrary({
                       {visibleDocuments.map((document) => (
                         <div
                           key={document.id}
-                          className="grid gap-4 bg-white px-4 py-4 lg:grid-cols-[minmax(220px,1fr)_190px_190px_auto] lg:items-center"
+                          className="grid min-w-0 gap-x-4 gap-y-3 bg-white px-4 py-4 sm:grid-cols-2"
                         >
-                          <div className="flex min-w-0 items-center gap-3">
+                          <div className="flex min-w-0 items-start gap-3 sm:col-span-2">
                             <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-rose-50 text-[10px] font-bold text-rose-700">
                               PDF
                             </span>
                             <div className="min-w-0">
-                              <span className="block truncate text-sm font-semibold">
+                              <span className="block break-words text-sm font-semibold">
                                 {document.fileName}
                               </span>
                               <span className="mt-1 block text-[10px] text-slate-500">
@@ -2203,17 +2110,17 @@ export function CourseLibrary({
                             )}
                             {artifactStatus(document)}
                           </span>
-                          <div className="flex flex-wrap justify-end gap-2">
+                          <div className="flex flex-wrap gap-2 sm:col-span-2">
                             <Button
                               variant="outline"
-                              size="xs"
+                              size="sm"
                               onClick={() => void openDocument(document)}
                             >
-                              <BookOpen /> 打开
+                              <BookOpen /> 阅读
                             </Button>
                             {!document.includedInCourse && !document.processing ? (
                               <Button
-                                size="xs"
+                                size="sm"
                                 onClick={() =>
                                   void mergeDocumentWithAi(document)
                                 }
@@ -2225,7 +2132,7 @@ export function CourseLibrary({
                             {!document.hasSummary || !document.hasMindmap ? (
                               <Button
                                 variant="outline"
-                                size="xs"
+                                size="sm"
                                 onClick={() =>
                                   void regenerateDocument(document)
                                 }
@@ -2236,7 +2143,7 @@ export function CourseLibrary({
                             ) : (
                               <Button
                                 variant="outline"
-                                size="xs"
+                                size="sm"
                                 onClick={() =>
                                   void regenerateDocument(document)
                                 }
@@ -2247,7 +2154,7 @@ export function CourseLibrary({
                             )}
                             <Button
                               variant="outline"
-                              size="xs"
+                              size="sm"
                               className="text-rose-700"
                               onClick={() =>
                                 setPendingDelete({
@@ -2588,6 +2495,7 @@ export function CourseLibrary({
       {retryGeneration && generationCourseId === activeId && !busy ? <Button onClick={retryGeneration} className="fixed right-6 bottom-6 z-50">重试生成（保留旧成果）</Button> : null}
       {generationDiagnostics.length > 0 && generationCourseId === activeId ? <details className="fixed bottom-6 left-6 z-40 max-h-60 max-w-xl overflow-auto rounded border bg-white p-2 text-xs"><summary>分层生成诊断（{generationDiagnostics.length}）</summary><pre className="whitespace-pre-wrap">{JSON.stringify(generationDiagnostics, null, 2)}</pre></details> : null}
       <CourseImportDialog
+        onOpenSettings={onOpenSettings}
         open={importOpen}
         onOpenChange={setImportOpen}
         onImport={importPdf}

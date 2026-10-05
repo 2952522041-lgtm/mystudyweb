@@ -690,6 +690,7 @@ function PdfReader({
   suspended = false,
   onStandaloneImport,
   onControlReady,
+  settingsRequest = 0,
 }: {
   initialFile?: File | null;
   courseContext?: CourseReaderContext | null;
@@ -699,6 +700,7 @@ function PdfReader({
   /** Called when a PDF is imported from this reader's own import dialog. */
   onStandaloneImport?: (file: File) => void;
   onControlReady?: (control: ReaderControl | null) => void;
+  settingsRequest?: number;
 }) {
   const sizeLoaderRef = useRef<ReturnType<typeof createProgressivePageSizes> | null>(null);
   const importLifecycleRef = useRef(createPdfImportLifecycle<PDFDocumentProxy>());
@@ -729,6 +731,13 @@ function PdfReader({
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [readingPosition, setReadingPosition] = useState<ReadingAnchor>({ page: 1, fraction: 0 });
   const [pdfPanelPercent, setPdfPanelPercent] = useState(55);
+  const [restoredPdfPanelPercent, setRestoredPdfPanelPercent] = useState(55);
+  const [pdfPanelDefaultPercent, setPdfPanelDefaultPercent] = useState(55);
+  // defaultSize changes re-register panels, whose order needs visible DOM
+  // offsets. Apply restored seeds when visible, never while live dragging.
+  if (!suspended && pdfPanelDefaultPercent !== restoredPdfPanelPercent) {
+    setPdfPanelDefaultPercent(restoredPdfPanelPercent);
+  }
   const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
   const pendingRestoreAnchorRef = useRef<ReadingAnchor | null>(null);
   const progressFlushRef = useRef<(() => void) | null>(null);
@@ -743,6 +752,14 @@ function PdfReader({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('translation');
+  useEffect(() => {
+    if (!settingsRequest) return;
+    const timer = setTimeout(() => {
+      setSettingsTab('knowledge');
+      setSettingsOpen(true);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [settingsRequest]);
   const [rightMode, setRightMode] = useState<ReaderRightModeName>(
     courseContext?.digest ? 'summary' : 'translation',
   );
@@ -766,6 +783,12 @@ function PdfReader({
   } | null>(null);
   const [recoveringProgress, setRecoveringProgress] = useState(false);
   const [translationVisible, setTranslationVisible] = useState(true);
+  // Clamp saved intent to the artifacts available for this document.
+  const activeMode =
+    rightMode === 'summary' || rightMode === 'mindmap'
+      ? courseContext?.digest ? rightMode : 'translation'
+      : rightMode;
+  const translationActive = !suspended && translationVisible && activeMode === 'translation';
   const [stageWidth, setStageWidth] = useState(0);
   const [prefetchedTranslationPage, setPrefetchedTranslationPage] = useState<
     number | null
@@ -946,8 +969,12 @@ function PdfReader({
   }, [pageTops, pageHeightsPx, pageSizes, suspended]);
 
   useLayoutEffect(() => {
-    if (translationVisible && pdfDoc) pdfPanelRef.current?.resize(`${pdfPanelPercent}%`);
-  }, [pdfDoc, pdfPanelPercent, translationVisible]);
+    if (suspended || !translationVisible || !pdfDoc) return;
+    // Conditional panels register during their own layout cycle. Resizing in
+    // this parent's commit can still see the previous one-panel layout.
+    const frame = requestAnimationFrame(() => pdfPanelRef.current?.resize(`${pdfPanelPercent}%`));
+    return () => cancelAnimationFrame(frame);
+  }, [pdfDoc, pdfPanelPercent, suspended, translationVisible]);
 
   useEffect(() => {
     for (const visiblePage of renderedPages) void sizeLoaderRef.current?.load(visiblePage);
@@ -1296,8 +1323,11 @@ function PdfReader({
         });
         setZoom(hostReadingState?.zoom ?? restored?.zoom ?? DEFAULT_ZOOM);
         const restoredView = hostReadingState ?? restored;
-        setRightMode(readingPanelMode(restoredView?.rightMode, courseContext?.digest ? 'summary' : 'translation'));
-        setPdfPanelPercent(readingPanelPercent(restoredView?.pdfPanelPercent));
+        setRightMode(courseContext?.initialPanel ?? readingPanelMode(restoredView?.rightMode, courseContext?.digest ? 'summary' : 'translation'));
+        if (courseContext?.initialPanel) setTranslationVisible(true);
+        const restoredPanelPercent = readingPanelPercent(restoredView?.pdfPanelPercent);
+        setPdfPanelPercent(restoredPanelPercent);
+        setRestoredPdfPanelPercent(restoredPanelPercent);
         setTargetLanguage(restored?.targetLanguage ?? '简体中文');
         const openingPage = clampPage(
           requestedPage ?? hostReadingState?.page ?? restored?.lastPage ?? 1,
@@ -1351,8 +1381,11 @@ function PdfReader({
         setZoom(restored.zoom);
         setTargetLanguage(restored.targetLanguage);
         goToPage(recovery.requestedPage ?? restored.lastPage);
-        setRightMode(readingPanelMode(restored.rightMode, courseContext?.digest ? 'summary' : 'translation'));
-        setPdfPanelPercent(readingPanelPercent(restored.pdfPanelPercent));
+        setRightMode(courseContext?.initialPanel ?? readingPanelMode(restored.rightMode, courseContext?.digest ? 'summary' : 'translation'));
+        if (courseContext?.initialPanel) setTranslationVisible(true);
+        const restoredPanelPercent = readingPanelPercent(restored.pdfPanelPercent);
+        setPdfPanelPercent(restoredPanelPercent);
+        setRestoredPdfPanelPercent(restoredPanelPercent);
         const anchor = { page: recovery.requestedPage ?? restored.lastPage, fraction: recovery.requestedPage !== undefined ? 0 : readingFraction(restored.pageFraction) };
         setReadingPosition(anchor);
         requestAnimationFrame(() => {
@@ -1481,7 +1514,7 @@ function PdfReader({
   // Per-page pipeline: extract a text layer, fall back to cached visual OCR,
   // then use the existing translation cache/provider.
   useEffect(() => {
-    if (!pdfDoc || !docMeta) return;
+    if (!translationActive || !pdfDoc || !docMeta) return;
     const key = translationKey(translationPage, targetLanguage);
     const bypassRequested = bypassCacheRef.current.delete(key);
     const existing = translationStatesRef.current[key];
@@ -1663,8 +1696,16 @@ function PdfReader({
     return () => {
       cancelled = true;
       controller.abort();
+      const state = translationStatesRef.current[key];
+      if (state?.status === 'translating' || state?.status === 'recognizing') {
+        const next = { ...translationStatesRef.current };
+        delete next[key];
+        translationStatesRef.current = next;
+        setTranslationStates(next);
+      }
     };
   }, [
+    translationActive,
     pdfDoc,
     docMeta,
     translationPage,
@@ -1758,15 +1799,6 @@ function PdfReader({
     { length: docMeta?.pageCount ?? 0 },
     (_, index) => index + 1,
   );
-  // rightMode is the user's intent; clamp it to what the current document
-  // offers, so summary/mindmap never linger on a document without course
-  // results (e.g. after importing a new PDF inside the reader).
-  const activeMode =
-    rightMode === 'summary' || rightMode === 'mindmap'
-      ? courseContext?.digest
-        ? rightMode
-        : 'translation'
-      : rightMode;
   const translationKeyCurrent = translationKey(translationPage, targetLanguage);
   const currentState = translationStates[translationKeyCurrent];
   const isReady =
@@ -1892,7 +1924,7 @@ function PdfReader({
   // Once the current translation is ready, quietly prepare the next page so
   // sequential reading usually becomes an immediate cache hit.
   useEffect(() => {
-    if (!pdfDoc || !docMeta || docMeta.scanDetected || !isReady) return;
+    if (!translationActive || !pdfDoc || !docMeta || docMeta.scanDetected || !isReady) return;
     const nextPage = nextPageToPrefetch(translationPage, docMeta.pageCount);
     if (!nextPage) return;
     const provider = createProviderForSettings(settingsRef.current);
@@ -1969,6 +2001,7 @@ function PdfReader({
       if (!completed) prefetchedTranslations.delete(identity);
     };
   }, [
+    translationActive,
     pdfDoc,
     docMeta,
     isReady,
@@ -2102,11 +2135,11 @@ function PdfReader({
           <ResizablePanelGroup orientation="horizontal">
             <ResizablePanel
               panelRef={pdfPanelRef}
-              defaultSize={translationVisible ? '55%' : '100%'}
+              defaultSize={translationVisible ? `${pdfPanelDefaultPercent}%` : '100%'}
               minSize="40%"
               maxSize={translationVisible ? '70%' : '100%'}
               onResize={(size, _id, previous) => {
-                if (previous && translationVisible && pdfDoc) setPdfPanelPercent(readingPanelPercent(Math.round(size.asPercentage * 100) / 100));
+                if (previous && translationVisible && pdfDoc && !suspended && size.inPixels > 0 && Number.isFinite(size.asPercentage)) setPdfPanelPercent(readingPanelPercent(Math.round(size.asPercentage * 100) / 100));
               }}
             >
               <section className="reader-pane" aria-label="PDF 原文阅读区">
@@ -2598,6 +2631,7 @@ function PdfReader({
 
 function DesktopHome() {
   const [view, setView] = useState<'courses' | 'reader'>('courses');
+  const [settingsRequest, setSettingsRequest] = useState(0);
   const [readerFile, setReaderFile] = useState<File | null>(null);
   const [readerContext, setReaderContext] =
     useState<CourseReaderContext | null>(null);
@@ -2685,9 +2719,9 @@ function DesktopHome() {
 
   return (
     <>
-      <BackgroundTaskCenter onOpenDocument={async (courseId,documentId) => {
+      <BackgroundTaskCenter onOpenDocument={async (courseId,documentId,panel) => {
         if (!courseControlRef.current) throw new Error('课程知识库尚未就绪。');
-        return courseControlRef.current.openDocument({courseId,documentId});
+        return courseControlRef.current.openDocument({courseId,documentId,panel});
       }} onOpenCourse={async courseId => {
         if (!courseControlRef.current) throw new Error('课程知识库尚未就绪。');
         courseControlRef.current.openCourse({courseId});setView('courses');
@@ -2703,14 +2737,15 @@ function DesktopHome() {
           suspended={view !== 'reader'}
           onStandaloneImport={() => setReaderContext(null)}
           onControlReady={registerReaderControl}
+          settingsRequest={settingsRequest}
         />
       </div>
       <div hidden={view !== 'courses'} inert={view !== 'courses'}>
         <TooltipProvider>
           <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-[#f5f7fa]">
-            <header className="flex h-15 shrink-0 items-center justify-between border-b border-white/10 bg-[#243a59] px-5 text-white">
+            <header className="flex h-15 shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 text-[#243746] sm:px-5">
               <div className="flex items-center gap-3">
-                <span className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-400 to-indigo-500 shadow-sm">
+                <span className="flex size-8 items-center justify-center rounded-md bg-[#315d7c] text-white">
                   <BookOpen className="size-4" />
                 </span>
                 <span className="text-sm font-semibold tracking-wide">
@@ -2720,21 +2755,23 @@ function DesktopHome() {
               <nav className="flex h-full items-center" aria-label="主导航">
                 <button
                   type="button"
-                  className="flex h-full items-center gap-2 border-b-2 border-violet-300 px-4 text-sm font-medium"
+                  className="flex h-full items-center gap-2 border-b-2 border-[#315d7c] px-2 text-sm font-medium sm:px-4"
+                  aria-current="page"
                 >
                   <LibraryBig className="size-4" /> 课程知识库
                 </button>
                 <button
                   type="button"
-                  className="flex h-full items-center gap-2 border-b-2 border-transparent px-4 text-sm text-slate-300 hover:text-white"
+                  className="flex h-full items-center gap-2 border-b-2 border-transparent px-2 text-sm text-slate-500 hover:text-[#315d7c] sm:px-4"
                   onClick={() => setView('reader')}
                 >
                   <FileText className="size-4" /> PDF 阅读器
                 </button>
               </nav>
-              <div className="w-24" aria-hidden="true" />
+              <div className="hidden w-24 sm:block" aria-hidden="true" />
             </header>
             <CourseLibrary
+              onOpenSettings={() => setSettingsRequest(value => value + 1)}
               onControlReady={registerCourseControl}
               onBundleUpdated={(bundle) => setReaderContext(previous => {
                 if (!previous || previous.courseId !== bundle.manifest.id) return previous;

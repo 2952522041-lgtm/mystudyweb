@@ -1,0 +1,129 @@
+{
+  "variant": "B",
+  "complete": true,
+  "targetMet": true,
+  "totalMs": 136007,
+  "startedAt": "2026-10-05T13:06:06.972Z",
+  "model": "deepseek-flash",
+  "backend": "dsh",
+  "generationMode": "fast",
+  "cacheState": {
+    "application": "fresh-per-run-digest-layer-pdf-text-ocr",
+    "provider": "uncontrolled",
+    "osFileCache": "uncontrolled",
+    "existingCourseDigest": "none"
+  },
+  "executionIdentity": {
+    "bundleSha256": "be4ca19200818025d79c2fc50bac4ad0b511df27ba1a0a8267d00abc05b15c72",
+    "bundleSource": "frozen",
+    "transportLabel": "dsh-notification-idle-fixed",
+    "transportLabelVerifiedByCli": false
+  },
+  "phases": [
+    {
+      "name": "extract",
+      "durationMs": 148,
+      "startMs": 71
+    },
+    {
+      "name": "document",
+      "durationMs": 135784,
+      "startMs": 219
+    },
+    {
+      "name": "course",
+      "durationMs": 4,
+      "startMs": 136003
+    },
+    {
+      "name": "completed",
+      "durationMs": 0,
+      "startMs": 136007
+    }
+  ],
+  "requestCount": 14,
+  "requestTimingCount": 14,
+  "byLayer": {
+    "chunk": {
+      "count": 3,
+      "sumMs": 68611,
+      "maxMs": 26113,
+      "outputChars": 46202,
+      "queueMs": 0,
+      "success": 3,
+      "failure": 0,
+      "cancelled": 0
+    },
+    "document": {
+      "count": 11,
+      "sumMs": 145290,
+      "maxMs": 23718,
+      "outputChars": 108398,
+      "queueMs": 1,
+      "success": 11,
+      "failure": 0,
+      "cancelled": 0
+    }
+  },
+  "courseDocumentCount": 1,
+  "singleDocumentReused": true,
+  "result": {
+    "hasSummary": true,
+    "hasMindmap": true,
+    "includedInCourse": false,
+    "knowledgeState": "candidate",
+    "candidateStaged": true,
+    "merged": false,
+    "concepts": 15,
+    "sections": 22,
+    "knowledgeNodes": 15
+  },
+  "quality": {
+    "checkScope": "mechanical completeness, provenance and hierarchy; not semantic equivalence judgment",
+    "hasOverview": true,
+    "sections": 22,
+    "points": 123,
+    "concepts": 15,
+    "relations": 26,
+    "unresolvedQuestions": 10,
+    "sourcePages": 59,
+    "pageCount": 59,
+    "sectionRangeCoveredPageCount": 56,
+    "duplicateConceptIds": 0,
+    "duplicatePointTextCount": 0,
+    "maximumHierarchyDepth": 3,
+    "invalidHierarchyNodes": 0,
+    "maxChildren": 7,
+    "unknownRelationEndpoints": 0,
+    "invalidSectionRanges": 0,
+    "invalidPointRanges": 0,
+    "invalidConceptSources": 0,
+    "evidenceItems": 126,
+    "evidencePresentInVisibleProse": 126,
+    "qualityRestorationEvents": 10,
+    "restoredEvidenceItems": 227,
+    "digestBytes": 192786,
+    "visibleProseChars": 33069,
+    "regularSections": 15,
+    "regularPoints": 116,
+    "evidenceAppendixSections": 7,
+    "conceptDepthCounts": {
+      "1": 7,
+      "2": 7,
+      "3": 1
+    },
+    "leafConcepts": 9
+  },
+  "failures": [
+    {
+      "layer": "document",
+      "identity": "文档综合 doc-a2b1068c06578d8c/round-1/batch-1",
+      "category": "reduction-budget",
+      "atMs": 91931
+    }
+  ],
+  "interference": {
+    "present": false,
+    "providerCacheStillUncontrolled": true
+  }
+}

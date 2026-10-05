@@ -64,6 +64,7 @@ export type CourseImportDialogProps = {
   onBatchStart?: () => void;
   /** Called once after every file in a batch has finished or been cancelled. */
   onBatchEnd?: () => void;
+  onOpenSettings?: () => void;
 };
 
 function OptionRow({
@@ -252,6 +253,7 @@ export function CourseImportDialog({
   onImport,
   onBatchStart,
   onBatchEnd,
+  onOpenSettings,
 }: CourseImportDialogProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -433,17 +435,15 @@ export function CourseImportDialog({
           );
           setProgress(Math.round(((index + 1) / batchFiles.length) * 100));
         } catch (importError) {
-          outcomes.set(item.id, 'failed');
+          outcomes.set(item.id, controller.signal.aborted ? 'cancelled' : 'failed');
           setFiles((previous) =>
             previous.map((candidate) =>
               candidate.id === item.id
                 ? {
                     ...candidate,
-                    status: 'failed',
-                    error:
-                      importError instanceof Error
-                        ? importError.message
-                        : '保存失败。',
+                    status: controller.signal.aborted ? 'cancelled' : 'failed',
+                    error: controller.signal.aborted ? '已取消，尚未保存。'
+                      : importError instanceof Error ? importError.message : '保存失败。',
                   }
                 : candidate,
             ),
@@ -479,13 +479,13 @@ export function CourseImportDialog({
       closeAfterSuccess();
     } else if (hasFailure) {
       setError(
-        hasSaved
+        cancelRequestedRef.current && !batchFiles.some(item => outcomes.get(item.id) === 'failed') ? null : hasSaved
           ? '部分 PDF 保存失败；已保存的文件不会重复导入，请仅重试未成功项。'
           : 'PDF 保存失败，请检查逐文件结果后重试未成功项。',
       );
       setProgressMessage(
         cancelRequestedRef.current
-          ? '已停止保存尚未开始的文件'
+          ? `已取消剩余保存。${hasSaved ? '已保存的 PDF 可直接阅读，后台整理继续。' : '可重新选择文件或重试未保存项。'}`
           : '保存完成，请查看逐文件结果',
       );
     }
@@ -613,8 +613,10 @@ export function CourseImportDialog({
             </div>
           ) : null}
 
-          <div className="rounded-xl border border-violet-100 bg-violet-50/60 px-3 py-2 text-[11px] leading-5 text-violet-800">
-            无需配置 AI 也可以先保存 PDF 并立即阅读。若选择总结、脑图、课程汇总或问答洞察，后台 AI 需要配置「阅读服务设置 → 知识库 AI」；关闭应用会暂停，重新打开后恢复。浏览器模式需要重新授权文件夹后才能恢复后台任务。
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+            PDF 保存后即可阅读，总结和脑图在后台整理。
+            {onOpenSettings ? <Button variant="link" size="sm" disabled={processing} onClick={onOpenSettings}>知识库 AI 设置</Button> : '生成成果前，请先在阅读服务设置中配置知识库 AI。'}
+            <details className="mt-1"><summary className="cursor-pointer">离开或关闭应用后会怎样？</summary><p>退出应用后整理暂停，下次打开继续。浏览器模式需重新授权课程文件夹。</p></details>
           </div>
 
           <div className="space-y-2">

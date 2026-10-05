@@ -645,7 +645,7 @@ export function ReaderSettingsDialog({
                 <NativeSelectOption value="deep">深入推理</NativeSelectOption>
               </NativeSelect>
               <p className="text-[11px] leading-5 text-slate-500">
-                适用于 GLM-4.6V 和 DeepSeek Flash / V4 Pro 官方接口。快速整理会关闭普通摘要和课程整理的额外思考，同时保留内容、来源和结构校验；其他模型和代理接口不会发送私有参数。复杂结构修复仍可深入推理。
+                快速整理保留逐块提取的章节正文，AI 生成全文概述和脑图，减少重复等待；深入推理会重新综合章节，适合需要跨章节统一表述的资料。两种模式都校验来源和脑图结构。GLM-4.6V、DeepSeek Flash / V4 Pro 官方接口的快速整理还会关闭额外思考；复杂结构修复保留推理。
               </p>
             </div>
             <p className="text-[11px] leading-5 text-slate-500">

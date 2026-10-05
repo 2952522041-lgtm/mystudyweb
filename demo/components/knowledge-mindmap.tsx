@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { BookOpen, CircleHelp, Network, Sparkles } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -49,6 +49,9 @@ export function KnowledgeMindmap({
   const [maxDepth, setMaxDepth] = useState(3);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   const [copyStatus, setCopyStatus] = useState('');
+  const canvasRef = useRef<HTMLElement>(null);
+  const rootNodeRef = useRef<HTMLButtonElement>(null);
+  const positionedMap = useRef<string | null>(null);
   const drag = useRef<{
     x: number;
     y: number;
@@ -100,6 +103,31 @@ export function KnowledgeMindmap({
     [knowledge.nodes],
   );
   const selected = nodeById.get(selectedId) ?? knowledge.nodes[0];
+  const mapIdentity = `${knowledge.courseId}:${layout.rootId}`;
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || positionedMap.current === mapIdentity) return;
+    let frame = 0;
+    const positionRoot = () => {
+      if (positionedMap.current === mapIdentity) return;
+      const root = rootNodeRef.current;
+      if (!root || !canvas.clientWidth || !canvas.clientHeight || drag.current) return;
+      const view = canvas.getBoundingClientRect();
+      const node = root.getBoundingClientRect();
+      // Scroll only this canvas; hidden reader tabs wait until they have size.
+      canvas.scrollLeft += node.left - view.left - 24;
+      canvas.scrollTop += node.top - view.top - (canvas.clientHeight - node.height) / 2;
+      positionedMap.current = mapIdentity;
+      observer.disconnect();
+    };
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(positionRoot);
+    });
+    observer.observe(canvas);
+    frame = requestAnimationFrame(positionRoot);
+    return () => {cancelAnimationFrame(frame);observer.disconnect();};
+  }, [mapIdentity]);
 
   if (!layout.rootId || layout.nodes.length === 0) {
     return (
@@ -118,7 +146,7 @@ export function KnowledgeMindmap({
   }
 
   return (
-    <div>
+    <div className="@container/mindmap min-w-0">
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 p-3">
         <input
           aria-label="搜索脑图节点"
@@ -195,8 +223,9 @@ export function KnowledgeMindmap({
           ))}
         </div>
       ) : null}
-      <div className="grid min-h-[520px] lg:grid-cols-[minmax(0,1fr)_310px]">
+      <div className="grid min-h-[520px] @[900px]/mindmap:grid-cols-[minmax(0,1fr)_310px]">
         <section
+          ref={canvasRef}
           aria-label="脑图画布"
           onPointerDown={(event) => {
             if (
@@ -225,7 +254,7 @@ export function KnowledgeMindmap({
           onPointerCancel={() => {
             drag.current = null;
           }}
-          className="max-h-[680px] touch-none overflow-auto bg-[radial-gradient(circle_at_center,#e5e7eb_1px,transparent_1px)] bg-[size:22px_22px] p-6"
+          className="max-h-[680px] min-w-0 touch-none overflow-auto bg-[radial-gradient(circle_at_center,#e5e7eb_1px,transparent_1px)] bg-[size:22px_22px] p-6"
         >
           <div
             style={{
@@ -291,6 +320,7 @@ export function KnowledgeMindmap({
                 return (
                   <button
                     key={node.id}
+                    ref={isRoot ? rootNodeRef : undefined}
                     type="button"
                     className={`absolute flex flex-col justify-center gap-1 rounded-xl border px-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${isRoot ? 'border-slate-800 bg-slate-800 text-white' : node.ownership === 'user' ? 'border-amber-300 bg-amber-50 text-slate-800' : 'border-slate-200 bg-white text-slate-800'} ${isSelected ? (isRoot ? 'ring-4 ring-violet-300' : 'border-violet-500 ring-3 ring-violet-100') : ''}`}
                     style={{
@@ -329,7 +359,7 @@ export function KnowledgeMindmap({
           ) : null}
         </section>
 
-        <aside className="border-t border-slate-200 bg-white p-5 lg:border-t-0 lg:border-l">
+        <aside className="border-t border-slate-200 bg-white p-5 @[900px]/mindmap:border-t-0 @[900px]/mindmap:border-l">
           <p className="text-[10px] font-bold tracking-[0.12em] text-slate-400 uppercase">
             选中节点
           </p>

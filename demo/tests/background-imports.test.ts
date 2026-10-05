@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createCourseId } from '../lib/course-storage/file-utils.ts';
 import { BackgroundImports } from '../lib/background-imports.ts';
 import { MemoryCourseStorage } from '../lib/course-storage/memory-course-storage.ts';
 import type {
@@ -535,4 +536,49 @@ void test('review survives worker restart without publishing or re-running AI; n
     assert.equal(findDocument(next, first.id).includedInCourse, true);
     assert.equal(findDocument(next, second.id).includedInCourse, false);
   } finally { restarted.stop(); }
+});
+
+void test('a ready course synthesizes while another course still has documents, preserving each course batch', async () => {
+  const short = new MemoryCourseStorage();
+  const long = new MemoryCourseStorage();
+  const a = await short.initialize('先完成的课程');
+  const b = await long.initialize('较多资料的课程');
+  await save(short, 'a.pdf', mergeOptions, 'a');
+  await save(long, 'b1.pdf', mergeOptions, 'b');
+  await save(long, 'b2.pdf', mergeOptions, 'c');
+  const order: string[] = [];
+  const gate = deferred<DocumentDigest>();
+  let blockedDocument: DocumentRecord | undefined;
+  const worker = new BackgroundImports({
+    analyze: async (_storage, doc) => {
+      order.push(doc.fileName);
+      if (doc.fileName === 'b2.pdf') { blockedDocument = doc; return gate.promise; }
+      return makeDigest(doc);
+    },
+    synthesize: async (bundle, ids) => {
+      order.push(`merge:${bundle.manifest.name}`);
+      assert.ok(ids.every(id => bundle.digests[id]), 'course synthesis only receives saved digests');
+      if (bundle.manifest.id === b.manifest.id) assert.equal(ids.length, 2, 'long course still synthesizes its batch once');
+      return makeKnowledge(bundle.manifest.name);
+    },
+    onBundle: () => undefined,
+  });
+  worker.register(a.manifest.id, short);
+  worker.register(b.manifest.id, long);
+  worker.resume();
+  try {
+    await waitFor(() => Boolean(blockedDocument));
+    assert.deepEqual(order, ['a.pdf', 'b1.pdf', 'merge:先完成的课程', 'b2.pdf']);
+    assert.equal((await short.load()).knowledge.version, 1, 'ready course publishes without waiting for unrelated PDF');
+    assert.equal((await long.load()).knowledge.version, 0);
+    gate.resolve(makeDigest(blockedDocument!));
+    await waitFor(async () => (await long.load()).knowledge.version === 1);
+    assert.deepEqual(order, ['a.pdf', 'b1.pdf', 'merge:先完成的课程', 'b2.pdf', 'merge:较多资料的课程']);
+  } finally { worker.stop(); }
+});
+
+void test('same-millisecond course creation produces distinct safe identities', () => {
+  const ids = Array.from({length:100}, () => createCourseId(1791200000000));
+  assert.equal(new Set(ids).size, ids.length);
+  for (const id of ids) assert.match(id, /^course-[a-z0-9]+-[a-f0-9-]{36}$/);
 });

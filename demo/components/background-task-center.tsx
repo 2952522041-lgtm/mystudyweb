@@ -58,7 +58,7 @@ export function BackgroundTaskCenter({
   onOpenDocument,
   onOpenCourse,
 }: {
-  onOpenDocument: (courseId: string, documentId: string) => Promise<unknown>;
+  onOpenDocument: (courseId: string, documentId: string, panel?: 'summary') => Promise<unknown>;
   onOpenCourse?: (courseId: string) => Promise<unknown>;
 }) {
   const snapshot = useSyncExternalStore(
@@ -142,7 +142,7 @@ export function BackgroundTaskCenter({
     setBusy(true);
     setError(null);
     try {
-      await onOpenDocument(task.courseId, task.documentId);
+      await onOpenDocument(task.courseId, task.documentId, task.status === 'completed' ? 'summary' : undefined);
       setOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : '暂时无法打开资料。');
@@ -155,21 +155,19 @@ export function BackgroundTaskCenter({
       <Button
         variant="outline"
         size="sm"
-        className="fixed right-4 bottom-12 z-40 max-w-[calc(100vw-2rem)] border-violet-200 bg-white shadow-md"
+        className="fixed right-4 bottom-12 z-40 h-auto min-h-7 max-w-[calc(100vw-2rem)] flex-wrap justify-start gap-y-1 border-violet-200 bg-white py-1.5 shadow-md"
         onClick={() => setOpen(true)}
         aria-label="打开后台任务中心"
       >
-        {counts.running ? (
-          <LoaderCircle className="animate-spin" />
-        ) : (
-          <ListTodo />
-        )}
-        后台任务
+        <span className="inline-flex items-center gap-1">
+          {counts.running ? <LoaderCircle className="size-3.5 animate-spin" /> : <ListTodo className="size-3.5" />}
+          后台任务
+        </span>
         {counts.running + counts.queued > 0
-          ? ` · ${counts.running} 项运行 / ${counts.queued} 项排队`
-          : counts.failed
-            ? ` · ${counts.failed} 项失败`
-            : counts.review ? ` · ${counts.review} 项待审阅` : ''}
+          ? <span>· {counts.running} 项运行 / {counts.queued} 项排队</span>
+          : null}
+        {counts.failed ? <span>· {counts.failed} 项失败</span> : null}
+        {counts.review ? <span>· {counts.review} 项待审阅</span> : null}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[88dvh] overflow-y-auto sm:max-w-3xl">

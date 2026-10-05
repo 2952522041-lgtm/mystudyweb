@@ -34,26 +34,26 @@
 
 :root {
   --font-sans-ui:
-    Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI',
-    'PingFang SC', 'Noto Sans CJK SC', sans-serif;
-  --background: oklch(0.975 0.008 78);
-  --foreground: oklch(0.245 0.025 253);
+    'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC', ui-sans-serif,
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --background: #f3f6f8;
+  --foreground: #243746;
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.245 0.025 253);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.245 0.025 253);
-  --primary: oklch(0.61 0.15 58);
+  --primary: #315d7c;
   --primary-foreground: oklch(0.99 0.005 80);
-  --secondary: oklch(0.945 0.012 77);
+  --secondary: #edf2f5;
   --secondary-foreground: oklch(0.3 0.025 253);
   --muted: oklch(0.95 0.008 260);
-  --muted-foreground: oklch(0.54 0.025 255);
-  --accent: oklch(0.94 0.025 72);
-  --accent-foreground: oklch(0.43 0.09 55);
+  --muted-foreground: #687789;
+  --accent: #e8eff4;
+  --accent-foreground: #315d7c;
   --destructive: oklch(0.58 0.2 27);
-  --border: oklch(0.9 0.012 255);
+  --border: #dde4e9;
   --input: oklch(0.88 0.012 255);
-  --ring: oklch(0.66 0.12 61);
+  --ring: #315d7c;
   --radius: 0.55rem;
 }
 
@@ -99,11 +99,11 @@
 
 @layer components {
   .app-toolbar {
-    @apply grid h-16 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 border-b border-slate-200 bg-[#fffdf9] px-5 shadow-[0_1px_0_rgba(15,23,42,0.02)];
+    @apply grid h-16 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 border-b border-slate-200 bg-white px-5 shadow-[0_1px_0_rgba(15,23,42,0.02)];
   }
 
   .brand-mark {
-    @apply flex size-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-amber-300 shadow-sm;
+    @apply flex size-9 shrink-0 items-center justify-center rounded-lg bg-[#315d7c] text-white shadow-sm;
   }
 
   .reader-pane,
@@ -116,7 +116,7 @@
   }
 
   .translation-pane {
-    @apply bg-[#fffdf9];
+    @apply bg-white;
   }
 
   .pane-heading {
@@ -124,7 +124,7 @@
   }
 
   .pane-eyebrow {
-    @apply text-[11px] font-bold tracking-[0.16em] text-slate-700 uppercase;
+    @apply text-xs font-semibold text-slate-700;
   }
 
   .pane-meta {
@@ -361,11 +361,11 @@
   }
 
   .status-bar {
-    @apply flex min-h-7 shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-slate-200 bg-[#fffdf9] px-4 text-[10px] text-slate-500;
+    @apply flex min-h-7 shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-slate-200 bg-white px-4 text-[10px] text-slate-500;
   }
 
   .ai-chat-panel {
-    @apply flex min-h-0 flex-1 flex-col bg-[#fffdf9];
+    @apply flex min-h-0 flex-1 flex-col bg-white;
   }
 
   .ai-context-bar {

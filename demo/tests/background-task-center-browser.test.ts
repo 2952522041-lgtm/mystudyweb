@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -19,7 +19,7 @@ import {registerTaskControl,setBackgroundSnapshot} from '@/lib/background-task-s
 const mode=new URLSearchParams(location.search).get('mode');
 const desktop=mode.startsWith('desktop');
 const now=new Date().toISOString();
-let tasks=['queued','paused','failed','completed','cancelled','running'].map((status,index)=>({id:'course:'+status,courseId:'course',courseName:'测试课程',documentId:status,fileName:status+'.pdf',phase:status==='failed'?'course':'document',status,updatedAt:now,...(status==='failed'?{error:'模型临时不可用；单篇成果保留'}:{}),...(status==='running'?{completedUnits:3,totalUnits:8,message:'OCR 3/8',startedAt:now,lastActivityAt:now,attempt:2,resumedAt:now}:{})}));
+let tasks=['queued','paused','failed','completed','cancelled','running','review'].map((status,index)=>({id:'course:'+status,courseId:'course',courseName:'测试课程',documentId:status,fileName:status+'.pdf',phase:status==='failed'?'course':'document',status,updatedAt:now,...(status==='failed'?{error:'模型临时不可用；单篇成果保留'}:{}),...(status==='running'?{completedUnits:3,totalUnits:8,message:'OCR 3/8',startedAt:now,lastActivityAt:now,attempt:2,resumedAt:now}:{})}));
 const fixture={commands:[],opened:[],failNext:false,failOpen:false,hold:false,release:null,subscription:null,initial:null};window.fixture=fixture;
 const snapshot=()=>({tasks:tasks.map(task=>({...task})),executor:desktop?'desktop':'browser',available:true});
 const publish=(value=snapshot())=>desktop?fixture.subscription(value):setBackgroundSnapshot(value);
@@ -36,7 +36,7 @@ async function control(command){
 }
 if(desktop){window.yeyuDesktop={getBackgroundSnapshot:()=>new Promise((resolve,reject)=>{fixture.initial=resolve;fixture.initialReject=reject}),controlBackgroundTask:control,onBackgroundSnapshot:listener=>{fixture.subscription=listener;return()=>{fixture.subscription=null}}};}
 else{registerTaskControl(control);setBackgroundSnapshot(snapshot());}
-createRoot(document.getElementById('root')).render(<BackgroundTaskCenter onOpenDocument={async(courseId,documentId)=>{if(fixture.failOpen)throw new Error('PDF 暂时无法读取');fixture.opened.push({courseId,documentId});}}/>);
+createRoot(document.getElementById('root')).render(<BackgroundTaskCenter onOpenDocument={async(courseId,documentId,panel)=>{if(fixture.failOpen)throw new Error('PDF 暂时无法读取');fixture.opened.push({courseId,documentId,panel});}}/>);
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const check=(value,message)=>{if(!value)throw new Error(message)};
 const button=(text,container=document)=>[...container.querySelectorAll('button')].find(node=>node.textContent.trim()===text);
@@ -46,6 +46,14 @@ async function waitFor(label,predicate){for(let i=0;i<200;i++){if(predicate())re
 window.runTaskCenter=async()=>{
  await waitFor('entry',()=>document.querySelector('[aria-label="打开后台任务中心"]'));
  if(desktop){await waitFor('desktop subscribed',()=>fixture.subscription&&fixture.initial);publish();if(mode==='desktop-failure')fixture.initialReject(new Error('late initial snapshot failure'));else fixture.initial({tasks:[],executor:'desktop',available:true});await sleep(30);}
+ check(document.querySelector('[aria-label="打开后台任务中心"]').textContent.includes('1 项失败')&&document.querySelector('[aria-label="打开后台任务中心"]').textContent.includes('1 项待审阅'),'running jobs hid attention counts');
+ if(mode==='browser-narrow'){
+  const entry=document.querySelector('[aria-label="打开后台任务中心"]');
+  const bounds=entry.getBoundingClientRect();const range=document.createRange();range.selectNodeContents(entry);const content=range.getBoundingClientRect();
+  check(content.left>=bounds.left&&content.right<=bounds.right&&bounds.left>=0&&bounds.right<=innerWidth,'task counts overflow narrow viewport '+JSON.stringify({bounds:bounds.toJSON(),content:content.toJSON(),viewport:innerWidth}));
+  entry.focus();check(document.activeElement===entry,'narrow task entry unreachable by focus');entry.click();await waitFor('narrow dialog opens',()=>document.querySelector('[role="dialog"]'));
+  return {narrow:true};
+ }
  document.querySelector('[aria-label="打开后台任务中心"]').click();
  await waitFor('dialog',()=>document.querySelector('[role="dialog"]'));
  check(row('running')&&row('queued')&&row('paused')&&row('failed'),'active filter lost pending states');
@@ -83,6 +91,7 @@ window.runTaskCenter=async()=>{
  select('completed');await waitFor('completed filter',()=>row('completed')&&!row('running'));
  button('打开成果',row('completed')).click();await waitFor('open result closes modal',()=>!document.querySelector('[role="dialog"]'));
  check(fixture.opened.at(-1).documentId==='completed'&&fixture.opened.at(-1).courseId==='course','open artifact lost document identity');
+ check(fixture.opened.at(-1).panel==='summary','completed task must request summary explicitly');
  const actions=fixture.commands.map(command=>command.action);for(const action of ['pause','resume','cancel','retry','pause-queued','resume-paused','retry-failed'])check(actions.includes(action),'missing control '+action);
  return {desktop,initialRejected:mode==='desktop-failure',actions:true,filters:true,unavailable:true,errors:true,open:true};
 };
@@ -102,6 +111,9 @@ void test(
     const directory = await mkdtemp(
       path.join(os.tmpdir(), 'yeyu-task-center-'),
     );
+    const cssPath = path.join(root, 'app/globals.css');
+    const css = (await require('postcss')([require('@tailwindcss/postcss')({base:root})])
+      .process(await readFile(cssPath, 'utf8'), {from:cssPath})).css;
     const bundle = await build({
       stdin: { contents: entry, loader: 'tsx', resolveDir: root },
       alias: { '@': root },
@@ -113,9 +125,9 @@ void test(
       logLevel: 'silent',
     });
     const server = http.createServer((_request, response) => {
-      response.setHeader('content-type', 'text/html');
+      response.setHeader('content-type', 'text/html; charset=utf-8');
       response.end(
-        `<!doctype html><html><body><div id="root"></div><script>${bundle.outputFiles[0].text}</script></body></html>`,
+        `<!doctype html><html><head><style>${css}</style></head><body><div id="root"></div><script>${bundle.outputFiles[0].text}</script></body></html>`,
       );
     });
     await new Promise<void>((resolve) =>
@@ -130,7 +142,7 @@ void test(
       `
     const {app,BrowserWindow}=require('electron');app.disableHardwareAcceleration();app.whenReady().then(async()=>{
       const win=new BrowserWindow({width:1200,height:900,show:true,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}});
-      try{const results=[];for(const mode of ['browser','desktop','desktop-failure']){await win.loadURL(${JSON.stringify(url)}+'?mode='+mode);results.push(await win.webContents.executeJavaScript('window.runTaskCenter()',true));}console.log('TASK_CENTER_OK '+JSON.stringify(results));win.destroy();app.exit(0);}catch(error){console.error(error);win.destroy();app.exit(1);}
+      try{const results=[];for(const mode of ['browser-narrow','browser','desktop','desktop-failure']){win.setSize(mode==='browser-narrow'?360:1200,900);await win.loadURL(${JSON.stringify(url)}+'?mode='+mode);results.push(await win.webContents.executeJavaScript('window.runTaskCenter()',true));}console.log('TASK_CENTER_OK '+JSON.stringify(results));win.destroy();app.exit(0);}catch(error){console.error(error);win.destroy();app.exit(1);}
     });`,
     );
     try {

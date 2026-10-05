@@ -1,7 +1,7 @@
 {
   "name": "sites-project",
   "productName": "页语",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "本地课程知识库、PDF 随页翻译与 AI 答疑阅读器",
   "author": "余思诚 <2952522041@qq.com>",
   "private": true,

@@ -70,7 +70,7 @@ window.runStorageRegression = async () => {
   button('保存设置').click(); await waitFor('settings saved',()=>saved===1);
   check(savedKnowledgeMode === 'deep', 'knowledge generation mode was not saved');
   window.openImport(); await waitFor('import dialog',()=>document.querySelector('[role="dialog"] input[type="file"]'));
-  check(document.body.textContent.includes('无需配置 AI 也可以先保存 PDF'), 'reading-first guidance hidden');
+  check(document.body.textContent.includes('PDF 保存后即可阅读，总结和脑图在后台整理。'), 'reading-first guidance hidden');
   check(!document.body.textContent.includes('导入仍需知识库 AI'), 'legacy AI requirement prompt remains');
   const data = new DataTransfer();data.items.add(new File(['mock'],'fixture.pdf',{type:'application/pdf'}));
   const file = document.querySelector('[role="dialog"] input[type="file"]');file.files=data.files;file.dispatchEvent(new Event('change',{bubbles:true}));

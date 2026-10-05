@@ -257,29 +257,16 @@ export class BackgroundImports {
         );
         if (lastIndex >= 0)
           available.push(...available.splice(0, lastIndex + 1));
-        // Drain documents before course synthesis, including multi-file batches.
-        const documentCourse = available.find((item) =>
-          item.bundle.manifest.documents.some(
-            (doc) => pending(doc) && doc.processing!.phase === 'document',
-          ),
-        );
-        const selected =
-          documentCourse ??
-          available.find((item) =>
-            !item.bundle.manifest.pendingReview && item.bundle.manifest.documents.some(pending),
-          );
+        // Finish this course's documents before its synthesis. A ready course
+        // must not wait for every unrelated course's PDFs to finish first.
+        const selected = available.map(item => {
+          const documents = item.bundle.manifest.documents.filter(pending);
+          const document = documents.find(doc => doc.processing!.phase === 'document');
+          return {id:item.id, jobs:document ? [document] : item.bundle.manifest.pendingReview ? [] : documents};
+        }).find(item => item.jobs.length > 0);
         if (!selected) break;
         this.lastCourse = selected.id;
-        const jobs = selected.bundle.manifest.documents.filter(
-          (doc) =>
-            pending(doc) &&
-            doc.processing!.phase === (documentCourse ? 'document' : 'course'),
-        );
-        await this.run(
-          selected.id,
-          documentCourse ? jobs.slice(0, 1) : jobs,
-          signal,
-        );
+        await this.run(selected.id, selected.jobs, signal);
       }
     } catch (error) {
       if (!signal.aborted) this.deps.onError?.(String(error));

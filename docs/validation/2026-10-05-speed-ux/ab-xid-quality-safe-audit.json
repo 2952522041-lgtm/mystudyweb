@@ -1,0 +1,101 @@
+{
+  "completedAt": "2026-10-05T13:17:38.566Z",
+  "scope": "local quality sampling of original PDF render plus captured source text and final digests; no new AI calls",
+  "sourcePages": 59,
+  "sampledContentPages": [
+    14,
+    15,
+    22,
+    27,
+    31,
+    36,
+    41,
+    44,
+    45,
+    48,
+    51,
+    55,
+    58
+  ],
+  "renderedPages": [
+    5,
+    6,
+    22,
+    45
+  ],
+  "majorTopicGroupsChecked": 9,
+  "majorTopicGroupsMissingInB": 0,
+  "tableIssues": [
+    {
+      "page": 22,
+      "issue": "two column cells in the application/use row were semantically misassigned",
+      "affectedVariants": [
+        "B",
+        "A2"
+      ],
+      "A1": "semantic associations correct",
+      "BChunkEvidenceContainsSameTable": true,
+      "A2ChunkEvidenceContainsSameTable": true,
+      "rootCause": "native normalization lost table column boundaries; chunk model reconstructed ambiguous multi-column text incorrectly; final preservation retained existing chunk error",
+      "causality": "not established as a regression from fast preservation because clean baseline exhibits same class of error"
+    }
+  ],
+  "otherTableCheck": {
+    "page": 45,
+    "rowsChecked": 8,
+    "columnsCompared": 3,
+    "detectedCellErrors": 0
+  },
+  "formulaCheck": {
+    "page": 44,
+    "inequalitiesChecked": 2,
+    "detectedSignOrThresholdErrors": 0,
+    "katexParseErrors": 0
+  },
+  "uncoveredBSectionPages": [
+    {
+      "page": 5,
+      "classification": "chapter-divider title; chapter topic covered elsewhere"
+    },
+    {
+      "page": 6,
+      "classification": "architecture diagram; extracted title/footer only; diagram details absent in A1/A2/B",
+      "missingDetailClasses": 1
+    },
+    {
+      "page": 59,
+      "classification": "ending slide; no substantive topic"
+    }
+  ],
+  "knownSharedExtractionIssue": {
+    "diagramPage": 6,
+    "allVariantsMissingAPBAndDmaArchitectureDetails": true,
+    "reason": "40-character native-text threshold bypassed OCR although body is a diagram",
+    "notNewFastRegression": true
+  },
+  "mindmapTradeoff": {
+    "BDepthCounts": {
+      "1": 7,
+      "2": 7,
+      "3": 1
+    },
+    "A2DepthCounts": {
+      "1": 5,
+      "2": 16,
+      "3": 24
+    },
+    "BLeafConcepts": 9,
+    "A2LeafConcepts": 32,
+    "assessment": "major themes and sampled details retained in longer node descriptions, but B has coarser navigation granularity; equal quality is not established"
+  },
+  "timing": {
+    "A1DiagnosticOnlyMs": 153783,
+    "cleanA2Ms": 226302,
+    "BMs": 136007,
+    "observedDifferenceMs": 90295,
+    "observedDifferencePercent": 39.90022182746949,
+    "samplesPerVariant": 1,
+    "caveat": "upstream cache uncontrolled, sequential order B then A2; baseline had extra JSON/validation/hierarchy repair attempts; do not attribute entire wall-clock difference to optimization"
+  },
+  "claim": "B completed faster in this observed pair, with full application-validated artifacts and retained evidence; do not claim equal-quality or lossless speedup"
+}

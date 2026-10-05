@@ -1,0 +1,147 @@
+{
+  "variant": "A2",
+  "complete": true,
+  "targetMet": false,
+  "totalMs": 226302,
+  "startedAt": "2026-10-05T13:09:13.613Z",
+  "model": "deepseek-flash",
+  "backend": "dsh",
+  "generationMode": "fast",
+  "cacheState": {
+    "application": "fresh-per-run-digest-layer-pdf-text-ocr",
+    "provider": "uncontrolled",
+    "osFileCache": "uncontrolled",
+    "existingCourseDigest": "none"
+  },
+  "executionIdentity": {
+    "bundleSha256": "c46fb68fa1bd02f668b3c467076462e8f2420aa6a49aa32b299ca98641971703",
+    "bundleSource": "frozen",
+    "transportLabel": "dsh-notification-idle-fixed",
+    "transportLabelVerifiedByCli": false
+  },
+  "phases": [
+    {
+      "name": "extract",
+      "durationMs": 160,
+      "startMs": 68
+    },
+    {
+      "name": "document",
+      "durationMs": 226069,
+      "startMs": 228
+    },
+    {
+      "name": "course",
+      "durationMs": 5,
+      "startMs": 226297
+    },
+    {
+      "name": "completed",
+      "durationMs": 0,
+      "startMs": 226302
+    }
+  ],
+  "requestCount": 23,
+  "requestTimingCount": 23,
+  "byLayer": {
+    "chunk": {
+      "count": 4,
+      "sumMs": 84947,
+      "maxMs": 24027,
+      "outputChars": 56622,
+      "queueMs": 0,
+      "success": 4,
+      "failure": 0,
+      "cancelled": 0
+    },
+    "document": {
+      "count": 19,
+      "sumMs": 270029,
+      "maxMs": 43527,
+      "outputChars": 167041,
+      "queueMs": 0,
+      "success": 19,
+      "failure": 0,
+      "cancelled": 0
+    }
+  },
+  "courseDocumentCount": 1,
+  "singleDocumentReused": true,
+  "result": {
+    "hasSummary": true,
+    "hasMindmap": true,
+    "includedInCourse": false,
+    "knowledgeState": "candidate",
+    "candidateStaged": true,
+    "merged": false,
+    "concepts": 45,
+    "sections": 139,
+    "knowledgeNodes": 45
+  },
+  "quality": {
+    "checkScope": "mechanical completeness, provenance and hierarchy; not semantic equivalence judgment",
+    "hasOverview": true,
+    "sections": 139,
+    "points": 152,
+    "concepts": 45,
+    "relations": 56,
+    "unresolvedQuestions": 6,
+    "sourcePages": 59,
+    "pageCount": 59,
+    "sectionRangeCoveredPageCount": 58,
+    "duplicateConceptIds": 0,
+    "duplicatePointTextCount": 0,
+    "maximumHierarchyDepth": 3,
+    "invalidHierarchyNodes": 0,
+    "maxChildren": 5,
+    "unknownRelationEndpoints": 0,
+    "invalidSectionRanges": 0,
+    "invalidPointRanges": 0,
+    "invalidConceptSources": 0,
+    "evidenceItems": 137,
+    "evidencePresentInVisibleProse": 137,
+    "qualityRestorationEvents": 16,
+    "restoredEvidenceItems": 452,
+    "digestBytes": 318122,
+    "visibleProseChars": 40672,
+    "regularSections": 4,
+    "regularPoints": 17,
+    "evidenceAppendixSections": 135,
+    "conceptDepthCounts": {
+      "1": 5,
+      "2": 16,
+      "3": 24
+    },
+    "leafConcepts": 32
+  },
+  "failures": [
+    {
+      "layer": "chunk",
+      "identity": "分块分析 doc-a2b1068c06578d8c/chunk-1",
+      "category": "json-parse",
+      "atMs": 22347
+    },
+    {
+      "layer": "document",
+      "identity": "文档综合 doc-a2b1068c06578d8c/round-0/batch-4",
+      "category": "validation",
+      "atMs": 76507
+    },
+    {
+      "layer": "document",
+      "identity": "文档综合 doc-a2b1068c06578d8c/round-2/batch-0",
+      "category": "reduction-budget",
+      "atMs": 118700
+    },
+    {
+      "layer": "document",
+      "identity": "文档综合 doc-a2b1068c06578d8c/final",
+      "category": "hierarchy",
+      "atMs": 182763
+    }
+  ],
+  "interference": {
+    "present": false,
+    "providerCacheStillUncontrolled": true
+  }
+}

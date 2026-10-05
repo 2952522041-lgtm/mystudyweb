@@ -12,7 +12,7 @@ import { build } from 'esbuild';
 const root = path.resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const entry = `
-import React, {useState} from 'react';
+import React, {useLayoutEffect,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {DocumentSummaryPanel} from '@/components/document-summary-panel';
 import {KnowledgeMindmap} from '@/components/knowledge-mindmap';
@@ -33,8 +33,12 @@ Object.defineProperty(navigator,'clipboard',{value:{writeText:async (text) => {w
 const jump = (...args) => window.sourceJumps.push(args);
 const storage = new MemoryCourseStorage();
 const historyStorage = {listHistory:async()=>[{id:'past',revision:0,updatedAt:'2026-01-01',source:'snapshot',summary:'历史概览',knowledge:{...knowledge,version:0,nodes:[knowledge.nodes[0],{...knowledge.nodes[1],description:'历史说明'},{...knowledge.nodes[1],id:'removed',label:'已移除概念'}],relations:[],unresolvedQuestions:['旧问题']}}]};
+const mode=new URLSearchParams(location.search).get('mode');
 function App() {
   const [notesVisible,setNotesVisible] = useState(true); window.setNotesVisible=setNotesVisible;
+  const [mapVisible,setMapVisible]=useState(mode!=='hidden');window.showMindmap=()=>setMapVisible(true);
+  useLayoutEffect(()=>{const ancestor=document.getElementById('map-ancestor');if(ancestor)ancestor.scrollTop=80;},[]);
+  if(mode)return <div id="map-ancestor" style={{height:650,overflow:'auto'}}><div style={{height:120}}/><div style={{minHeight:1000}}><div id="map-host" hidden={!mapVisible} style={{width:mode==='wide'?1000:545}}><KnowledgeMindmap knowledge={knowledge} onOpenSource={jump}/></div></div></div>;
   return <><DocumentSummaryPanel digest={digest} onOpenSource={jump} onAskQuestion={question=>window.questions.push(question)} onSaveNote={(text,page)=>appendStudyNote(storage,{text,sources:[{...source,pageStart:page}]})}/><KnowledgeMindmap knowledge={knowledge} onOpenSource={jump} onAskQuestion={question=>window.questions.push(question)} onSaveNote={(text,sources)=>appendStudyNote(storage,{text,sources})}/>{notesVisible ? <CourseNotesPanel storage={storage} courseId="fixture-course"/> : null}<CourseHistoryPanel storage={historyStorage} current={knowledge} currentSummary="当前概览"/></>;
 }
 createRoot(document.getElementById('root')).render(<App/>);
@@ -42,6 +46,25 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve,ms));
 async function waitFor(label,predicate) { for(let i=0;i<200;i++){if(predicate()) return;await sleep(20)} throw new Error('Timeout: '+label); }
 const check = (value,message) => {if(!value) throw new Error(message)};
 const button = (text) => [...document.querySelectorAll('button')].find((item) => item.textContent.includes(text));
+window.runMindmapLayout=async()=>{
+  if(mode==='hidden'){await sleep(100);window.showMindmap();}
+  await waitFor('mindmap visible',()=>document.querySelector('[aria-label="脑图画布"]')?.clientWidth>0);
+  const host=document.getElementById('map-host'),canvas=host.querySelector('[aria-label="脑图画布"]'),details=host.querySelector('aside');
+  const rootNode=[...canvas.querySelectorAll('button')].find(node=>node.querySelector('.line-clamp-1')?.textContent==='科学');
+  const bounds=()=>canvas.getBoundingClientRect();
+  if(mode==='wide')check(details.getBoundingClientRect().left>=bounds().right-1&&bounds().width>=680,'wide mindmap did not use two columns');
+  else check(bounds().width>=host.clientWidth-1&&details.getBoundingClientRect().top>=bounds().bottom-1,'reader-width mindmap canvas was squeezed by viewport breakpoint '+canvas.clientWidth);
+  await waitFor('initial root visible within canvas',()=>{const root=rootNode.getBoundingClientRect(),view=bounds();return root.left>=view.left&&root.right<=view.left+canvas.clientWidth&&root.top>=view.top&&root.bottom<=view.top+canvas.clientHeight;});
+  const outer=document.getElementById('map-ancestor').getBoundingClientRect(),rootBounds=rootNode.getBoundingClientRect();
+  check(rootBounds.top>=outer.top&&rootBounds.bottom<=outer.bottom,'initial root is outside the visible reader area');
+  check(document.getElementById('map-ancestor').scrollTop===80&&window.scrollY===0,'root positioning scrolled ancestors');
+  canvas.scrollLeft+=60;canvas.scrollTop+=70;const pan={left:canvas.scrollLeft,top:canvas.scrollTop};
+  document.querySelector('[aria-label="放大脑图"]').click();await sleep(100);
+  check(canvas.scrollLeft===pan.left&&canvas.scrollTop===pan.top,'zoom reset user panning');
+  host.style.width=mode==='wide'?'960px':'600px';await sleep(100);
+  check(canvas.scrollLeft===pan.left&&canvas.scrollTop===pan.top,'resize reset user panning');
+  return {mode,width:true,rootVisible:true,panPreserved:true};
+};
 window.runReaderRegression = async () => {
   await waitFor('summary',() => button('章节 14'));
   check(document.querySelectorAll('table').length === 2,'only open sections mount tables');
@@ -141,7 +164,7 @@ void test(
       logLevel: 'silent',
     });
     const server = http.createServer((_request, response) => {
-      response.setHeader('content-type', 'text/html');
+      response.setHeader('content-type', 'text/html; charset=utf-8');
       response.end(
         `<html><head><style>${css}</style></head><body><div id="root"></div><script>${bundle.outputFiles[0].text}</script></body></html>`,
       );
@@ -162,6 +185,12 @@ void test(
       const win = new BrowserWindow({width: 1000, height: 420, show: true,
         webPreferences: {sandbox: true, contextIsolation: true, nodeIntegration: false}});
       try {
+        win.setSize(1213,900);
+        for(const mode of ['narrow','wide','hidden']){
+          await win.loadURL(${JSON.stringify(url)}+'?mode='+mode);
+          await win.webContents.executeJavaScript('window.runMindmapLayout()', true);
+        }
+        win.setSize(1000,420);
         await win.loadURL(${JSON.stringify(url)});
         const result = await win.webContents.executeJavaScript('window.runReaderRegression()', true);
         console.log('READER_OK ' + JSON.stringify(result)); win.destroy(); app.exit(0);

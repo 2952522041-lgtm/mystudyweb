@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
@@ -277,6 +277,8 @@ function staticClientDirectory(): string {
 function startStaticServer(clientDirectory: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const server = http.createServer(async (request, response) => {
+      // Every startup serves one coherent build, including lazy chunks and workers.
+      response.setHeader('Cache-Control', 'no-store');
       try {
         const url = new URL(request.url ?? '/', 'http://127.0.0.1');
         const requested = decodeURIComponent(url.pathname);
@@ -295,7 +297,7 @@ function startStaticServer(clientDirectory: string): Promise<string> {
           filePath = path.join(filePath, 'index.html');
           stat = await fs.stat(filePath).catch(() => null);
         }
-        if (!stat) {
+        if (!stat && !path.extname(requested) && !/^\/(?:assets|_assets|_next|static)(?:\/|$)/.test(requested)) {
           filePath = path.join(clientDirectory, 'index.html');
           stat = await fs.stat(filePath).catch(() => null);
         }
@@ -634,6 +636,11 @@ async function createWindow(): Promise<BrowserWindow> {
   );
   if (devDecision.warning) {
     console.warn(`[页语] ${devDecision.warning}`);
+  }
+  if (!appTarget && !devDecision.url) {
+    // Clear only the HTTP cache left by older builds; keep settings, auth and
+    // IndexedDB. Both visible and background renderers must load the same build.
+    await session.defaultSession.clearCache();
   }
   const target = appTarget ??= devDecision.url ?? (await startStaticServer(staticClientDirectory()));
   appOrigin = new URL(target).origin;

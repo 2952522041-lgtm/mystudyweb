@@ -16,21 +16,30 @@ const entry = `
 import React, {useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {CourseImportDialog, DocumentProcessingStatus} from '@/components/course-import-dialog';
-let calls = [], active = 0, maxActive = 0, attempts = {}, retries = 0, currentSignal;
+import {ReaderSettingsDialog} from '@/components/reader-settings-dialog';
+import {DEFAULT_SETTINGS} from '@/lib/reader-cache';
+import {DEFAULT_CHAT_SETTINGS} from '@/lib/chat-cache';
+import {DEFAULT_KNOWLEDGE_SETTINGS} from '@/lib/knowledge-settings';
+let calls = [], active = 0, maxActive = 0, attempts = {}, retries = 0, currentSignal, settingsOpened = 0;
 const options = {generateSummary:true, generateMindmap:true, mergeIntoCourse:true, includeConversationInsights:true};
 function App() {
   const [open, setOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [processing, setProcessing] = useState({phase:'document', status:'queued', options, updatedAt:'2026-01-01T00:00:00.000Z'});
   window.reopen = () => setOpen(true);
   window.failStatus = () => setProcessing({...processing, status:'failed', error:'后台服务暂时不可用'});
   return <>
-    <CourseImportDialog open={open} onOpenChange={setOpen}
+    <div hidden inert>{settingsOpen ? <ReaderSettingsDialog initialTab="knowledge"
+      translationSettings={DEFAULT_SETTINGS} chatSettings={DEFAULT_CHAT_SETTINGS} knowledgeSettings={DEFAULT_KNOWLEDGE_SETTINGS}
+      onClose={() => setSettingsOpen(false)} onSave={() => { throw new Error('Unexpected settings save'); }} /> : null}</div>
+    <CourseImportDialog open={open} onOpenChange={setOpen} onOpenSettings={() => { settingsOpened++; setSettingsOpen(true); }}
       onImport={async (file, _options, progress, signal) => {
         calls.push(file.name); active++; maxActive = Math.max(maxActive, active);
         if (file.name === 'cancel-a.pdf') currentSignal = signal;
         progress('legacy AI wording should not leak into save progress', 40);
-        await new Promise(resolve => setTimeout(resolve, file.name === 'cancel-a.pdf' ? 100 : 30));
+        await new Promise(resolve => setTimeout(resolve, ['cancel-a.pdf', 'abort-current.pdf'].includes(file.name) ? 100 : 30));
         active--;
+        if (file.name === 'abort-current.pdf' && signal.aborted) throw new Error('保存已取消。');
         const attempt = attempts[file.name] || 0; attempts[file.name] = attempt + 1;
         if(file.name === 'b.pdf' && attempt === 0) throw new Error('b 保存失败');
         progress('后台生成中', 100);
@@ -56,9 +65,27 @@ function choose(names) {
   input.files = transfer.files;
   input.dispatchEvent(new Event('change', {bubbles:true}));
 }
+const settingsDialog = () => document.querySelector('#knowledge-base-url')?.closest('[role="dialog"]');
+window.openImportSettings = async () => {
+  await waitFor('import dialog', () => dialog());
+  choose(['settings-selection.pdf']);
+  await waitFor('settings file selected', () => document.body.textContent.includes('已选择 1 份 PDF'));
+  const shortcut = button('知识库 AI 设置'); shortcut.focus(); shortcut.click();
+  await waitFor('real settings dialog', () => settingsDialog());
+  check(settingsOpened === 1, 'settings shortcut not invoked');
+};
+window.checkSettingsFocus = () => {
+  check(settingsDialog()?.contains(document.activeElement), 'Tab escaped settings: ' + document.activeElement?.outerHTML);
+};
+window.checkImportSettingsClosed = async () => {
+  await waitFor('only settings closes', () => !settingsDialog());
+  check(dialog()?.textContent.includes('导入 PDF 到课程'), 'Escape closed underlying import dialog');
+  check(dialog()?.textContent.includes('settings-selection.pdf'), 'settings dismissal lost selected PDF');
+  check(document.activeElement === button('知识库 AI 设置'), 'settings dismissal did not restore shortcut focus');
+};
 window.runCourseImportDialogRegression = async () => {
   await waitFor('dialog', () => dialog());
-  check(document.body.textContent.includes('无需配置 AI 也可以先保存 PDF'), 'reading-first guidance missing');
+  check(document.body.textContent.includes('PDF 保存后即可阅读，总结和脑图在后台整理。'), 'reading-first guidance missing');
   choose(['a.pdf','b.pdf','c.pdf']);
   await waitFor('multiple selection', () => document.body.textContent.includes('已选择 3 份 PDF'));
   button('导入 PDF').click();
@@ -84,7 +111,24 @@ window.runCourseImportDialogRegression = async () => {
   check(JSON.stringify(calls) === JSON.stringify(['a.pdf','b.pdf','c.pdf','b.pdf','cancel-a.pdf']), 'cancel ran unsaved files: ' + JSON.stringify(calls));
   check(currentSignal?.aborted === true, 'cancel did not abort the current save attempt');
   check(document.body.textContent.includes('已取消，尚未保存'), 'cancelled file result missing');
+  check(!dialog().querySelector('[role=alert]'),'user cancellation must not be reported as save failure');
+  check(document.body.textContent.includes('后台整理继续'),'saved files lost background guidance');
   check(window.batchStarts === 3 && window.batchEnds === 3, 'cancel batch callbacks missing');
+
+  choose(['abort-current.pdf', 'after-abort.pdf']);
+  await waitFor('abort selection', () => document.body.textContent.includes('已选择 2 份 PDF'));
+  button('导入 PDF').click();
+  await waitFor('abort current busy', () => button('取消剩余'));
+  button('取消剩余').click();
+  await waitFor('current save aborted', () => button('重试未完成项（2）'));
+  check(!dialog().querySelector('[role=alert]'), 'aborted current save was presented as failure');
+  check(!dialog().textContent.includes('已保存，可阅读'), 'aborted current save was presented as durable');
+  check(!calls.includes('after-abort.pdf'), 'cancel started the next file');
+  button('重试未完成项（2）').click();
+  await waitFor('cancelled same file retries successfully', () => !dialog());
+  check(calls.filter(name => name === 'abort-current.pdf').length === 2, 'cancelled current file did not retry once');
+  check(calls.filter(name => name === 'after-abort.pdf').length === 1, 'cancelled pending file did not save once');
+  check(window.batchStarts === 5 && window.batchEnds === 5, 'cancel/retry batch holds were unbalanced');
 
   const status = document.querySelector('section[aria-label="PDF 成果后台排队中"]');
   check(status?.textContent.includes('PDF 已保存，可直接阅读'), 'queued status lacks reading guidance');
@@ -99,7 +143,7 @@ window.runCourseImportDialogRegression = async () => {
 };
 `;
 
-void test('course import dialog saves a batch serially and retries only unfinished files', {
+void test('course import dialog preserves settings focus, cancels saving and retries only unfinished files', {
   skip:
     process.platform === 'linux' &&
     !process.env.DISPLAY &&
@@ -135,8 +179,21 @@ void test('course import dialog saves a batch serially and retries only unfinish
       app.whenReady().then(async () => {
         const win = new BrowserWindow({width: 1200, height: 900, show: true,
           webPreferences: {sandbox: true, contextIsolation: true, nodeIntegration: false}});
+        win.webContents.on('console-message', details => console.log(details.message));
         try {
           await win.loadURL(${JSON.stringify(url)});
+          await win.webContents.executeJavaScript('window.openImportSettings()', true);
+          for (let index = 0; index < 45; index++) {
+            const modifiers = index < 35 ? [] : ['shift'];
+            win.webContents.sendInputEvent({type:'keyDown',keyCode:'Tab',modifiers});
+            win.webContents.sendInputEvent({type:'keyUp',keyCode:'Tab',modifiers});
+            // Focus guards move focus on the next animation frame.
+            await new Promise(resolve => setTimeout(resolve, 40));
+            await win.webContents.executeJavaScript('window.checkSettingsFocus()', true);
+          }
+          win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});
+          win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
+          await win.webContents.executeJavaScript('window.checkImportSettingsClosed()', true);
           const result = await win.webContents.executeJavaScript('window.runCourseImportDialogRegression()', true);
           console.log('DIALOG_OK ' + JSON.stringify(result)); win.destroy(); app.exit(0);
         } catch (error) { console.error(error); win.destroy(); app.exit(1); }

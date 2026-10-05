@@ -174,7 +174,7 @@ void test('PDF pages extract in bounded parallelism while retaining page order',
   );
 });
 
-void test('OCR pages use the same bounded pool and receive cancellation signals', async () => {
+void test('OCR pages use the same bounded pool and receive cancellation signals', { timeout: 5000 }, async () => {
   const fixture = setFixture([
     'A normal selectable page with enough text for extraction.',
     '',
@@ -185,6 +185,8 @@ void test('OCR pages use the same bounded pool and receive cancellation signals'
   let maximumActiveOcr = 0;
   const signals: AbortSignal[] = [];
   const recognizedPages: number[] = [];
+  let releaseOcr!: () => void;
+  const bothOcrStarted = new Promise<void>(resolve => { releaseOcr = resolve; });
 
   const extracted = await extractPdfPages(
     new File(['mock pdf'], 'scanned-mix.pdf', { type: 'application/pdf' }),
@@ -195,7 +197,10 @@ void test('OCR pages use the same bounded pool and receive cancellation signals'
         signals.push(signal);
         activeOcr += 1;
         maximumActiveOcr = Math.max(maximumActiveOcr, activeOcr);
-        await new Promise((resolve) => setTimeout(resolve, 12));
+        // Hold the first task until its peer starts. A 12ms sleep only proved
+        // overlap on an idle machine and failed under parallel build load.
+        if (activeOcr === 2) releaseOcr();
+        await bothOcrStarted;
         activeOcr -= 1;
         return `OCR page ${pageNumber} contains enough recognized text.`;
       },
