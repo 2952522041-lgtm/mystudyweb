@@ -292,7 +292,7 @@ void test('cancelling one running owner does not cancel an independent queued re
     ]);
     await assertPending(queued);
     fixture.manager.reject('running-owner');
-    await assert.rejects(running, /任务未完成/);
+    await assert.rejects(running, /DSH:cancelled/);
     await waitFor(() => fixture.manager.calls.length === 5);
     assert.equal(fixture.manager.calls.at(-1)?.request.requestId, 'independent-queued');
     fixture.manager.resolve('independent-queued', complete('queued answer'));

@@ -494,3 +494,45 @@ void test('savePdf rejects duplicate fingerprints and stale revisions', async ()
     /外部修改/,
   );
 });
+
+void test('review survives worker restart without publishing or re-running AI; new documents wait for review', async () => {
+  const storage = new MemoryCourseStorage();
+  const initial = await storage.initialize('审阅恢复');
+  const first = await save(storage, 'first.pdf', mergeOptions, 'a');
+  let analyzes = 0, syntheses = 0;
+  const dependencies = {
+    reviewCourseChanges: true,
+    analyze: async (_storage: unknown, doc: DocumentRecord) => { analyzes++; return makeDigest(doc); },
+    synthesize: async () => { syntheses++; return makeKnowledge('待接受的主题'); },
+    onBundle: () => undefined,
+  };
+  const worker = new BackgroundImports(dependencies);
+  worker.register(initial.manifest.id, storage);
+  worker.resume();
+  await waitFor(async () => Boolean((await storage.load()).manifest.pendingReview));
+  const staged = await storage.load();
+  assert.deepEqual(staged.knowledge, initial.knowledge);
+  assert.equal(findDocument(staged, first.id).processing?.status, 'review');
+  worker.stop();
+  const restarted = new BackgroundImports(dependencies);
+  restarted.register(initial.manifest.id, storage);
+  restarted.resume();
+  try {
+    const second = await save(storage, 'second.pdf', mergeOptions, 'b');
+    restarted.wake();
+    await waitFor(async () => Boolean((await storage.load()).digests[second.id]));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(analyzes, 2);
+    assert.equal(syntheses, 1);
+    const stillPending = await storage.load();
+    assert.equal(stillPending.manifest.pendingReview?.id, staged.manifest.pendingReview?.id);
+    assert.deepEqual(stillPending.knowledge, initial.knowledge);
+    await storage.resolveCourseReview(staged.manifest.pendingReview!.id, true);
+    restarted.wake();
+    await waitFor(async () => Boolean((await storage.load()).manifest.pendingReview) && (await storage.load()).manifest.pendingReview?.id !== staged.manifest.pendingReview?.id && syntheses === 2);
+    const next = await storage.load();
+    assert.equal(next.knowledge.version, 1);
+    assert.equal(findDocument(next, first.id).includedInCourse, true);
+    assert.equal(findDocument(next, second.id).includedInCourse, false);
+  } finally { restarted.stop(); }
+});

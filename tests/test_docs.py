@@ -243,7 +243,7 @@ class HandoffDocumentTest(unittest.TestCase):
 
         for requirement in (
             "## 桌面版（Electron）",
-            "sudo apt install ./out/make/deb/x64/yeyu_0.1.0_amd64.deb",
+            "sudo apt install ./out/make/deb/x64/yeyu_0.2.0_amd64.deb",
             "GNOME 应用菜单出现「页语」",
             "~/Documents/页语工作区",
             "build-windows-desktop.yml",

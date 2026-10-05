@@ -1294,7 +1294,7 @@ export function SharedCourseViewer() {
           await regenerateSharedCourse(courseId, controller.signal);
           await refresh(courseId, true);
           setActionFeedback(
-            `“${courseName}”的课程总总结和总脑图已重新生成。`,
+            `“${courseName}”的候选成果已生成，请在桌面课程页审阅并接受更新。`,
           );
         },
         controller.signal,

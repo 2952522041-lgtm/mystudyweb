@@ -39,6 +39,10 @@ import {
   type AgentBackend,
   type AgentSettings,
 } from '@/lib/agent-settings';
+import {
+  isSettingsSnapshotDirty,
+  type SettingsSnapshot,
+} from '@/lib/settings-dirty';
 
 import { DSH_RUNTIME_VERSION, DSH_MODELS } from '@/lib/dsh-capabilities';
 import { DSH_ERRORS, DshError, safeDshError } from '@/lib/dsh-errors';
@@ -76,6 +80,24 @@ export function ReaderSettingsDialog({
   const [agentSettingsDraft, setAgentSettingsDraft] = useState<AgentSettings>(
     () => loadAgentSettings(),
   );
+  const [closingConfirmation, setClosingConfirmation] = useState(false);
+  // Snapshot of the four drafts at mount, with optional fields normalized the
+  // same way as the drafts, so merely opening the dialog is never dirty.
+  const [baselineDrafts] = useState<SettingsSnapshot>(() => ({
+    translation: translationSettings,
+    chat: chatSettings,
+    knowledge: {
+      ...knowledgeSettings,
+      generationMode: knowledgeSettings.generationMode ?? 'fast',
+    },
+    agent: agentSettingsDraft,
+  }));
+  const draftsDirty = isSettingsSnapshotDirty(baselineDrafts, {
+    translation: translationDraft,
+    chat: chatDraft,
+    knowledge: knowledgeDraft,
+    agent: agentSettingsDraft,
+  });
   const [runtimeStatus, setRuntimeStatus] = useState<DshRuntimeStatus | null>(null);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
@@ -130,20 +152,24 @@ export function ReaderSettingsDialog({
   const [error, setError] = useState<string | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
+  const confirmationRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (closingConfirmation) confirmationRef.current?.focus();
+  }, [closingConfirmation]);
 
-  const save = () => {
+  const save = (): boolean => {
     const translationError = validateReaderSettings(translationDraft);
     if (translationError) {
       setTab('translation');
       setError(translationError);
-      return;
+      return false;
     }
     if (tab === 'chat' || chatDraft.apiKey.trim().length > 0) {
       const chatError = validateChatSettings(chatDraft);
       if (chatError) {
         setTab('chat');
         setError(chatError);
-        return;
+        return false;
       }
     }
     if (tab === 'knowledge' || knowledgeDraft.apiKey.trim().length > 0) {
@@ -151,7 +177,7 @@ export function ReaderSettingsDialog({
       if (knowledgeError) {
         setTab('knowledge');
         setError(knowledgeError);
-        return;
+        return false;
       }
     }
     const incompatible = availability.find(item => item.issue);
@@ -160,14 +186,46 @@ export function ReaderSettingsDialog({
       setError(`${incompatible.label}：${incompatible.issue.message}`);
       const prefix = incompatible.tab === 'translation' ? 'setting' : incompatible.tab;
       requestAnimationFrame(() => document.getElementById(`${prefix}-${incompatible.issue!.field}`)?.focus());
-      return;
+      return false;
     }
     if (agentSettingsDraft.backend === 'dsh' && (runtimeChecking || !runtimeStatus?.available)) {
       setError(runtimeChecking ? '运行时自检中，请稍后保存。' : runtimeError ?? (runtimeStatus?.errorCode ? DSH_ERRORS[runtimeStatus.errorCode] : '请先完成运行时自检。'));
-      return;
+      return false;
     }
     saveAgentSettings(agentSettingsDraft);
     onSave(translationDraft, chatDraft, knowledgeDraft);
+    return true;
+  };
+
+  const requestClose = () => {
+    if (draftsDirty) {
+      setClosingConfirmation(true);
+      return;
+    }
+    onClose();
+  };
+
+  const handleOpenChange = (open: boolean) => {
+    if (open) return;
+    // A second dismiss request (Escape / X / outside press) while the inline
+    // prompt is visible just returns to editing; it never writes.
+    if (closingConfirmation) {
+      setClosingConfirmation(false);
+      return;
+    }
+    requestClose();
+  };
+
+  const discardAndClose = () => {
+    setClosingConfirmation(false);
+    onClose();
+  };
+
+  const saveAndClose = () => {
+    if (save()) {
+      setClosingConfirmation(false);
+      onClose();
+    }
   };
 
   const chooseTranslationPreset = (presetId: TranslationPresetId) => {
@@ -183,7 +241,7 @@ export function ReaderSettingsDialog({
   };
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
+    <Dialog open onOpenChange={handleOpenChange}>
       <DialogContent onChangeCapture={() => { setError(null); setConnectionStatus(null); }} className="max-h-[88vh] overflow-y-auto sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle className="text-lg">阅读服务设置</DialogTitle>
@@ -612,8 +670,41 @@ export function ReaderSettingsDialog({
           </p>
         ) : null}
 
+        {closingConfirmation ? (
+          <section
+            ref={confirmationRef}
+            role="alertdialog"
+            aria-labelledby="settings-unsaved-heading"
+            aria-describedby="settings-unsaved-description"
+            tabIndex={-1}
+            className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 outline-none"
+          >
+            <h2
+              id="settings-unsaved-heading"
+              className="text-xs font-semibold text-amber-900"
+            >
+              有未保存的设置
+            </h2>
+            <p
+              id="settings-unsaved-description"
+              className="text-[11px] leading-5 text-amber-900"
+            >
+              关闭前要保存这些修改吗？放弃修改会丢失本次编辑。
+            </p>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button variant="outline" onClick={() => setClosingConfirmation(false)}>
+                继续编辑
+              </Button>
+              <Button variant="outline" onClick={discardAndClose}>
+                放弃修改
+              </Button>
+              <Button onClick={saveAndClose}>保存并关闭</Button>
+            </div>
+          </section>
+        ) : null}
+
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={requestClose}>
             取消
           </Button>
           <Button onClick={save}>保存设置</Button>

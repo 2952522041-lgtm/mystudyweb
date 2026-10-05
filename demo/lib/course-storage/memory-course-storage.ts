@@ -1,3 +1,4 @@
+import { stageCourseReviewBundle, resolveCourseReviewBundle } from './course-review.ts';
 import { EMPTY_GLOSSARY, parseGlossary, type Glossary } from '../glossary.ts';
 import { assertSafeArtifactContent } from './file-utils.ts';
 import { assertNotesUnchanged, notesSnapshot, withLocalWriteLock, type CourseHistoryEntry } from './study-tools.ts';
@@ -28,6 +29,8 @@ export class MemoryCourseStorage implements CourseStorage {
   private files = new Map<string, File>();
   private notes = '';
   private history: CourseHistoryEntry[] = [];
+
+  async withWriteLock<T>(operation: () => Promise<T>): Promise<T> { return withLocalWriteLock(this, operation); }
 
   async loadNotes() { return notesSnapshot(this.notes); }
   async saveNotes(content: string, expectedToken: string) {
@@ -87,6 +90,24 @@ export class MemoryCourseStorage implements CourseStorage {
     this.recordHistory();
     this.bundle = processingBundle(current, documentId, processing);
     return this.load();
+  }
+
+  async stageCourseReview(documentIds: string[], expectedRevision: number, knowledge: AiCourseKnowledge): Promise<CourseBundle> {
+    const current = await this.load();
+    this.assertRevision(current, expectedRevision);
+    const next = await stageCourseReviewBundle(current, documentIds, knowledge);
+    this.bundle = next;
+    return next;
+  }
+
+  async resolveCourseReview(reviewId: string, accept: boolean): Promise<CourseBundle> {
+    return this.withWriteLock(async () => {
+      const current = await this.load();
+      const next = await resolveCourseReviewBundle(current, reviewId, accept);
+      if (accept) { this.recordHistory(); this.bundle = next; }
+      else { this.bundle = next; }
+      return next;
+    });
   }
 
   async mergeDocuments(documentIds: string[], expectedRevision: number, aiKnowledge: AiCourseKnowledge): Promise<CourseBundle> {

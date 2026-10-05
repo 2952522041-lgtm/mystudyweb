@@ -138,6 +138,7 @@ export function validateDshRequest(value: unknown): DshCompletionRequest {
   )
     return fail();
   // Explicit projection: unknown renderer fields can never turn into CLI options.
+  if (r.retryTransient !== undefined && typeof r.retryTransient !== 'boolean') return fail();
   return {
     requestId: r.requestId,
     baseUrl: r.baseUrl,
@@ -148,6 +149,7 @@ export function validateDshRequest(value: unknown): DshCompletionRequest {
     thinking: r.thinking,
     ...(r.operation ? { operation: r.operation } : {}),
     ...(r.task ? { task: r.task } : {}),
+    ...(r.retryTransient !== undefined ? { retryTransient: r.retryTransient } : {}),
     ...(r.timeoutMs !== undefined ? { timeoutMs: r.timeoutMs } : {}),
     ...(r.connectionTimeoutMs !== undefined ? { connectionTimeoutMs: r.connectionTimeoutMs } : {}),
     ...(r.streamStallTimeoutMs !== undefined ? { streamStallTimeoutMs: r.streamStallTimeoutMs } : {}),

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "synthetic-feedback-example",
+  "provenance": "synthetic",
+  "source": {
+    "label": "自写教学示例，并非真实模型测量",
+    "pages": [
+      "Negative feedback compares the output with a reference. For constant mass, Newton's second law is F = ma."
+    ]
+  },
+  "expectations": {
+    "terms": [
+      { "source": "feedback", "target": "反馈", "forbidden": ["回馈"] }
+    ],
+    "facts": [
+      {
+        "id": "compare-reference",
+        "page": 1,
+        "alternatives": ["与参考值比较", "比较输出和参考值"]
+      }
+    ],
+    "formulas": [{ "id": "newton-law", "page": 1, "tex": "F = ma" }]
+  },
+  "output": {
+    "label": "人工编写的正确示例",
+    "text": "负反馈将输出与参考值比较。质量恒定时，牛顿第二定律为 $F = ma$。",
+    "sources": [{ "pageStart": 1, "pageEnd": 1 }]
+  }
+}

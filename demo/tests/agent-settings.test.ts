@@ -250,9 +250,10 @@ void test('settings dialog keeps backend selection outside the three service tab
 
 void test('backend is persisted only after the existing settings validations', () => {
   const saveBody = dialogSource.slice(
-    dialogSource.indexOf('  const save = () => {'),
-    dialogSource.indexOf('  const chooseTranslationPreset'),
+    dialogSource.indexOf('  const save = '),
+    dialogSource.indexOf('  const requestClose'),
   );
+  assert.match(saveBody, /const save = /);
   assert.ok(
     saveBody.indexOf('validateReaderSettings') <
       saveBody.indexOf('saveAgentSettings'),

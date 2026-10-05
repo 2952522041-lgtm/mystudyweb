@@ -1,3 +1,4 @@
+import { stageCourseReviewBundle, resolveCourseReviewBundle } from './course-review.ts';
 import { EMPTY_GLOSSARY, parseGlossary, type Glossary } from '../glossary.ts';
 import { rawPdfRecord, artifactsReady, processingBundle } from './background-records.ts';
 import type { DocumentProcessing, PdfMetadata } from './types.ts';
@@ -239,6 +240,24 @@ export class DesktopCourseStorage implements CourseStorage {
     const next = processingBundle(current, documentId, processing);
     await this.api.writeFile(this.directoryName, ['course.json'], encodeJson(next.manifest));
     return next;
+  }
+
+  async stageCourseReview(documentIds: string[], expectedRevision: number, knowledge: AiCourseKnowledge): Promise<CourseBundle> {
+    const current = await this.load();
+    this.assertRevision(current.manifest, expectedRevision);
+    const next = await stageCourseReviewBundle(current, documentIds, knowledge);
+    await this.api.writeFile(this.directoryName, ['course.json'], encodeJson(next.manifest));
+    return next;
+  }
+
+  async resolveCourseReview(reviewId: string, accept: boolean): Promise<CourseBundle> {
+    return this.withWriteLock(async () => {
+      const current = await this.load();
+      const next = await resolveCourseReviewBundle(current, reviewId, accept);
+      if (accept) { await this.createRevision(current); await this.writeBundle(next, true); }
+      else { await this.api.writeFile(this.directoryName, ['course.json'], encodeJson(next.manifest)); }
+      return next;
+    });
   }
 
   async mergeDocuments(documentIds: string[], expectedRevision: number, aiKnowledge: AiCourseKnowledge): Promise<CourseBundle> {

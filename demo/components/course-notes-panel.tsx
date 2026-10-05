@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { KnowledgeMarkdown } from '@/components/knowledge-section';
 import type { CourseStorage } from '@/lib/course-storage/types';
@@ -9,9 +9,11 @@ import type { CourseNotesSnapshot } from '@/lib/course-storage/study-tools';
 export function CourseNotesPanel({
   storage,
   courseId,
+  focusRequest,
 }: {
   storage: CourseStorage;
   courseId: string;
+  focusRequest?: {line:number;key:number};
 }) {
   const [snapshot, setSnapshot] = useState<CourseNotesSnapshot | null>(null);
   const [draft, setDraft] = useState('');
@@ -20,6 +22,22 @@ export function CourseNotesPanel({
   const [external, setExternal] = useState<CourseNotesSnapshot | null>(null);
   const [preview, setPreview] = useState(false);
   const dirty = snapshot !== null && snapshot.content !== draft;
+  const editor = useRef<HTMLTextAreaElement>(null);
+  const focused = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!snapshot || !focusRequest || focused.current === focusRequest.key) return;
+    setPreview(false);
+    const timer = setTimeout(() => {
+      if (!editor.current) return;
+      const lines = editor.current.value.split('\n');
+      const index = Math.max(0, Math.min(focusRequest.line-1,lines.length-1));
+      const start = lines.slice(0,index).reduce((size,line) => size+line.length+1,0);
+      editor.current.focus(); editor.current.setSelectionRange(start,start+lines[index].length);
+      editor.current.scrollIntoView({block:'center'});
+      focused.current = focusRequest.key;
+    },0);
+    return () => clearTimeout(timer);
+  }, [snapshot,focusRequest]);
   useEffect(() => {
     let cancelled = false;
     void storage
@@ -156,6 +174,7 @@ export function CourseNotesPanel({
         <KnowledgeMarkdown>{draft}</KnowledgeMarkdown>
       ) : (
         <textarea
+          ref={editor}
           aria-label="编辑课程笔记"
           className="min-h-80 w-full rounded-xl border border-slate-200 p-4 text-sm leading-7"
           value={draft}

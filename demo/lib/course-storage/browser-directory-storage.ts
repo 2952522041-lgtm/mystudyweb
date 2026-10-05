@@ -1,3 +1,4 @@
+import { stageCourseReviewBundle, resolveCourseReviewBundle } from './course-review.ts';
 import { EMPTY_GLOSSARY, parseGlossary, type Glossary } from '../glossary.ts';
 import { assertNotesUnchanged, isHistoryKnowledge, notesSnapshot, withLocalWriteLock, type CourseHistoryEntry } from './study-tools.ts';
 import { rawPdfRecord, artifactsReady, processingBundle } from './background-records.ts';
@@ -136,6 +137,14 @@ export class BrowserDirectoryStorage implements CourseStorage {
     this.label = root.name;
   }
 
+  async withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
+    if (typeof navigator !== 'undefined' && navigator.locks) {
+      const {manifest} = await this.load();
+      return navigator.locks.request(`course-write:${manifest.id}`,operation);
+    }
+    return withLocalWriteLock(this.root,operation);
+  }
+
   async loadGlossary(): Promise<Glossary> {
     try { return parseGlossary(await readJson(this.root, ['glossary.json'])); }
     catch (error) {
@@ -259,6 +268,24 @@ export class BrowserDirectoryStorage implements CourseStorage {
     const next = processingBundle(current, documentId, processing);
     await writeFile(this.root, ['course.json'], JSON.stringify(next.manifest, null, 2));
     return next;
+  }
+
+  async stageCourseReview(documentIds: string[], expectedRevision: number, knowledge: AiCourseKnowledge): Promise<CourseBundle> {
+    const current = await this.load();
+    this.assertRevision(current.manifest, expectedRevision);
+    const next = await stageCourseReviewBundle(current, documentIds, knowledge);
+    await writeFile(this.root, ['course.json'], JSON.stringify(next.manifest, null, 2));
+    return next;
+  }
+
+  async resolveCourseReview(reviewId: string, accept: boolean): Promise<CourseBundle> {
+    return this.withWriteLock(async () => {
+      const current = await this.load();
+      const next = await resolveCourseReviewBundle(current, reviewId, accept);
+      if (accept) { await this.createRevision(current); await this.writeBundle(next, true); }
+      else { await writeFile(this.root, ['course.json'], JSON.stringify(next.manifest, null, 2)); }
+      return next;
+    });
   }
 
   async mergeDocuments(documentIds: string[], expectedRevision: number, aiKnowledge: AiCourseKnowledge): Promise<CourseBundle> {

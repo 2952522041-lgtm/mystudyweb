@@ -114,6 +114,7 @@ export async function requestDshCompletion(
       thinking: input.thinking ?? 'default',
       ...(input.backendOperation ? { operation: input.backendOperation } : {}),
       ...(input.task ? { task: input.task } : {}),
+      ...(input.retryTransient !== undefined ? { retryTransient: input.retryTransient } : {}),
       ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
       ...(input.responseFormat ? { responseFormat: input.responseFormat } : {}),
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),

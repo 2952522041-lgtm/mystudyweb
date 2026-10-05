@@ -7,6 +7,7 @@ import type {
   DocumentProcessing,
 } from './course-storage/types.ts';
 import type { BackgroundAction } from '../electron/background-types.ts';
+import { courseReviewSignature } from './course-storage/course-review.ts';
 
 interface BackgroundImportDependencies {
   analyze(
@@ -31,6 +32,7 @@ interface BackgroundImportDependencies {
   ): void;
   /** Desktop UI delegates execution to the host-owned renderer. */
   execute?: boolean;
+  reviewCourseChanges?: boolean;
   onWake?(): void;
 }
 
@@ -180,7 +182,7 @@ export class BackgroundImports {
           selected.action === 'pause'
             ? processingIsActive(job)
             : selected.action === 'cancel'
-              ? job.status !== 'cancelled'
+              ? job.status !== 'cancelled' && job.status !== 'review'
               : selected.action === 'resume'
                 ? job.status === 'paused'
                 : job.status === 'failed' || job.status === 'cancelled';
@@ -264,7 +266,7 @@ export class BackgroundImports {
         const selected =
           documentCourse ??
           available.find((item) =>
-            item.bundle.manifest.documents.some(pending),
+            !item.bundle.manifest.pendingReview && item.bundle.manifest.documents.some(pending),
           );
         if (!selected) break;
         this.lastCourse = selected.id;
@@ -439,23 +441,18 @@ export class BackgroundImports {
         await this.mutate(courseId, async (currentStorage, current) => {
           if (signal.aborted || ids.some((id) => !matches(current, id))) return;
           // New raw PDFs are harmless; a changed summary or knowledge version is not.
-          const relevant = snapshot.manifest.documents.filter(
-            (doc) => doc.includedInCourse || ids.includes(doc.id),
-          );
           if (
-            current.knowledge.version !== snapshot.knowledge.version ||
-            relevant.some(
-              (doc) =>
-                JSON.stringify(current.digests[doc.id]) !==
-                JSON.stringify(snapshot.digests[doc.id]),
-            )
+            await courseReviewSignature(current, ids) !==
+              await courseReviewSignature(snapshot, ids)
           )
             throw new Error(
               '课程内容在整理期间已变更，请重试课程汇总；PDF 和单篇成果已保留。',
             );
           this.deps.onBundle(
             courseId,
-            await currentStorage.mergeDocuments(
+            await (this.deps.reviewCourseChanges && currentStorage.stageCourseReview
+              ? currentStorage.stageCourseReview.bind(currentStorage)
+              : currentStorage.mergeDocuments.bind(currentStorage))(
               ids,
               current.manifest.revision,
               knowledge,

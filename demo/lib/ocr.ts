@@ -8,7 +8,9 @@ import { createIndexedDBStore, type KVStore } from './reader-cache.ts';
 import { useDshForTask as selectDshForTask } from './agent-settings.ts';
 
 export const OCR_PROMPT_VERSION = 1;
-export const OCR_MIN_TEXT_LENGTH = 24;
+// A slide may contain only a 24-character heading in its text layer while the
+// body is an image. Keep such sparse pages eligible for vision extraction.
+export const OCR_MIN_TEXT_LENGTH = 40;
 
 export interface OcrRequest {
   task?: 'interactive' | 'background' | 'prefetch';

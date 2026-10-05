@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { Button } from './ui/button';
+import { DshDiagnosticsPanel } from './dsh-diagnostics-panel';
 import {
   Dialog,
   DialogContent,
@@ -41,6 +42,7 @@ const LABELS = {
   failed: '失败',
   cancelled: '已取消',
   completed: '已完成',
+  review: '待审阅',
 };
 const ORDER = {
   running: 0,
@@ -49,12 +51,15 @@ const ORDER = {
   paused: 3,
   cancelled: 4,
   completed: 5,
+  review: 0.5,
 };
 
 export function BackgroundTaskCenter({
   onOpenDocument,
+  onOpenCourse,
 }: {
   onOpenDocument: (courseId: string, documentId: string) => Promise<unknown>;
+  onOpenCourse?: (courseId: string) => Promise<unknown>;
 }) {
   const snapshot = useSyncExternalStore(
     subscribeBackgroundTasks,
@@ -114,7 +119,7 @@ export function BackgroundTaskCenter({
       (task) =>
         filter === 'all' ||
         (filter === 'active'
-          ? ['running', 'queued', 'paused', 'failed'].includes(task.status)
+          ? ['running', 'queued', 'paused', 'failed', 'review'].includes(task.status)
           : task.status === filter),
     )
     .sort(
@@ -164,7 +169,7 @@ export function BackgroundTaskCenter({
           ? ` · ${counts.running} 项运行 / ${counts.queued} 项排队`
           : counts.failed
             ? ` · ${counts.failed} 项失败`
-            : ''}
+            : counts.review ? ` · ${counts.review} 项待审阅` : ''}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[88dvh] overflow-y-auto sm:max-w-3xl">
@@ -178,6 +183,8 @@ export function BackgroundTaskCenter({
                 : ' 请保持此浏览器页面打开，重新打开并授权课程后可恢复未完成任务。'}
             </DialogDescription>
           </DialogHeader>
+          {snapshot.executor === 'desktop' && typeof window !== 'undefined' && window.yeyuDesktop?.getDshHistory
+            ? <DshDiagnosticsPanel loadRecords={() => window.yeyuDesktop!.getDshHistory!()} /> : null}
           {!snapshot.available ? (
             <p role="alert" className="text-sm text-rose-700">
               {snapshot.error ?? '后台执行服务尚未就绪。'}
@@ -230,7 +237,7 @@ export function BackgroundTaskCenter({
           </div>
           <output className="text-xs text-slate-500">
             运行 {counts.running} · 排队 {counts.queued} · 暂停 {counts.paused}{' '}
-            · 失败 {counts.failed} · 完成 {counts.completed}
+            · 失败 {counts.failed} · 待审阅 {counts.review} · 完成 {counts.completed}
           </output>
           {tasks.length === 0 ? (
             <p className="py-8 text-center text-sm text-slate-500">
@@ -272,6 +279,8 @@ export function BackgroundTaskCenter({
                       已处理 {task.completedUnits} / {task.totalUnits}
                     </p>
                   ) : null}
+                  {task.status === 'review' && <p className="mt-2 text-xs text-violet-700">候选成果已保存，请回到课程页审阅后应用；当前课程成果保持不变。</p>}
+                  {task.modelRequests !== undefined && <p className="mt-1 text-xs text-slate-500">已保存成果：模型请求 {task.modelRequests} 次 · 复用完整缓存 {task.cacheHits ?? 0} 次</p>}
                   {task.startedAt ? (
                     <p className="mt-1 text-xs text-slate-500">
                       本次耗时{' '}
@@ -310,6 +319,12 @@ export function BackgroundTaskCenter({
                     </p>
                   ) : null}
                   <div className="mt-3 flex flex-wrap gap-2">
+                    {task.status === 'review' && onOpenCourse && <Button size="xs" disabled={busy} onClick={async () => {
+                      setBusy(true);setError(null);
+                      try { await onOpenCourse(task.courseId);setOpen(false); }
+                      catch { setError('暂时无法打开课程，请从课程列表进入。'); }
+                      finally { setBusy(false); }
+                    }}>审阅课程更新</Button>}
                     <Button
                       variant="outline"
                       size="xs"

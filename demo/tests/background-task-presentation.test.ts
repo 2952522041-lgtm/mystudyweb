@@ -52,6 +52,7 @@ void test('summarizeTaskCounts: empty input yields all zeros', () => {
     paused: 0,
     failed: 0,
     cancelled: 0,
+    review: 0,
     completed: 0,
     total: 0,
   });
@@ -79,6 +80,7 @@ void test('summarizeTaskCounts: mixed tasks count only known statuses', () => {
     paused: 1,
     failed: 1,
     cancelled: 1,
+    review: 0,
     completed: 3,
     total: 9,
   };
@@ -103,6 +105,7 @@ void test('summarizeTaskCounts: does not mutate frozen input', () => {
     paused: 0,
     failed: 0,
     cancelled: 0,
+    review: 0,
     completed: 1,
     total: 2,
   });
@@ -126,7 +129,10 @@ void test('summarizeTaskCounts: extra properties are tolerated and ignored', () 
     paused: 0,
     failed: 1,
     cancelled: 0,
+    review: 0,
     completed: 0,
     total: 3,
   });
 });
+
+void test('review is an explicit non-running task status', () => { const counts = summarizeTaskCounts([{status:'review'}]); assert.equal(counts.review,1); assert.equal(counts.total,1); assert.equal(counts.running,0); });

@@ -8,6 +8,11 @@ import {
 } from './api.ts';
 
 const api: YeyuDesktopApi = {
+  getBuildInfo: () => ipcRenderer.invoke(DESKTOP_CHANNELS.buildInfo),
+  getDshHistory: () => ipcRenderer.invoke(DESKTOP_CHANNELS.dshHistory),
+  exportCourseBackup: directory => ipcRenderer.invoke(DESKTOP_CHANNELS.courseBackupExport,directory),
+  prepareCourseRestore: () => ipcRenderer.invoke(DESKTOP_CHANNELS.courseRestorePrepare),
+  restoreCourseBackup: token => ipcRenderer.invoke(DESKTOP_CHANNELS.courseRestore,token),
   inspectDshRuntime: () => ipcRenderer.invoke(DESKTOP_CHANNELS.dshInspect),
   acquireCourseLock: directory => ipcRenderer.invoke(DESKTOP_CHANNELS.courseLockAcquire, directory),
   releaseCourseLock: token => ipcRenderer.invoke(DESKTOP_CHANNELS.courseLockRelease, token),

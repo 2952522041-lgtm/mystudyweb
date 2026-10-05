@@ -91,6 +91,7 @@ export interface DocumentRecord {
 }
 
 export interface CourseManifest {
+  pendingReview?: CourseReview;
   schemaVersion: typeof COURSE_SCHEMA_VERSION;
   id: string;
   name: string;
@@ -99,6 +100,16 @@ export interface CourseManifest {
   updatedAt: string;
   activeKnowledgeVersion: number;
   documents: DocumentRecord[];
+}
+
+export interface CourseReview {
+  schemaVersion: 1;
+  id: string;
+  courseId: string;
+  createdAt: string;
+  documentIds: string[];
+  baseSignature: string;
+  knowledge: AiCourseKnowledge;
 }
 
 export interface KnowledgeNode {
@@ -177,7 +188,7 @@ export interface ImportOptions {
 
 export interface DocumentProcessing {
   phase: 'document' | 'course';
-  status: 'queued' | 'running' | 'failed' | 'paused' | 'cancelled';
+  status: 'queued' | 'running' | 'failed' | 'paused' | 'cancelled' | 'review';
   options: ImportOptions;
   updatedAt: string;
   error?: string;
@@ -203,6 +214,8 @@ export interface ImportResult {
 }
 
 export interface CourseStorage {
+  stageCourseReview?(documentIds: string[], expectedRevision: number, knowledge: AiCourseKnowledge): Promise<CourseBundle>;
+  resolveCourseReview?(reviewId: string, accept: boolean): Promise<CourseBundle>;
   readonly label: string;
   withWriteLock?<T>(operation: () => Promise<T>): Promise<T>;
   loadNotes?(): Promise<import('./study-tools.ts').CourseNotesSnapshot>;

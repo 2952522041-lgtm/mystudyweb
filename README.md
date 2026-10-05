@@ -15,7 +15,7 @@
 
 1. 首次进入「课程知识库」，创建课程并选择一个本地文件夹；也可连接已有课程目录
 2. 导入文字型、扫描或手写 PDF，并独立选择生成 PDF 总结/脑图、是否并入课程总成果
-3. 在课程总结或脑图中点击来源，直接打开对应 PDF 和页码
+3. 整理完成后先审阅课程更新，接受后再更新课程总结和脑图；点击来源可打开对应 PDF 和页码
 4. 阅读器右侧可在「页面翻译」「AI 答疑」「PDF 总结」「PDF 脑图」之间切换
 5. 也可以从顶部直接进入「PDF 阅读器」，临时打开不属于课程的 PDF
 
@@ -44,6 +44,8 @@ PDF 保存后即可阅读，AI 整理的状态在全局「后台任务」中查�
 
 「阅读服务设置」可选 API 或 DeepSeek Harness（DSH）。DSH 设置展示各功能的后端与模型兼容性，保存前校验地址、模型、图片能力、密钥和本机运行时。运行时自检只检查本机组件；「测试当前栏目 DSH 连接」才会发送一次短请求。DSH 队列为交互任务保留一个并发槽，整理和预取使用较低优先级；具体模型、超时与诊断边界见 [DSH 后台接入](docs/DSH-INTEGRATION.md)。
 
+任务中心还可展开最近 200 次 DSH 请求记录，查看模型、任务类别、排队/启动/执行耗时、重试与错误类别；不记录正文、密钥或供应商原始错误。知识整理的首次请求可对网络中断或服务繁忙做一次有限重试，已收到正文、鉴权、限流和取消不自动重试。设置修改后关闭会提示保存、放弃或继续编辑。
+
 ## 本地课程知识库
 
 - 网页版课程绑定用户授权的本地文件夹；桌面版课程使用系统文档目录下的页语工作区，课程文件是业务数据来源
@@ -56,10 +58,12 @@ PDF 保存后即可阅读，AI 整理的状态在全局「后台任务」中查�
 - 参与 AI 整理的 PDF 会生成结构化内部摘要；仅保存 PDF 时不调用 AI，即使暂不生成单 PDF 可见成果，也可以稍后整理并纳入课程
 - PDF 按 SHA-256 内容指纹去重；同名但内容不同的文件会使用稳定后缀保存
 - AI 结果按「指纹 + provider + model + 提示词版本 + schema 版本」缓存；模型、提示词或 PDF 内容变化后不会复用旧结果，重新生成会绕过缓存强制重跑 AI
-- 课程列表提供继续阅读、名称搜索、最近阅读/最近导入排序，并区分已保存 PDF、独立总结/脑图和课程纳入状态
+- 课程列表提供继续阅读、名称搜索、最近阅读/最近导入排序，并区分已保存 PDF、独立总结/脑图和课程纳入状态；窄窗口可通过顶部课程选择器切换、新建或连接课程
+- 「搜索课程内容」跨知识点、逐篇摘要和已保存笔记查找，点击结果定位知识点、笔记行或来源页。「建立全文索引」额外读取本机 PDF 文字层，不调用 AI；扫描页依赖已有 OCR 摘要，全文索引文字最多 16 MiB
+- 课程综合先保存候选版本，展示总结与知识结构差异，接受后才发布；保留原成果会放弃候选。文档摘要和 PDF 仍可使用。候选保存后重启不会自动发布，内容发生变化时要求重新生成
 - 总结要点与脑图节点可「追问」或「保存笔记」：追问打开来源 PDF 并预填问题，需手动发送；摘记把正文、来源页码和时间追加到 `我的课程笔记.md`
 - 课程「笔记」可编辑、预览和保存。保存时检查原文件内容版本；发现其他窗口或外部编辑会保留草稿并要求手动合并，AI 生成不会覆盖用户笔记。API Key 不写入课程目录
-- 课程更新采用 revision 冲突检查，提交新版本前保留旧成果到 `History/`。「历史」提供只读预览和知识点、来源、关系等差异比较，并可逐段查看总结文字的增删、只看改动或分批展开；快照不含完整 PDF、逐篇摘要和笔记，不提供整门课程恢复。旧版本本地规则成果仍能打开，重新生成后升级为 AI 版本
+- 课程更新采用 revision 冲突检查，提交新版本前保留旧成果到 `History/`。「历史」提供只读预览和知识点、来源、关系等差异比较，并可逐段查看总结文字的增删、只看改动或分批展开；历史快照不含完整 PDF、逐篇摘要和笔记。桌面「完整课程备份」另行导出含校验清单的备份文件夹，包含 PDF、逐篇成果、笔记、术语、已发布译文和历史；恢复前预览校验，始终创建新课程，保留原课程。恢复的未完成任务暂停，候选版本归档，需手动重新整理。备份不含应用密钥、未保存草稿和工作区外的译文/对话缓存。旧版本本地规则成果仍能打开，重新生成后升级为 AI 版本
 - 网页版课程目录功能要求支持 File System Access API 的桌面 Chrome / Edge，不支持时会明确提示
 
 ## 开发
@@ -72,7 +76,10 @@ pnpm dev        # 开发服务器 http://localhost:3000
 pnpm test       # 单元测试（node --test）
 pnpm lint       # oxlint
 pnpm build      # 生产构建
+pnpm quality:check tests/fixtures/quality-example.json # 离线质量诊断示例
 ```
+
+真实文档抽查与质量诊断的使用、限制见 [质量评估](docs/QUALITY-EVALUATION.md)。
 
 核心模块：
 
@@ -105,9 +112,20 @@ pnpm build      # 生产构建
 ```bash
 cd demo
 pnpm install
-pnpm desktop:make          # 生成 out/make/deb/x64/yeyu_0.1.0_amd64.deb
-sudo apt install ./out/make/deb/x64/yeyu_0.1.0_amd64.deb
+pnpm desktop:make          # 生成 out/make/deb/x64/yeyu_0.2.0_amd64.deb
+sudo apt install ./out/make/deb/x64/yeyu_0.2.0_amd64.deb
 ```
+
+以后从源码更新（Linux x64，先正常退出页语）：
+
+```bash
+cd demo
+pnpm desktop:update
+# 只查看步骤：pnpm desktop:update --dry-run
+# 校验安装与当前打包产物：pnpm desktop:update --check
+```
+
+命令重新构建并安装 DEB，备份并修正已知旧版启动入口，同时校验主进程与独立前端文件。课程页显示版本号、提交和构建时间，含未提交修改的构建会明确标注。安装可能需要 sudo 密码。
 
 安装后：
 
@@ -171,7 +189,7 @@ pnpm mcp:build
 
 默认从系统“文档”目录下的 `页语工作区/Settings/mcp-control.json` 连接；Linux 会读取 `XDG_CONFIG_HOME`（未设置时为 `~/.config`）下 `user-dirs.dirs` 的 `XDG_DOCUMENTS_DIR`，未配置时回退到 `~/Documents`，Windows/macOS 默认使用 `~/Documents`。自定义工作区时给 MCP 进程设置 `YEYU_WORKSPACE_ROOT`；也可用 `YEYU_MCP_CONTROL_FILE` 直接指定控制文件（优先级：`YEYU_MCP_CONTROL_FILE` > `YEYU_WORKSPACE_ROOT` > 系统文档目录）。
 
-`yeyu_import_pdf` 会先保存 PDF 并将后台整理任务加入队列，然后立即返回 `courseId`、`courseName`、`fileName`、`documentId`、`message` 和可选的 `processing`。这表示 PDF 已保存/任务已接受，不表示 AI 摘要、脑图或课程合并已经完成；调用超时或断开时不要重复提交。用 `yeyu_get_state` 查看对应 `course.documents` 的 `status`、`hasSummary`、`hasMindmap`、`includedInCourse` 和可选 `processing`（`queued`/`running`/`paused`/`failed`/`cancelled`）；没有 `processing` 表示当前没有后台任务，具体成果仍以各标记为准。
+`yeyu_import_pdf` 会先保存 PDF 并将后台整理任务加入队列，然后立即返回 `courseId`、`courseName`、`fileName`、`documentId`、`message` 和可选的 `processing`。这表示 PDF 已保存/任务已接受，不表示 AI 摘要、脑图或课程合并已经完成；调用超时或断开时不要重复提交。用 `yeyu_get_state` 查看对应 `course.documents` 的 `status`、`hasSummary`、`hasMindmap`、`includedInCourse` 和可选 `processing`（`queued`/`running`/`paused`/`failed`/`cancelled`/`review`）；没有 `processing` 表示当前没有后台任务，具体成果仍以各标记为准。
 
 当前工具包括读取应用状态、显示课程库、打开课程、打开课程 PDF、跳页、切换阅读面板，以及 `yeyu_import_pdf`。导入工具只接受本机绝对路径下的普通 PDF（拒绝符号链接、非 PDF 和超过 128 MiB 的文件），然后复用页语现有导入事务写入课程。知识库 AI 和扫描件 OCR 可能产生服务费用；`generateSummary`、`generateMindmap` 和 `mergeIntoCourse` 仍控制对应的后台成果，默认开启。MCP 不提供任意文件读写、删除课程或读取 API Key 的能力。
 
@@ -183,7 +201,7 @@ node scripts/yeyu-tool.mjs import <课程名称> /absolute/path/to/lecture.pdf
 node scripts/yeyu-tool.mjs import --wait <课程名称> /absolute/path/to/lecture.pdf
 ```
 
-CLI 默认只提交导入并明确报告当前状态，不把入队误报为整理完成；`--wait` 会使用返回的 `documentId` 只读轮询 `yeyu_get_state`，直到 `processing` 消失，并在输出中附带独立的 `completion.status`。若任务暂停或取消，立即停止等待，输出 `completion.status: paused/cancelled` 并以非零状态退出，提示到「后台任务」中继续或重试；PDF 与已完成成果保留，CLI 不自动恢复或重新导入。若后台整理失败，CLI 同样以非零状态退出并报告“PDF已保存，后台整理失败”；轮询异常或 30 分钟超时也不会重新导入。轮询过程中不会输出或重新使用控制文件中的令牌。
+CLI 默认只提交导入并明确报告当前状态，不把入队误报为整理完成；`--wait` 会使用返回的 `documentId` 只读轮询 `yeyu_get_state`，直到 `processing` 消失，并在输出中附带独立的 `completion.status`。若任务暂停或取消，立即停止等待，输出 `completion.status: paused/cancelled` 并以非零状态退出，提示到「后台任务」中继续或重试；PDF 与已完成成果保留，CLI 不自动恢复或重新导入。若进入待审阅状态，输出 `completion.status: review` 并停止等待、非零退出，提示在课程页接受更新或保留原成果；不会自动接受候选。若后台整理失败，CLI 同样以非零状态退出并报告“PDF已保存，后台整理失败”；轮询异常或 30 分钟超时也不会重新导入。轮询过程中不会输出或重新使用控制文件中的令牌。
 
 ## Blackboard 定时同步
 

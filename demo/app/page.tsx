@@ -2688,6 +2688,9 @@ function DesktopHome() {
       <BackgroundTaskCenter onOpenDocument={async (courseId,documentId) => {
         if (!courseControlRef.current) throw new Error('课程知识库尚未就绪。');
         return courseControlRef.current.openDocument({courseId,documentId});
+      }} onOpenCourse={async courseId => {
+        if (!courseControlRef.current) throw new Error('课程知识库尚未就绪。');
+        courseControlRef.current.openCourse({courseId});setView('courses');
       }} />
       {/* The reader stays mounted behind the course library, so a PDF imported
           into the reader (and its in-session translations) survives the round

@@ -348,7 +348,7 @@ async function completeJson(
         try {
           result = await requestChatCompletion(config, {
             messages, maxTokens, signal: input.signal,
-            ...(config.executionBackend === 'dsh' ? {task:'background' as const} : {temperature:0.1}),
+            ...(config.executionBackend === 'dsh' ? {task:'background' as const, retryTransient:attempt === 0} : {temperature:0.1}),
             connectionTimeoutMs: 30_000,
             streamStallTimeoutMs: 45_000,
             onTiming: timing => input.report?.({ layer, action: 'request-timing',

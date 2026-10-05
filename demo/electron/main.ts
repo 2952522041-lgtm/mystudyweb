@@ -1,5 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
-import { randomUUID } from 'node:crypto';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -51,8 +51,12 @@ import { inspectDshRuntime } from './dsh-runtime.ts';
 import { BackgroundService, assertDesktopRole } from './background-service.ts';
 import { CourseLocks } from './course-locks.ts';
 import { validReaderView, readerViewFields } from './reader-view-state.ts';
+import { readBuildInfo } from './build-info.ts';
+import { DshHistory } from './dsh-history.ts';
+import { exportCourseBackup, inspectCourseBackup, restoreCourseBackup } from './course-backup.ts';
 
-const dshManager = new DshDispatcher(path.join(__dirname, 'dsh-worker.mjs'));
+let dshHistory: DshHistory | undefined;
+const dshManager = new DshDispatcher(path.join(__dirname, 'dsh-worker.mjs'), undefined, { onRecord: record => dshHistory?.append(record) });
 
 // Windows Squirrel 安装/更新/卸载事件必须在最早期处理（HANDOFF 13.2）。
 if (handleSquirrelStartup()) {
@@ -76,8 +80,10 @@ let backgroundWindow: BrowserWindow | undefined;
 let quitting = false;
 const courseLocks = new CourseLocks();
 let backgroundService: BackgroundService;
+const backupSelections = new Map<string,{owner:number;directory:string;hash:string;expires:number}>();
 
 function releaseRendererOwner(owner: number) {
+  for (const [token,value] of backupSelections) if(value.owner === owner) backupSelections.delete(token);
   dshManager.cancelOwner(owner);
   courseLocks.releaseOwner(owner);
   backgroundService?.cancelOwner(owner);
@@ -350,6 +356,41 @@ function registerDesktopIpc(
   });
   handle(DESKTOP_CHANNELS.courseLockRelease, (event, token) => courseLocks.release(event.sender.id, assertString(token, '课程锁无效。')));
   handle(DESKTOP_CHANNELS.backgroundGet, () => backgroundService.getSnapshot(), 'main');
+  handle(DESKTOP_CHANNELS.buildInfo, () => readBuildInfo(path.join(__dirname, 'build-info.json'), app.getVersion(), app.isPackaged), 'main');
+  handle(DESKTOP_CHANNELS.dshHistory, () => dshHistory?.list() ?? [], 'main');
+  handle(DESKTOP_CHANNELS.courseBackupExport, async (event,value) => {
+    const directory = assertString(value,'请选择课程。');
+    const source = await resolveCourseDirectoryPath(layout.coursesRoot,directory);
+    const selection = await dialog.showOpenDialog(mainWindow!,{title:'选择保存完整课程备份的文件夹',properties:['openDirectory','createDirectory']});
+    if(selection.canceled || !selection.filePaths[0]) return null;
+    trustedSender(event,'main');
+    const destination = path.resolve(selection.filePaths[0]);
+    const relative = path.relative(layout.root,destination);
+    if(relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) throw new Error('请将备份保存在工作区外的文件夹。');
+    return courseLocks.run(event.sender.id,directory,()=>exportCourseBackup(source,destination));
+  },'main');
+  handle(DESKTOP_CHANNELS.courseRestorePrepare, async event => {
+    const selection = await dialog.showOpenDialog(mainWindow!,{title:'选择包含 .yeyu-backup.json 的课程备份文件夹',properties:['openDirectory']});
+    if(selection.canceled || !selection.filePaths[0]) return null;
+    const directory = selection.filePaths[0];
+    const preview = await inspectCourseBackup(directory);
+    trustedSender(event,'main');
+    const hash = createHash('sha256').update(await fs.readFile(path.join(directory,'.yeyu-backup.json'))).digest('hex');
+    for(const [token,value] of backupSelections) if(value.owner === event.sender.id || value.expires < Date.now()) backupSelections.delete(token);
+    const token = randomUUID();backupSelections.set(token,{owner:event.sender.id,directory,hash,expires:Date.now()+30*60000});
+    return {...preview,token};
+  },'main');
+  handle(DESKTOP_CHANNELS.courseRestore, async (event,value) => {
+    const token = assertString(value,'备份预览已失效，请重新选择。');
+    const selection = backupSelections.get(token);
+    if(!selection || selection.owner !== event.sender.id || selection.expires < Date.now()) throw new Error('备份预览已失效，请重新选择。');
+    backupSelections.delete(token);
+    const hash = createHash('sha256').update(await fs.readFile(path.join(selection.directory,'.yeyu-backup.json'))).digest('hex');
+    if(hash !== selection.hash) throw new Error('备份在预览后发生变化，请重新选择并校验。');
+    const result = await restoreCourseBackup(selection.directory,layout.coursesRoot);
+    broadcastCoursesChanged(result.directoryName);
+    return result;
+  },'main');
   handle(DESKTOP_CHANNELS.backgroundPublish, (event, value) => backgroundService.publish(event.sender.id, value), 'worker');
   handle(DESKTOP_CHANNELS.backgroundControl, (event, value) => backgroundService.control(event.sender.id, value), 'main');
   handle(DESKTOP_CHANNELS.backgroundResponse, (event, value) => backgroundService.respond(event.sender.id, value), 'worker');
@@ -723,6 +764,7 @@ if (!hasSingleInstanceLock) {
       });
       await ensureWorkspace(layout);
       backgroundService = createBackgroundService();
+      dshHistory = new DshHistory(path.join(app.getPath('userData'), 'dsh-runs.json'));
       registerDesktopIpc(layout, lanShareServer, readingStateStore);
       let dshClosed = false;
       app.on('before-quit', event => {

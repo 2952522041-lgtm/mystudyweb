@@ -11,7 +11,7 @@
  *    CommonJS 加载编译产物。
  */
 import { spawnSync } from 'node:child_process';
-import { writeFile } from 'node:fs/promises';
+import { writeFile, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,10 @@ const require = createRequire(import.meta.url);
 const demoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const electronDir = path.join(demoRoot, 'electron');
 const distDir = path.join(electronDir, 'dist');
+const packageInfo = JSON.parse(await readFile(path.join(demoRoot, 'package.json'), 'utf8'));
+const git = (...args) => spawnSync('git', args, { cwd: demoRoot, encoding: 'utf8' });
+const revision = git('rev-parse', 'HEAD');
+const status = git('status', '--porcelain');
 
 const tsc = spawnSync(
   process.execPath,
@@ -58,3 +62,9 @@ await esbuild.build({
   sourcemap: false, legalComments: 'none', logLevel: 'info',
 });
 console.log('build:electron compiled main, bundled sandbox preload, marked dist as CommonJS');
+await writeFile(path.join(distDir, 'build-info.json'), JSON.stringify({
+  version: packageInfo.version,
+  commit: revision.status === 0 ? revision.stdout.trim() : null,
+  builtAt: new Date().toISOString(),
+  dirty: status.status === 0 && Boolean(status.stdout.trim()),
+}, null, 2));

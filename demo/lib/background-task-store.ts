@@ -21,6 +21,13 @@ let control: ((command: BackgroundAction) => Promise<void>) | undefined;
 export function tasksFromBundle(bundle: CourseBundle): BackgroundTaskRecord[] {
   return bundle.manifest.documents.flatMap((doc) => {
     const job = doc.processing;
+    const diagnostics = job?.status === 'review'
+      ? bundle.manifest.pendingReview?.knowledge.diagnostics
+      : job?.status === 'running' || job?.status === 'queued'
+        ? undefined
+        : job?.phase === 'course' || doc.includedInCourse
+          ? bundle.knowledge.diagnostics
+          : bundle.digests[doc.id]?.diagnostics;
     if (!job && !doc.hasSummary && !doc.hasMindmap && !doc.includedInCourse)
       return [];
     return [
@@ -42,6 +49,8 @@ export function tasksFromBundle(bundle: CourseBundle): BackgroundTaskRecord[] {
         completedUnits: job?.completedUnits,
         totalUnits: job?.totalUnits,
         progressRevision: job?.progressRevision,
+        cacheHits: diagnostics?.filter(item => item.action === 'cache-hit').length,
+        modelRequests: diagnostics?.filter(item => item.action === 'request').length,
       },
     ];
   });

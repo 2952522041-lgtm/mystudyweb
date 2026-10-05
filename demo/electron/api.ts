@@ -24,6 +24,11 @@ export interface DesktopCourseManifest {
 export const DESKTOP_API_NAME = 'yeyuDesktop';
 
 export const DESKTOP_CHANNELS = {
+  buildInfo: 'yeyu:build-info',
+  dshHistory: 'yeyu:dsh-history',
+  courseBackupExport: 'yeyu:course-backup-export',
+  courseRestorePrepare: 'yeyu:course-restore-prepare',
+  courseRestore: 'yeyu:course-restore',
   workspaceInfo: 'yeyu:workspace-info',
   listCourses: 'yeyu:list-courses',
   createCourse: 'yeyu:create-course',
@@ -91,6 +96,11 @@ export type YeyuMcpResponse =
 
 /** 桌面 API 的全部方法名；冒烟测试用它校验 preload 的暴露面。 */
 export const DESKTOP_METHOD_NAMES = [
+  'getBuildInfo',
+  'getDshHistory',
+  'exportCourseBackup',
+  'prepareCourseRestore',
+  'restoreCourseBackup',
   'createCourseDirectory',
   'deleteCourseDirectory',
   'deleteFile',
@@ -128,6 +138,15 @@ export interface WorkspaceInfo {
   coursesRoot: string;
 }
 
+export interface CourseRestorePreview {
+  token: string;
+  name: string;
+  files: number;
+  bytes: number;
+  documents: number;
+  createdAt: string;
+}
+
 export interface DesktopCourseSummary {
   directoryName: string;
   manifest: DesktopCourseManifest;
@@ -154,6 +173,11 @@ export interface SharedReadingState extends ReaderViewState {
 
 /** 主进程暴露给 renderer 的唯一文件入口；绝不暴露 ipcRenderer 或 fs 本身。 */
 export interface YeyuDesktopApi {
+  getBuildInfo?(): Promise<import('./build-info.ts').DesktopBuildInfo>;
+  getDshHistory?(): Promise<import('./dsh-history.ts').DshRunRecord[]>;
+  exportCourseBackup?(directoryName: string): Promise<{directory:string;name:string;files:number;bytes:number} | null>;
+  prepareCourseRestore?(): Promise<CourseRestorePreview | null>;
+  restoreCourseBackup?(token: string): Promise<{directoryName:string;courseId:string;name:string}>;
   inspectDshRuntime?(): Promise<DshRuntimeStatus>;
   acquireCourseLock?(directory: string): Promise<string>;
   releaseCourseLock?(token: string): Promise<void>;

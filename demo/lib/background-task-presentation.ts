@@ -12,6 +12,7 @@ export const KNOWN_TASK_STATUSES = [
   'failed',
   'cancelled',
   'completed',
+  'review',
 ] as const;
 
 export type KnownTaskStatus = (typeof KNOWN_TASK_STATUSES)[number];
@@ -23,6 +24,7 @@ export interface TaskCounts {
   failed: number;
   cancelled: number;
   completed: number;
+  review: number;
   total: number;
 }
 
@@ -65,7 +67,7 @@ export function formatTaskDuration(ms: number): string {
  * Tally tasks by their exact, known status.
  *
  * Unknown statuses are ignored, `total` is the number of recognized tasks
- * (the sum of the six known buckets), and the input is never mutated.
+ * (the sum of the known buckets), and the input is never mutated.
  */
 export function summarizeTaskCounts(
   tasks: ReadonlyArray<{ status: string }>,
@@ -77,6 +79,7 @@ export function summarizeTaskCounts(
     failed: 0,
     cancelled: 0,
     completed: 0,
+    review: 0,
     total: 0,
   };
 

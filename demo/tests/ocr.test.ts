@@ -26,6 +26,8 @@ const request: OcrRequest = {
 void test('OCR detection distinguishes text pages from scanned pages', () => {
   assert.equal(pageNeedsOcr('  '), true);
   assert.equal(pageNeedsOcr('short'), true);
+  assert.equal(pageNeedsOcr('Electromechanical Systems\n4'), true);
+  assert.equal(pageNeedsOcr('Linearization\n29'), true);
   assert.equal(
     pageNeedsOcr('A normal PDF page contains enough extractable text.'),
     false,

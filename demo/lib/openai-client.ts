@@ -49,6 +49,7 @@ export interface ChatCompletionTiming {
 }
 
 export interface ChatCompletionInput {
+  retryTransient?: boolean;
   task?: DshTaskPriority;
   timeoutMs?: number;
   onDshStatus?: (status: DshStatus) => void;

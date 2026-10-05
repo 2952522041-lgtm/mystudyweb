@@ -99,7 +99,7 @@ export function inspectProcessing(processing) {
   if (status === 'queued' || status === 'running') {
     return { kind: 'active', status, processing: value };
   }
-  if (status === 'paused' || status === 'cancelled') {
+  if (status === 'paused' || status === 'cancelled' || status === 'review') {
     return { kind: status, status, processing: value };
   }
   if (status === 'failed') {
@@ -195,6 +195,7 @@ function importFailureError(error) {
 }
 
 function interruptedImportMessage(status) {
+  if (status === 'review') return 'PDF 和候选成果已保存，课程更新等待审阅；请在页语课程页接受更新或保留原成果。';
   if (status === 'paused')
     return 'PDF已保存，后台整理已暂停；已完成成果保留，可在页语「后台任务」中继续。';
   if (status === 'cancelled')
@@ -225,7 +226,7 @@ export async function waitForImportCompletion({
   if (initial.kind === 'none') {
     return { status: 'completed', source: 'import-result' };
   }
-  if (initial.kind === 'paused' || initial.kind === 'cancelled') {
+  if (initial.kind === 'paused' || initial.kind === 'cancelled' || initial.kind === 'review') {
     return { status: initial.status, source: 'import-result' };
   }
   if (initial.kind === 'failed') {
@@ -273,7 +274,7 @@ export async function waitForImportCompletion({
     if (current.kind === 'none') {
       return { status: 'completed', source: 'state', state, document };
     }
-    if (current.kind === 'paused' || current.kind === 'cancelled') {
+    if (current.kind === 'paused' || current.kind === 'cancelled' || current.kind === 'review') {
       return { status: current.status, source: 'state', state, document };
     }
     if (current.kind === 'failed') {

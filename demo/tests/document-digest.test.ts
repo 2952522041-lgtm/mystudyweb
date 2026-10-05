@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
+import { createPdfTextCache } from '../lib/pdf-text-cache.ts';
+import { createMemoryStore } from '../lib/reader-cache.ts';
 
 const FIXTURE_KEY = '__documentDigestFixture';
 
@@ -102,6 +104,27 @@ function setFixture(pages: string[], delay = 5): DigestFixture {
   (globalThis as unknown as Record<string, unknown>)[FIXTURE_KEY] = fixture;
   return fixture;
 }
+
+void test('native text cache skips repeated extraction, isolates changed PDF bytes, never stores OCR output', async () => {
+  const textCache = createPdfTextCache({store:createMemoryStore()});
+  const source = 'A lecture page with enough selectable text for native extraction.';
+  const fixture = setFixture([source]);
+  const file = new File(['cache-original'], 'lecture.pdf');
+  const first = await extractPdfPages(file,{textCache});
+  await extractPdfPages(file,{textCache});
+  assert.deepEqual(fixture.startedPages,[1]);
+  await extractPdfPages(new File(['cache-changed'],'lecture.pdf'),{textCache});
+  assert.deepEqual(fixture.startedPages,[1,1]);
+  const scanned = setFixture(['']);
+  const scan = new File(['scan-original'],'scanned.pdf');
+  const native = await extractPdfPages(scan,{textCache,allowEmptyText:true});
+  let calls=0;
+  for (let index=0; index<2; index++) await extractPdfPages(scan,{textCache,recognizePage:async()=>{calls++;return source;}});
+  assert.equal(calls,2);
+  assert.equal(await textCache.get(native.fingerprint,1),'');
+  assert.deepEqual(scanned.startedPages,[1]);
+  assert.ok(first.pages[0].includes('lecture'));
+});
 
 void test('quick PDF inspection reads only page metadata and destroys its parser', async () => {
   const fixture = setFixture(['first', 'second']);

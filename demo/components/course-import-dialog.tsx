@@ -171,7 +171,7 @@ export function DocumentProcessingStatus({
       : processing.status === 'running'
         ? '后台生成中'
         : processing.status === 'paused' ? '后台已暂停'
-          : processing.status === 'cancelled' ? '后台已取消' : '后台生成失败';
+          : processing.status === 'cancelled' ? '后台已取消' : processing.status === 'review' ? '等待审阅课程成果' : '后台生成失败';
   const timeLabel = (() => {
     const date = new Date(processing.updatedAt);
     return Number.isNaN(date.getTime())

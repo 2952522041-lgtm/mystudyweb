@@ -27,6 +27,11 @@ import {
 import { knowledgeStageMessage } from '@/lib/knowledge/synthesis-progress';
 import type { SynthesisDiagnostic } from '@/lib/knowledge/hierarchical-synthesis';
 import { CourseGlossary } from '@/components/course-glossary';
+import { CourseSwitcher } from '@/components/course-switcher';
+import { DesktopBuildInfo } from '@/components/desktop-build-info';
+import { CourseContentSearch } from '@/components/course-content-search';
+import { CourseReviewPanel } from '@/components/course-review-panel';
+import { CourseBackupActions } from '@/components/course-backup-actions';
 import {
   EMPTY_GLOSSARY,
   glossaryFingerprint,
@@ -223,6 +228,8 @@ export function CourseLibrary({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [studyTab, setStudyTab] = useState('summary');
+  const [searchLocation, setSearchLocation] = useState<{id?:string;line?:number;key:number}>({key:0});
+  const focusedRootSearch = useRef(0);
   const [documentQuery, setDocumentQuery] = useState('');
   const [documentSort, setDocumentSort] = useState<DocumentSort>('recent-read');
   const [readingProgress, setReadingProgress] = useState<DocumentProgress[]>([]);
@@ -950,6 +957,7 @@ export function CourseLibrary({
 
   const mergeDocumentWithAi = async (document: DocumentRecord) => {
     if (!active?.bundle) return;
+    if (active.bundle.manifest.pendingReview) { setError('已有待审阅的课程更新，请先接受更新或保留原成果。'); return; }
     if (backgroundBusy) { setError('本课程正在后台整理，将自动统一汇总。'); return; }
     setBusy(true);
     setError(null);
@@ -987,10 +995,12 @@ export function CourseLibrary({
       setGenerationAbort(null);
       const next = await backgroundRef.current!.mutate(active.id, storage => {
         if (controller.signal.aborted) throw new Error('生成已取消。');
-        return storage.mergeDocument(document.id, bundle.manifest.revision, aiKnowledge);
+        return storage.stageCourseReview
+          ? storage.stageCourseReview([document.id], bundle.manifest.revision, aiKnowledge)
+          : storage.mergeDocument(document.id, bundle.manifest.revision, aiKnowledge);
       });
       setEntryBundle(active.id, next);
-      setMessage('这份 PDF 已并入 AI 综合的课程总结和脑图。');
+      setMessage('候选课程成果已生成，请审阅差异后应用。');
     } catch (mutationError) {
       setError(describeKnowledgeError(mutationError));
       setRetryGeneration(() => () => void mergeDocumentWithAi(document));
@@ -1559,6 +1569,7 @@ export function CourseLibrary({
           return runExclusive(() => withSharedController(args, async (controller) => {
             setGenerationAbort(controller);
             const current = await entry.storage.load();
+            if (current.manifest.pendingReview) throw new Error('已有待审阅的课程更新，请先在课程页接受更新或保留原成果。');
             const documents = current.manifest.documents.filter(
               (item) => item.includedInCourse && current.digests[item.id],
             );
@@ -1583,11 +1594,12 @@ export function CourseLibrary({
             if (controller.signal.aborted) throw new Error('生成已取消。');
             const next = await backgroundRef.current!.mutate(entry.id, storage => {
               if (controller.signal.aborted) throw new Error('生成已取消。');
-              return storage.mergeDocuments(documents.map(item => item.id), current.manifest.revision, aiKnowledge);
+              if (!storage.stageCourseReview) throw new Error('当前存储不支持课程审阅，请更新页语。');
+              return storage.stageCourseReview(documents.map(item => item.id), current.manifest.revision, aiKnowledge);
             });
             setEntryBundle(entry.id, next);
-            setMessage(`课程“${entry.name}”的总总结和总脑图已重新生成。`);
-            return { course: toControlItem({ ...entry, bundle: next }) };
+            setMessage(`课程“${entry.name}”的候选成果已生成，请在课程页审阅后接受更新。`);
+            return { course: toControlItem({ ...entry, bundle: next }), status: 'review' };
           }));
         }
         throw new Error('不支持的共享操作。');
@@ -1720,6 +1732,17 @@ export function CourseLibrary({
 
       <main className="min-w-0 flex-1 overflow-auto px-4 py-6 sm:px-7 lg:px-10">
         <div className="mx-auto max-w-7xl">
+          <CourseSwitcher courses={entries} activeId={activeId} disabled={loading}
+            onSelect={setActiveId} onCreate={() => setCreateOpen(true)}
+            onConnect={isDesktop ? undefined : () => void connectHandle('existing')} />
+          <DesktopBuildInfo />
+          <CourseBackupActions directoryName={active?.permission === 'granted' ? active.storage.label : undefined} onRestored={async result => {
+            if (!desktopApi) throw new Error('桌面工作区未连接。');
+            const storage = new DesktopCourseStorage(desktopApi,result.directoryName);
+            const restored = await storage.load();
+            setEntries(previous => [...previous.filter(entry=>entry.id !== restored.manifest.id),{id:restored.manifest.id,name:restored.manifest.name,updatedAt:restored.manifest.updatedAt,storage,bundle:restored,permission:'granted'}]);
+            setActiveId(restored.manifest.id);
+          }} />
           {loading ? (
             <div className="flex min-h-[65vh] items-center justify-center text-sm text-slate-500">
               <LoaderCircle className="mr-2 size-4 animate-spin" />{' '}
@@ -1857,6 +1880,22 @@ export function CourseLibrary({
                 </div>
               </div>
 
+              <CourseReviewPanel key={`review:${active.id}:${bundle.manifest.pendingReview?.id ?? ''}`} bundle={bundle} onResolve={async (id,accept) => {
+                if (!active.storage.resolveCourseReview) throw new Error('请更新桌面版后再审阅。');
+                const next = await active.storage.resolveCourseReview(id,accept);
+                setEntryBundle(active.id,next);
+                backgroundRef.current?.wake();
+                setMessage(accept ? '已应用审阅后的课程更新。' : '已保留原课程成果，PDF 和单篇成果仍可使用。');
+              }} />
+              <CourseContentSearch key={active.id} bundle={bundle} storage={active.storage} onSelect={async hit => {
+                if (hit.kind === 'note') { setStudyTab('notes'); setSearchLocation({line:hit.line ?? 1,key:Date.now()}); }
+                else if (hit.kind === 'knowledge') { setStudyTab('summary'); setSearchLocation({id:hit.nodeId,key:Date.now()}); }
+                else {
+                  const document = bundle.manifest.documents.find(item => item.id === hit.documentId);
+                  if (!document) throw new Error('资料已删除');
+                  await openDocument(document,hit.page ?? 1);
+                }
+              }} />
               {isDesktop && active.storage.publishTranslation ? (
                 <div className="mt-5 flex flex-col gap-3 rounded-xl border border-violet-200 bg-violet-50/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
@@ -1972,7 +2011,7 @@ export function CourseLibrary({
                         课程总结尚未包含资料
                       </h2>
                       <p className="mt-2 max-w-sm text-xs leading-5 text-slate-500">
-                        {bundle.manifest.documents.length ? '资料已经保存，可以立即阅读。整理中的资料完成后会自动汇总；仅保存的资料可在 PDF 资料中选择“AI 并入课程”。' : '导入第一份 PDF 后，可生成独立成果，并将内部摘要合并到课程总总结和总脑图。'}
+                        {bundle.manifest.documents.length ? '资料已经保存，可以立即阅读。整理完成后，请在上方审阅并接受课程更新；仅保存的资料可在 PDF 资料中选择“AI 并入课程”。' : '导入第一份 PDF 后，可生成独立成果，审阅并接受后更新课程总总结和总脑图。'}
                       </p>
                       <Button
                         className="mt-6"
@@ -1995,14 +2034,19 @@ export function CourseLibrary({
                           份 PDF
                         </p>
                         <MarkdownActions content={renderCourseSummary(bundle.manifest, bundle.knowledge)} fileName={`${bundle.manifest.name}-课程总结.md`} />
-                        <div className="mt-5">
+                        <div className="mt-5" tabIndex={-1} ref={element => {
+                          if (element && focusedRootSearch.current !== searchLocation.key && bundle.knowledge.nodes.some(node => node.kind === 'course' && node.id === searchLocation.id)) {
+                            focusedRootSearch.current = searchLocation.key;
+                            element.focus(); element.scrollIntoView({block:'center'});
+                          }
+                        }}>
                           <KnowledgeMarkdown>{bundle.knowledge.nodes.find((node) => node.kind === 'course')?.description ?? ''}</KnowledgeMarkdown>
                         </div>
                         <div className="mt-9 space-y-9">
                           {bundle.knowledge.nodes
                             .filter((node) => node.kind !== 'course')
                             .map((node, index) => (
-                              <KnowledgeSection key={node.id} title={`${index + 1}. ${node.label}`} initiallyOpen={index < 2}>
+                              <KnowledgeSection key={`${node.id}:${searchLocation.id === node.id ? searchLocation.key : 0}`} title={`${index + 1}. ${node.label}`} initiallyOpen={index < 2 || searchLocation.id === node.id} focusOnMount={searchLocation.id === node.id}>
                                 <KnowledgeMarkdown>{node.description}</KnowledgeMarkdown>
                                 <StudyActions onAsk={() => askFromArtifact(`请解释“${node.label}”：${node.description}`, node.sources)} onSave={() => saveArtifactNote(`${node.label}\n\n${node.description}`, node.sources)} />
                                 <div className="mt-3 flex flex-wrap gap-2">
@@ -2086,7 +2130,7 @@ export function CourseLibrary({
                   />
                 </TabsContent>
 
-                <TabsContent value="notes" keepMounted><CourseNotesPanel key={active.id} storage={active.storage} courseId={bundle.manifest.id} /></TabsContent>
+                <TabsContent value="notes" keepMounted><CourseNotesPanel key={active.id} storage={active.storage} courseId={bundle.manifest.id} focusRequest={searchLocation.line ? {line:searchLocation.line,key:searchLocation.key} : undefined} /></TabsContent>
                 <TabsContent value="history"><CourseHistoryPanel key={active.id} storage={active.storage} current={bundle.knowledge} currentSummary={renderCourseSummary(bundle.manifest, bundle.knowledge)} /></TabsContent>
 
                 <TabsContent

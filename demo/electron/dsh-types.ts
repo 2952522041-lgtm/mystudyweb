@@ -16,6 +16,8 @@ export interface DshCompletionRequest {
   /** Fixed provider tool, never an arbitrary URL or agent tool definition. */
   operation?: 'web-search';
   task?: DshTaskPriority;
+  /** One transport retry before any content, opted in by the initial background attempt only. */
+  retryTransient?: boolean;
   /** The pinned SDK rejects these explicitly instead of ignoring them. */
   temperature?: number;
   responseFormat?: 'json_object';
@@ -41,7 +43,7 @@ export interface DshStatus {
   queueMs?: number;
   startupMs?: number;
   executionMs?: number;
-  /** Automatic adapter retries are disabled; caller retries are independent. */
+  /** At most one opt-in transient retry; domain output repair is independent. */
   retries: number;
 }
 export interface DshRuntimeStatus {

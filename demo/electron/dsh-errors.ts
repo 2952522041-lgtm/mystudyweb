@@ -8,6 +8,7 @@ export const DSH_ERRORS = {
   authentication: 'DSH 服务鉴权失败，请检查该功能的 API Key 与账户权限。',
   rate_limit: 'DSH 服务限流或额度不足，请检查账户额度并稍后重试。',
   network: 'DSH 网络连接失败，请检查网络后重试。',
+  service_busy: 'DSH 服务暂时繁忙，请稍后重试。',
   timeout: 'DSH 执行或服务响应超时，请稍后重试。',
   queue_timeout: 'DSH 排队等待超时，请待正在运行的任务完成后重试。',
   cancelled: 'DSH 排队任务已取消或正在运行的任务已停止。',
@@ -42,6 +43,7 @@ export function classifyDshProviderError(error: unknown): DshError {
   if (error instanceof DshError) return error;
   const value = error && typeof error === 'object' ? error as { code?: unknown; status?: unknown; statusCode?: unknown; cause?: unknown; name?: unknown } : {};
   const status = value.status ?? value.statusCode;
+  if ([502, 503, 504].includes(Number(status))) return new DshError('service_busy');
   if (status === 401 || status === 403 || value.code === 'INVALID_CREDENTIAL') return new DshError('authentication');
   if (status === 429 || ['QUOTA', 'ACCOUNT_QUOTA', 'RATE_LIMIT', 'QUOTA_EXCEEDED', 'ACCOUNT_QUOTA_EXCEEDED'].includes(String(value.code))) return new DshError('rate_limit');
   if (['ETIMEDOUT', 'MESSAGES_IDLE', 'TIMEOUT'].includes(String(value.code)) || value.name === 'TimeoutError') return new DshError('timeout');

@@ -178,6 +178,14 @@ export async function verifyDocument(course, fingerprint, expectedPages) {
       documentId: doc.id,
       phase: doc.processing.phase,
     };
+  if (['review', 'paused', 'cancelled'].includes(doc.processing?.status))
+    return {
+      status: 'needs_attention',
+      documentId: doc.id,
+      phase: doc.processing.phase,
+      code: doc.processing.status === 'review' ? 'COURSE_REVIEW_REQUIRED'
+        : doc.processing.status === 'paused' ? 'AI_PAUSED' : 'AI_CANCELLED',
+    };
   if (doc.processing) throw fail('DESTINATION_INVALID', '未知后台任务状态。');
   if (!(doc.hasSummary && doc.hasMindmap && doc.includedInCourse))
     return {

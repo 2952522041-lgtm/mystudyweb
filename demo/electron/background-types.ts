@@ -1,7 +1,7 @@
 import { safeDshError } from './dsh-errors.ts';
 
 /** App-owned task protocol: no model credentials, document text or filesystem paths. */
-export type BackgroundTaskStatus = 'queued' | 'running' | 'paused' | 'failed' | 'cancelled' | 'completed';
+export type BackgroundTaskStatus = 'queued' | 'running' | 'paused' | 'failed' | 'cancelled' | 'completed' | 'review';
 export interface BackgroundTaskRecord {
   id: string;
   courseId: string;
@@ -20,6 +20,8 @@ export interface BackgroundTaskRecord {
   completedUnits?: number;
   totalUnits?: number;
   progressRevision?: number;
+  cacheHits?: number;
+  modelRequests?: number;
 }
 export interface BackgroundSnapshot {
   tasks: BackgroundTaskRecord[];
@@ -66,7 +68,7 @@ export function sanitizeBackgroundSnapshot(value: unknown): BackgroundSnapshot {
   };
   const tasks = input.tasks.slice(0, 1000).flatMap(task => {
     if (!task || typeof task !== 'object' || !text(task.id) || !text(task.courseId) || !text(task.documentId)
-      || !['queued', 'running', 'paused', 'failed', 'cancelled', 'completed'].includes(task.status)
+      || !['queued', 'running', 'paused', 'failed', 'cancelled', 'completed', 'review'].includes(task.status)
       || !['document', 'course'].includes(task.phase)) return [];
     return [{id:text(task.id)!,courseId:text(task.courseId)!,documentId:text(task.documentId)!,
       courseName:text(task.courseName) ?? '',fileName:text(task.fileName) ?? '',phase:task.phase,status:task.status,
@@ -74,6 +76,8 @@ export function sanitizeBackgroundSnapshot(value: unknown): BackgroundSnapshot {
       resumedAt:text(task.resumedAt,40),
       message: progressMessage(task),
       error: typeof task.error === 'string' ? (/\[DSH:[a-z_]+\]/.test(task.error) ? safeDshError(new Error(task.error)).message : '任务未完成，请检查模型配置或重试；已完成内容保留。') : undefined,
+      cacheHits:Number.isSafeInteger(task.cacheHits) && task.cacheHits! >= 0 ? task.cacheHits : undefined,
+      modelRequests:Number.isSafeInteger(task.modelRequests) && task.modelRequests! >= 0 ? task.modelRequests : undefined,
       attempt:Number.isSafeInteger(task.attempt) ? task.attempt : undefined,
       completedUnits:Number.isSafeInteger(task.completedUnits) ? task.completedUnits : undefined,
       totalUnits:Number.isSafeInteger(task.totalUnits) ? task.totalUnits : undefined,

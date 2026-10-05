@@ -4,6 +4,7 @@ import { sha256Hex, stableDocumentId } from '../course-storage/file-utils.ts';
 import { pageNeedsOcr } from '../ocr.ts';
 import { renderPageImage } from '../page-vision.ts';
 import { mapWithConcurrency } from '../async-pool.ts';
+import { pdfTextCache, type PdfTextCache } from '../pdf-text-cache.ts';
 import type { PageImageInput } from '../chat.ts';
 import type {
   DigestConcept,
@@ -158,6 +159,9 @@ const MAX_PAGE_CONCURRENCY = 2;
 const PDF_EXTRACTION_CANCELLED = 'PDF 文字提取已取消。';
 
 interface ExtractPdfPagesOptions {
+  /** Local content search may index sparse/scanned PDFs without invoking OCR. */
+  allowEmptyText?: boolean;
+  textCache?: PdfTextCache;
   signal?: AbortSignal;
   onProgress?: (
     page: number,
@@ -227,15 +231,22 @@ export async function extractPdfPages(
       pageConcurrency,
       async (pageNumber, _index, signal) => {
         throwIfPageExtractionCancelled(signal);
+        const cache = options.textCache ?? pdfTextCache;
+        const cachedText = await cache.get(fingerprint,pageNumber);
+        throwIfPageExtractionCancelled(signal);
+        if (cachedText !== undefined && (!pageNeedsOcr(cachedText) || !options.recognizePage)) {
+          options.onProgress?.(pageNumber,pdf.numPages,'extracting');
+          return cachedText;
+        }
         const page = await pdf.getPage(pageNumber);
         try {
           throwIfPageExtractionCancelled(signal);
           const viewport = page.getViewport({ scale: 1 });
-          const content = await page.getTextContent();
+          const content = cachedText === undefined ? await page.getTextContent() : null;
           throwIfPageExtractionCancelled(signal);
-          let text = normalizePage(
+          let text = cachedText ?? normalizePage(
             itemsFromPdfJs(
-              content.items as Array<{
+              content!.items as Array<{
                 str?: string;
                 transform?: number[];
                 width?: number;
@@ -244,6 +255,8 @@ export async function extractPdfPages(
               viewport.height,
             ),
           ).text;
+          if (cachedText === undefined) await cache.set(fingerprint,pageNumber,text);
+          throwIfPageExtractionCancelled(signal);
           if (pageNeedsOcr(text) && options.recognizePage) {
             options.onProgress?.(pageNumber, pdf.numPages, 'ocr');
             const pageImage = await renderPageImage(pdf, pageNumber, {
@@ -270,7 +283,7 @@ export async function extractPdfPages(
       { signal: cancellation.signal },
     );
     throwIfPageExtractionCancelled(options.signal);
-    if (pages.join('').replace(/\s+/g, '').length < 20) {
+    if (!options.allowEmptyText && pages.join('').replace(/\s+/g, '').length < 20) {
       throw new Error(
         options.recognizePage
           ? 'OCR 没有识别到足够文字，请检查页面清晰度或更换视觉模型。'

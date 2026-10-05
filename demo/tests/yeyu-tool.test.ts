@@ -155,8 +155,8 @@ void test('wait polling reports a background failure without resubmitting the PD
   assert.equal(completion.error, '知识库请求失败');
 });
 
-void test('paused and cancelled are explicit processing states; unknown states still fail', () => {
-  for (const status of ['paused', 'cancelled']) {
+void test('paused, cancelled and review are explicit processing states; unknown states still fail', () => {
+  for (const status of ['paused', 'cancelled', 'review']) {
     const processing = { phase: 'document', status };
     assert.deepEqual(inspectProcessing(processing), {
       kind: status,
@@ -167,8 +167,8 @@ void test('paused and cancelled are explicit processing states; unknown states s
   assert.throws(() => inspectProcessing({ status: 'unexpected' }), /未知/);
 });
 
-void test('wait stops immediately on an initial or polled pause/cancellation', async () => {
-  for (const status of ['paused', 'cancelled']) {
+void test('wait stops immediately on an initial or polled pause/cancellation/review', async () => {
+  for (const status of ['paused', 'cancelled', 'review']) {
     for (const initial of [true, false]) {
       let stateReads = 0;
       const completion = await waitForImportCompletion({

@@ -22,6 +22,7 @@ import {
 } from '../electron/workspace.ts';
 import { resolveWorkspaceLayout } from '../electron/workspace-paths.ts';
 import { DesktopCourseStorage } from '../lib/course-storage/desktop-course-storage.ts';
+import { exportCourseBackup, inspectCourseBackup, restoreCourseBackup } from '../electron/course-backup.ts';
 import { appendStudyNote } from '../lib/course-storage/study-tools.ts';
 import {
   publishCachedTranslation,
@@ -790,4 +791,40 @@ void test('same-renderer glossary save waits for course deletion and cannot recr
   } finally {
     resume.resolve(); await locks.close(); await rm(root, {recursive:true,force:true});
   }
+});
+
+void test('actual desktop course layout round-trips through complete backup and staged course review', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'yeyu-backup-integration-'));
+  try {
+    const api = new FakeWorkspaceApi(root);
+    const workspace = await api.getWorkspaceInfo();
+    const {directoryName} = await api.createCourseDirectory('备份集成');
+    const storage = new DesktopCourseStorage(api,directoryName);
+    let bundle = await storage.initialize('备份集成');
+    const pdf = new File(['%PDF-sample-content'],'原始资料.pdf');
+    const fingerprint = createHash('sha256').update(Buffer.from(await pdf.arrayBuffer())).digest('hex');
+    const digest = makeDigest({fingerprint});
+    bundle = (await storage.importDocument(pdf,digest,{generateSummary:true,generateMindmap:true,mergeIntoCourse:false,includeConversationInsights:false},bundle.manifest.revision)).bundle;
+    const ai = {theme:'审阅后的课程',nodes:[],relations:[],conflicts:[],unresolvedQuestions:[],provider:'fixture',model:'fixture',promptVersion:'v1'};
+    const before = JSON.stringify(bundle.knowledge);
+    bundle = await storage.stageCourseReview([digest.documentId],bundle.manifest.revision,ai);
+    assert.equal(JSON.stringify((await storage.load()).knowledge),before);
+    assert.equal((await storage.load()).manifest.documents[0].processing?.status,'review');
+    bundle = await storage.resolveCourseReview(bundle.manifest.pendingReview!.id,true);
+    assert.equal(bundle.knowledge.nodes[0].description,ai.theme);
+    const note = await storage.loadNotes();await storage.saveNotes('原样保留笔记',note.token);
+    const exported = await exportCourseBackup(path.join(workspace.coursesRoot,directoryName),root);
+    assert.equal((await inspectCourseBackup(exported.directory)).documents,1);
+    const restored = await restoreCourseBackup(exported.directory,workspace.coursesRoot);
+    const restoredStorage = new DesktopCourseStorage(api,restored.directoryName);
+    const recovered = await restoredStorage.load();
+    assert.notEqual(recovered.manifest.id,bundle.manifest.id);
+    assert.equal(recovered.knowledge.courseId,recovered.manifest.id);
+    assert.equal(await (await restoredStorage.openPdf(digest.documentId)).text(),await pdf.text());
+    assert.equal((await restoredStorage.loadNotes()).content,'原样保留笔记');
+    const history = await restoredStorage.listHistory();
+    assert.ok(history.length>0);
+    assert.ok(history.every(entry=>entry.knowledge.courseId===recovered.manifest.id));
+    assert.equal((await storage.load()).manifest.id,bundle.manifest.id);
+  } finally {await rm(root,{recursive:true,force:true});}
 });

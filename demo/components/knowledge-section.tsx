@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MarkdownOutput } from '@/components/markdown-output';
 
 /** Closed sections do not mount the math/table renderer. */
@@ -8,14 +8,18 @@ export function KnowledgeSection({
   title,
   children,
   initiallyOpen = false,
+  focusOnMount = false,
 }: {
   title: string;
   children: React.ReactNode;
   initiallyOpen?: boolean;
+  focusOnMount?: boolean;
 }) {
   const [open, setOpen] = useState(initiallyOpen);
+  const element = useRef<HTMLElement>(null);
+  useEffect(() => { if (focusOnMount) { element.current?.scrollIntoView({block:'center'}); element.current?.focus({preventScroll:true}); } }, [focusOnMount]);
   return (
-    <section className="rounded-xl border border-slate-200 p-4">
+    <section ref={element} tabIndex={-1} className="rounded-xl border border-slate-200 p-4">
       <h3>
         <button
           type="button"

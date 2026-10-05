@@ -121,6 +121,9 @@ interface SmokeProbePayload {
   backgroundRoleBlocked?: boolean;
   backgroundSnapshotValid?: boolean;
   courseLockRoundtrip?: boolean;
+  buildMetadataValid?: boolean;
+  dshHistoryValid?: boolean;
+  restoreTokenRejected?: boolean;
   error?: string;
 }
 
@@ -178,6 +181,9 @@ async function launchAndProbe(
   assert.equal(result.backgroundRoleBlocked, true, 'visible renderer cannot forge worker snapshots');
   assert.equal(result.backgroundSnapshotValid, true, 'background snapshot IPC returns explicit availability');
   assert.equal(result.courseLockRoundtrip, true, 'course transaction lock completes over actual preload IPC');
+  assert.equal(result.buildMetadataValid, true, 'build metadata completes a real IPC roundtrip');
+  assert.equal(result.dshHistoryValid, true, 'DSH history is available over the main window bridge');
+  assert.equal(result.restoreTokenRejected, true, 'restore rejects a token without a native picker preview');
   assert.equal(
     result.popupDenied,
     true,

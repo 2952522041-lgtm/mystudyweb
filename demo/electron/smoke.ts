@@ -32,6 +32,9 @@ export interface SmokeProbeResult {
   backgroundRoleBlocked?: boolean;
   backgroundSnapshotValid?: boolean;
   courseLockRoundtrip?: boolean;
+  buildMetadataValid?: boolean;
+  dshHistoryValid?: boolean;
+  restoreTokenRejected?: boolean;
   error?: string;
 }
 
@@ -88,6 +91,10 @@ export async function probePreloadBridge(
           let backgroundRoleBlocked = false;
           try { await api.publishBackgroundSnapshot({tasks:[],executor:'desktop',available:true}); } catch { backgroundRoleBlocked = true; }
           const background = await api.getBackgroundSnapshot();
+          const buildInfo = await api.getBuildInfo();
+          const dshHistory = await api.getDshHistory();
+          let restoreTokenRejected = false;
+          try { await api.restoreCourseBackup('smoke-invalid-token'); } catch { restoreTokenRejected = true; }
           let courseLockRoundtrip = !createdCourse;
           if (createdCourse) { const token = await api.acquireCourseLock(createdCourse); await api.releaseCourseLock(token); courseLockRoundtrip = true; }
           const courses = (await api.listCourses()).map(
@@ -98,6 +105,9 @@ export async function probePreloadBridge(
             backgroundRoleBlocked,
             backgroundSnapshotValid: background.executor === 'desktop' && typeof background.available === 'boolean' && Array.isArray(background.tasks),
             courseLockRoundtrip,
+            buildMetadataValid: typeof buildInfo.version === 'string' && typeof buildInfo.dirty === 'boolean',
+            dshHistoryValid: Array.isArray(dshHistory),
+            restoreTokenRejected,
             popupDenied: popup === null,
             methods: Object.keys(api).sort(),
             workspace: await api.getWorkspaceInfo(),

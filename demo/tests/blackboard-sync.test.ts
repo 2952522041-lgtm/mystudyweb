@@ -503,3 +503,24 @@ void test('browser collector visits folders once, excludes previews and emits co
   assert.equal(scan.attachments.length, 1);
   assert.equal(scan.excluded.length, 1);
 });
+
+void test('review, paused and cancelled imports stop polling without duplicate submission', async () => {
+  const f = await fixture();
+  try {
+    await importBatch(config, batch(f.source), f.paths, f.dependencies);
+    for (const [state, code] of [['review','COURSE_REVIEW_REQUIRED'],['paused','AI_PAUSED'],['cancelled','AI_CANCELLED']]) {
+      await f.save({phase:'course', status:state});
+      const checked = await status(config, f.paths);
+      assert.equal(checked.status, 'needs_attention');
+      assert.equal(checked.items[0].code, code);
+      const repeat = await importBatch(config, batch(f.source), f.paths, f.dependencies);
+      assert.equal(repeat.status, 'needs_attention');
+      assert.equal(f.calls(), 1);
+      const done = await waitForJobs({}, undefined, {
+        poll: async () => checked,
+        sleep: async () => assert.fail('review/control states must not continue polling'),
+      });
+      assert.equal(done.status, 'needs_attention');
+    }
+  } finally { await f.cleanup(); }
+});

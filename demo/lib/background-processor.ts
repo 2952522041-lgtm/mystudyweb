@@ -26,6 +26,7 @@ export function createBackgroundProcessor(options: {
   onWake?(): void;
 }) {
   return new BackgroundImports({
+    reviewCourseChanges: true,
     ...options,
     onBundle: (id, bundle) => {
       if (options.execute !== false) updateTaskBundle(bundle);
