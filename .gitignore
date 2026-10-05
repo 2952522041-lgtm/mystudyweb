@@ -1,3 +1,63 @@
 __pycache__/
 *.py[cod]
 
+
+# Dependencies, package caches and generated builds
+node_modules/
+.pnpm-store/
+.npm/
+.cache/
+.codegraph/
+dist/
+build/
+out/
+coverage/
+*.tsbuildinfo
+
+# Secrets and machine-local settings
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+*.pem
+*.key
+id_rsa
+id_ed25519
+.aws/
+.codex/
+.npmrc
+.pypirc
+
+# Runtime data (keep application sources and fixtures tracked)
+Courses/
+Cache/
+Settings/
+页语工作区/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log
+logs/
+/tmp/
+/temp/
+/demo/scripts/blackboard/config.json
+/docs/validation/**/*.tar.gz
+
+# Electron installers
+*.deb
+*.rpm
+*.AppImage
+*.dmg
+*.msi
+*.nupkg
+
+# Editors and OS temporary files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "site": "https://bb.cuhk.edu.cn",
+  "semester": "EXAMPLE",
+  "courses": [{
+    "code": "DEMO101",
+    "blackboardId": "_0_1",
+    "yeyuName": "demo101",
+    "enabled": false,
+    "roots": []
+  }]
+}

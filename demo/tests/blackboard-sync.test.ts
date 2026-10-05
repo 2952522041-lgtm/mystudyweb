@@ -8,7 +8,6 @@ import {
   atomicJson,
   findCourse,
   importBatch,
-  loadConfig,
   readLedger,
   saveReport,
   status,
@@ -17,7 +16,7 @@ import {
   waitForJobs,
   withLock,
 } from '../scripts/blackboard/sync.mjs';
-import { contentUrl } from '../scripts/blackboard/rules.mjs';
+import { contentUrl, validateConfig } from '../scripts/blackboard/rules.mjs';
 import {
   scanBlackboard,
   downloadAttachment,
@@ -177,18 +176,12 @@ async function fixture() {
   };
 }
 
-void test('configuration fixes the three enabled courses and pauses CSC3002', async () => {
-  const value = await loadConfig();
-  assert.deepEqual(
-    value.courses
-      .filter((c: { enabled: boolean }) => c.enabled)
-      .map((c: { code: string }) => c.code),
-    ['ECE3060', 'ECE3080', 'ECE3250'],
-  );
-  assert.equal(
-    value.courses.find((c: { code: string }) => c.code === 'CSC3002').enabled,
-    false,
-  );
+void test('public configuration example is valid and disables synchronization', async () => {
+  const value = validateConfig(JSON.parse(await fs.readFile(
+    new URL('../scripts/blackboard/config.example.json', import.meta.url), 'utf8',
+  )));
+  assert.ok(value.courses.length > 0);
+  assert.ok(value.courses.every((course: { enabled: boolean }) => !course.enabled));
 });
 void test('batch rejects stale/partial scans, missing download paths and paused courses', () => {
   assert.doesNotThrow(() => validateBatch(config, batch('/tmp/Lecture 1.pdf')));

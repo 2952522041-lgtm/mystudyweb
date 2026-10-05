@@ -6,7 +6,7 @@
 
 ## 固定配置
 
-`demo/scripts/blackboard/config.json` 是唯一课程范围配置：2610UG，ECE3060、ECE3080、ECE3250；CSC3002 禁用，只有用户明确要求后才修改。Preview / preivew / 预习、课程大纲、教材不导入。未知材料输出待检查，不能自行扩展范围。
+`demo/scripts/blackboard/config.json` 是唯一课程范围配置，属于本地个人配置，不纳入 Git。首次使用先复制同目录 `config.example.json` 为 `config.json`，填入自己的学期、课程与内容标识，再按需启用课程；示例默认禁用同步。既有本地配置保持不变，只有用户明确要求后才修改课程范围。Preview / preivew / 预习、课程大纲、教材不导入。未知材料输出待检查，不能自行扩展范围。
 
 执行目录为 `/home/yusicheng/project/learning_app/demo`：
 
