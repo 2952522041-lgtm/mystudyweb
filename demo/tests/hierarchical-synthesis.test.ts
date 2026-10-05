@@ -44,6 +44,7 @@ function mock(
     abortAt?: number;
     controller?: AbortController;
     verbose?: boolean;
+    generationMode?: 'fast' | 'deep';
     omitScience?: boolean;
     maxInputBytes?: Partial<Record<'chunk' | 'document' | 'course', number>>;
     maxOutputTokens?: number;
@@ -110,7 +111,7 @@ function mock(
     );
   }) as typeof fetch;
   const provider = createKnowledgeProviderForSettings(
-    settings,
+    {...settings, generationMode: options.generationMode},
     fetchImpl,
     createKnowledgeDigestCache(digests),
     store,
@@ -459,8 +460,8 @@ void test('relation-only records carry exact unique endpoint provenance without 
   ));
 });
 
-void test('long lecture plus multiple course documents completes through all layers with bounded calls', async () => {
-  const m = mock({ verbose: true });
+for (const generationMode of ['fast', 'deep'] as const) void test(`long lecture plus multiple course documents completes through all layers with bounded calls (${generationMode})`, async () => {
+  const m = mock({ verbose: true, generationMode });
   const digest = await m.provider.analyzeDocument(input());
   const digests = [
     digest,
@@ -472,7 +473,9 @@ void test('long lecture plus multiple course documents completes through all lay
     courseName: '长讲义与论文合集',
     digests,
   });
-  assert.equal(m.requests.length, 24);
+  // Fast mode retains more original chapter detail; its course index can need
+  // extra groups. Keep this cost visible rather than dropping source points.
+  assert.equal(m.requests.length, generationMode === 'fast' ? 28 : 24);
   assert.ok(ai.nodes[0].sources.some((s) => s.documentId === 'lecture'));
   assert.ok(ai.nodes[0].sources.some((s) => s.documentId === 'paper-b'));
   const levels = m.requests.map((r, index) => ({
@@ -486,7 +489,7 @@ void test('long lecture plus multiple course documents completes through all lay
   }));
   assert.equal(levels.filter((l) => l.layer === 'chunk').length, 6);
   assert.equal(levels.filter((l) => l.layer === 'document').length, 5);
-  assert.equal(levels.filter((l) => l.layer === 'course').length, 13);
+  assert.equal(levels.filter((l) => l.layer === 'course').length, generationMode === 'fast' ? 17 : 13);
   console.log(
     'MIXED_HIERARCHY_METRICS',
     JSON.stringify({ legacyCourseInput: utf8Size(digests), levels }),

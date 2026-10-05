@@ -42,10 +42,10 @@ export function lectureReply(documentId: string, hierarchical: boolean) {
   };
 }
 
-export function mockProvider(replies: unknown[], store = createMemoryStore<DocumentDigest>()) {
+export function mockProvider(replies: unknown[], store = createMemoryStore<DocumentDigest>(), generationMode?: 'fast' | 'deep') {
   const requests: Array<{messages: Array<{role:string;content:string}>}> = [];
   const provider = createKnowledgeProviderForSettings({
-    baseUrl:'https://mock.invalid/v1', apiKey:'mock-only', model:'mock-hierarchy',
+    baseUrl:'https://mock.invalid/v1', apiKey:'mock-only', model:'mock-hierarchy', generationMode,
   }, async (_url, init) => {
     requests.push(JSON.parse(typeof init?.body === 'string' ? init.body : '{}'));
     const text = JSON.stringify(replies[Math.min(requests.length-1,replies.length-1)]);

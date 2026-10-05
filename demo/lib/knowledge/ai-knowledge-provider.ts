@@ -8,6 +8,7 @@ import { normalizeHierarchy } from './normalize-hierarchy.ts';
 import { normalizeContainmentDirection } from './relation-normalization.ts';
 import { groundSourceRanges } from './ground-source-ranges.ts';
 import { intermediateOutputFitsBudget } from './intermediate-budget.ts';
+import { collectPreservedSections, replacePreservedSections, type PreservedSection } from './preserved-sections.ts';
 import {
   knowledgeSettingsConfigured,
   type KnowledgeSettings,
@@ -50,6 +51,8 @@ export const KNOWLEDGE_DIGEST_PROMPT_VERSION = 'ai-digest-v11';
 export const KNOWLEDGE_COURSE_PROMPT_VERSION = 'ai-course-v10';
 // Chunk extraction is unchanged: retain completed chunks from previous imports.
 const CHUNK_CACHE_PROMPT_VERSION = 'ai-digest-v6/ai-course-v5/hierarchical-v2';
+// Assembly policy is independent of vendor-specific thinking parameters.
+const FAST_DOCUMENT_STRATEGY = 'preserved-sections-v1';
 /** 分块分析与综合共用的默认输出 token 上限；过小会触发 finish_reason=length 截断。 */
 export const KNOWLEDGE_MAX_OUTPUT_TOKENS = 8192;
 /**
@@ -1013,18 +1016,23 @@ function digestSynthesisPrompt(input: {
   documentId: string;
   pageCount: number;
   chunkResults: unknown[];
+  preserveSections?: boolean;
 }): string {
   return [
     `以下是对《${input.fileName}》（documentId：${input.documentId}，全文共 ${input.pageCount} 页）逐分块分析得到的 JSON 结果数组：`,
     JSON.stringify(input.chunkResults),
     '',
     '请把分块结果综合成整份文档的知识摘要，输出一个 JSON 对象，结构如下：',
-    '{"hierarchy":{"mode":"structured 或 flat","reason":"原文结构依据"},"title":"文档标题（不含 .pdf 后缀）","overview":"300-500 字整体概述，概括全文核心内容，不要照抄开头","sections":[{"id":"s1","title":"章节标题","summary":"章节摘要", "points":[{"text":"独立要点，可含小节标题、LaTeX 或完整表格","pageStart":整数,"pageEnd":整数}],"pageStart":整数,"pageEnd":整数}],"concepts":[{"id":"c1","parentId":null,"label":"概念名","description":"概念解释","sources":[{"documentId":"<documentId>","fileName":"<fileName>","pageStart":整数,"pageEnd":整数}]}],"relations":[{"from":"c1","to":"c2","label":"关联"}],"unresolvedQuestions":["..."],"sourcePages":[1,2,3]}',
+    input.preserveSections
+      ? '{"hierarchy":{"mode":"structured 或 flat","reason":"原文结构依据"},"title":"文档标题（不含 .pdf 后缀）","overview":"300-500 字整体概述，概括全文核心内容，不要照抄开头","concepts":[{"id":"c1","parentId":null,"label":"概念名","description":"概念解释","sources":[{"documentId":"<documentId>","fileName":"<fileName>","pageStart":整数,"pageEnd":整数}]}],"relations":[{"from":"c1","to":"c2","label":"关联"}],"unresolvedQuestions":["..."]}'
+      : '{"hierarchy":{"mode":"structured 或 flat","reason":"原文结构依据"},"title":"文档标题（不含 .pdf 后缀）","overview":"300-500 字整体概述，概括全文核心内容，不要照抄开头","sections":[{"id":"s1","title":"章节标题","summary":"章节摘要", "points":[{"text":"独立要点，可含小节标题、LaTeX 或完整表格","pageStart":整数,"pageEnd":整数}],"pageStart":整数,"pageEnd":整数}],"concepts":[{"id":"c1","parentId":null,"label":"概念名","description":"概念解释","sources":[{"documentId":"<documentId>","fileName":"<fileName>","pageStart":整数,"pageEnd":整数}]}],"relations":[{"from":"c1","to":"c2","label":"关联"}],"unresolvedQuestions":["..."],"sourcePages":[1,2,3]}',
     HIERARCHY_PROMPT,
     'relations 中每个 label 必须且只能是以下一个完整值：包含、依赖、导致、对比、组成、应用、冲突、关联。禁止使用竖线或斜线拼接多个值，也禁止自造标签。',
     '包含关系方向固定为 from=父节点id、to=子节点id，必须满足 concepts 中子节点.parentId === 父节点id；不要把方向写反。',
     '要求：',
-    '- 每节 points 必须保留独立来源页码、关键公式和完整表格；不得为压缩篇幅改写符号或丢失适用条件。',
+    input.preserveSections
+      ? '- 应用会按原顺序保留全部已校验的分块章节、要点、公式、表格和页码；本次只生成全局概述与脑图，不要输出 sections 或 points，也不要重新抄写章节正文。概念解释须保留定义、条件与局限。'
+      : '- 每节 points 必须保留独立来源页码、关键公式和完整表格；不得为压缩篇幅改写符号或丢失适用条件。',
     '- 同义概念使用同一术语，首次出现写出原文名/译名；不要凭相似拼写合并不同数学符号。',
     '- 概念必须跨分块去重（同一概念只出现一次），并合并所有来源页码；至多 60 个节点（含分支），依据材料决定数量。',
     '- relations 描述概念之间真实存在的关系，形成有层次的结构，不要把所有概念都连向同一个节点。',
@@ -1287,7 +1295,8 @@ export function createKnowledgeProviderForSettings(
   const model = settings.model.trim();
   const executionBackend = readSelectedAgentBackend();
   const providerIdentity = knowledgeProviderIdentity(executionBackend);
-  const fastSynthesis = settings.generationMode !== 'deep'
+  const preserveDocumentSections = settings.generationMode !== 'deep';
+  const fastSynthesis = preserveDocumentSections
     && supportsThinkingControl(model, settings.baseUrl);
   const maxOutputTokens = knowledgeMaxOutputTokens(model, settings.baseUrl);
   const requestConfig: ChatCompletionConfig = {
@@ -1302,10 +1311,11 @@ export function createKnowledgeProviderForSettings(
   const context = (input: AnalyzeDocumentInput | SynthesizeCourseInput) => {
     const diagnostics: SynthesisDiagnostic[] = [];
     const report = (diagnostic: SynthesisDiagnostic) => { diagnostics.push(diagnostic); input.onDiagnostic?.(diagnostic); };
-    const request = async (layer: SynthesisLayer, identity: string, userPrompt: string, glossaryText: string, validate: (raw: unknown) => void, intermediate = false, provenance?: SourceReference[], requestSignal = input.signal, intermediateInputBytes?: number) => {
+    const request = async (layer: SynthesisLayer, identity: string, userPrompt: string, glossaryText: string, validate: (raw: unknown) => void, intermediate = false, provenance?: SourceReference[], requestSignal = input.signal, intermediateInputBytes?: number, preservedSections?: readonly PreservedSection[]) => {
       const signal = requestSignal;
       const prompt = userPrompt + (intermediate ? `\n这是分层中间归并。保留来源、概念身份和真实层级，压缩重复叙述。JSON 输出不得超过 ${SYNTHESIS_BUDGET.intermediate} UTF-8 字节；关键元素由应用独立保管，不必重复展开完整表格。` : '');
       const check = (raw: unknown) => {
+        if (preservedSections) replacePreservedSections(assertObject(raw, '单文档综合'), preservedSections);
         if (provenance) {
           const grounded = groundSourceRanges(raw, provenance);
           if (grounded.splitCount) {
@@ -1327,7 +1337,7 @@ export function createKnowledgeProviderForSettings(
         if (intermediate && !intermediateOutputFitsBudget({contentBytes, fullBytes:utf8Size(raw), inputBytes:intermediateInputBytes})) throw new KnowledgeError('invalid_output', '中间归并未满足预算：目标 10000 字节，完整结果须在 24000 字节内；超过目标时完整结果须小于本批输入；整轮不缩小或超过轮次上限时停止。这是中间索引，不是最终总结：文档 sections 只保留一条简短主题索引，points 使用 []；原始全部要点、公式和表格由应用独立证据账本保留，最终会补回。concepts 保留不同概念及真实来源，但不要在 overview、summary、points 和 description 中重复展开同一内容。压缩重复解释，不要复制大段原文。');
       };
       if (signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
-      const key = await synthesisCacheKey({ layer, identity, provider: `${providerIdentity}@${settings.baseUrl}`, model, promptVersion: layer === 'chunk' ? CHUNK_CACHE_PROMPT_VERSION : `${KNOWLEDGE_DIGEST_PROMPT_VERSION}/${KNOWLEDGE_COURSE_PROMPT_VERSION}/${HIERARCHICAL_PROMPT_VERSION}`, input: { prompt, glossaryText, ...(fastSynthesis && layer !== 'chunk' && !intermediate ? {generationMode:'fast'} : {}) } });
+      const key = await synthesisCacheKey({ layer, identity, provider: `${providerIdentity}@${settings.baseUrl}`, model, promptVersion: layer === 'chunk' ? CHUNK_CACHE_PROMPT_VERSION : `${KNOWLEDGE_DIGEST_PROMPT_VERSION}/${KNOWLEDGE_COURSE_PROMPT_VERSION}/${HIERARCHICAL_PROMPT_VERSION}`, input: { prompt, glossaryText, ...(fastSynthesis && layer !== 'chunk' && !intermediate ? {generationMode:'fast'} : {}), ...(preservedSections ? {strategy:FAST_DOCUMENT_STRATEGY,preservedSections} : {}) } });
       if (signal?.aborted) throw new KnowledgeError('aborted', '知识库分析已取消。');
       const unavailable = () => { input.onStage?.('cache-unavailable', {}); report({layer, action:'cache-unavailable', identity, inputBytes:0, limit:0, droppedItems:0, droppedBytes:0, detail:'中间缓存不可用；本次计算继续，跨重试复用不可保证。'}); };
       if ('bypassCache' in input && input.bypassCache) {
@@ -1388,19 +1398,19 @@ export function createKnowledgeProviderForSettings(
       const digestKey = (fast: boolean) => knowledgeDigestCacheKey({
         glossaryFingerprint: termFingerprint,
         fingerprint: `${input.fingerprint}:${documentId}:${input.fileName}`,
-        provider: `${providerIdentity}@${settings.baseUrl}${fast ? '#fast' : ''}`,
+        provider: `${providerIdentity}@${settings.baseUrl}${fast ? `#fast/${FAST_DOCUMENT_STRATEGY}` : ''}`,
         model,
         promptVersion: KNOWLEDGE_DIGEST_PROMPT_VERSION,
         schemaVersion: DIGEST_SCHEMA_VERSION,
       });
-      const cacheKey = digestKey(fastSynthesis);
+      const cacheKey = digestKey(preserveDocumentSections);
       if (!input.bypassCache && !input.resume) {
         let cached: DocumentDigest | undefined;
         try {
           cached = await digestCache.lookup(cacheKey);
           // Previously validated deep results are suitable for fast mode, but
           // fast results must never satisfy a later explicit deep request.
-          if (!cached && fastSynthesis) cached = await digestCache.lookup(digestKey(false));
+          if (!cached && preserveDocumentSections) cached = await digestCache.lookup(digestKey(false));
         }
         catch { input.onStage?.('cache-unavailable', {}); }
         try {
@@ -1417,6 +1427,9 @@ export function createKnowledgeProviderForSettings(
       }
 
       const chunks = buildPdfChunks(input.pages);
+      if (chunks.length === 0) {
+        throw new KnowledgeError('invalid_input', '这份 PDF 没有可分析的文字。请检查 PDF 内容或 OCR 识别结果后重试。');
+      }
       const sourceLedger = sourceEvidence(input.pages, documentId, input.fileName);
       type AnalyzedChunk = { data: unknown; chunk: PdfChunk; identity: string };
       let totalChunks = chunks.length;
@@ -1443,6 +1456,7 @@ export function createKnowledgeProviderForSettings(
             if (!Array.isArray(root.sections) || !root.sections.length || !Array.isArray(root.concepts)) throw new KnowledgeError('invalid_output', '分块缺少 sections/concepts');
             for (const section of root.sections) {
               const entry = assertObject(section, '分块章节');
+              requireString(entry.title, 'title', '分块章节');
               const range = assertValidPageRange(entry.pageStart, entry.pageEnd, pageCount, '分块章节');
               if (range.pageStart < chunk.pageStart || range.pageEnd > chunk.pageEnd) throw new KnowledgeError('invalid_source_pages', '分块来源超出本次分块页码。');
               requireString(entry.summary, 'summary', '分块章节');
@@ -1498,17 +1512,22 @@ export function createKnowledgeProviderForSettings(
       );
       const orderedChunks = analyzedChunks.flat();
       const chunkResults = orderedChunks.map(item => item.data);
+      const preservedSections = preserveDocumentSections ? collectPreservedSections(chunkResults) : undefined;
 
       const evidence = uniqueEvidence([...sourceLedger, ...chunkResults.flatMap(raw => collectEvidence(raw, { documentId, fileName:input.fileName, pageStart:1, pageEnd:pageCount, type:'pdf' }))]);
       // Keep complete chunk records when they fit a final request. Splitting at
       // the smaller intermediate budget duplicates headers/provenance and can
       // turn a valid final payload into several unnecessary model calls.
-      const records = utf8Size(chunkResults) <= SYNTHESIS_BUDGET.finalPayload ? chunkResults : chunkResults.flatMap((raw, chunkIndex) => synthesisRecords(raw, { documentId, fileName:input.fileName, chunkIndex }));
-      const synthesisRaw = await reduceWithinBudget({ records, layer:'document', identity:documentId, report:run.report, signal:input.signal, shouldSplit: isRecoverableSizeError, reduce: async (batch, identity, intermediate, signal) => {
+      // Fast finals return only the index; leave room for the prompt and JSON
+      // envelope under the independently checked 64 KB request ceiling. A
+      // glossary can consume that headroom, so retain its conservative budget.
+      const finalPayloadLimit = preserveDocumentSections && !input.glossary?.entries.length ? 52_000 : SYNTHESIS_BUDGET.finalPayload;
+      const records = utf8Size(chunkResults) <= finalPayloadLimit ? chunkResults : chunkResults.flatMap((raw, chunkIndex) => synthesisRecords(raw, { documentId, fileName:input.fileName, chunkIndex }));
+      const synthesisRaw = await reduceWithinBudget({ records, layer:'document', identity:documentId, finalPayloadLimit, report:run.report, signal:input.signal, shouldSplit: isRecoverableSizeError, reduce: async (batch, identity, intermediate, signal) => {
         input.onStage?.('synthesize', { chunkCount:totalChunks, identity });
         const raw = await run.request('document', identity, intermediate
           ? intermediateSynthesisPrompt('document',batch,{documentId,fileName:input.fileName,pageCount})
-          : digestSynthesisPrompt({ fileName:input.fileName, documentId, pageCount, chunkResults:batch }), glossaryPrompt(input.glossary, JSON.stringify(batch)), raw => {
+          : digestSynthesisPrompt({ fileName:input.fileName, documentId, pageCount, chunkResults:batch, preserveSections:preserveDocumentSections }), glossaryPrompt(input.glossary, JSON.stringify(batch)), raw => {
           const payload = validateDigestPayload(raw, { fileName:input.fileName, documentId, pageCount });
           ((raw as {concepts: DigestConcept[]}).concepts).forEach((node, index) => {node.sources = payload.concepts[index].sources;});
           if (!intermediate) {
@@ -1516,7 +1535,7 @@ export function createKnowledgeProviderForSettings(
             const candidate = buildDocumentDigest(payload, { documentId, fingerprint:input.fingerprint, fileName:input.fileName, pageCount, provider:providerIdentity, model, now:'' });
             assertNormalizedHierarchy(candidate.concepts, raw);
           }
-        }, intermediate, synthesisSources(batch, {documentId,fileName:input.fileName,pageStart:1,type:'pdf'}), signal, utf8Size(batch));
+        }, intermediate, synthesisSources(batch, {documentId,fileName:input.fileName,pageStart:1,type:'pdf'}), signal, utf8Size(batch), intermediate ? undefined : preservedSections);
         run.quality(batch.flatMap(value => collectEvidence(value, {documentId, fileName:input.fileName, pageStart:1, pageEnd:pageCount, type:'pdf'})), raw, 'document', identity);
         return raw;
       }}).catch(error => { if (error instanceof Error) Object.assign(error, {diagnostics:run.diagnostics}); throw error; });

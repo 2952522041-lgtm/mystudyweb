@@ -215,7 +215,7 @@ void test('repairs the screenshot shape (15 children, depth 2) without regenerat
     ],
     relations: [],
   };
-  const { provider, requests } = mockProvider([lectureReply(input.documentId, true), draft, repair]);
+  const { provider, requests } = mockProvider([lectureReply(input.documentId, true), draft, repair], undefined, 'deep');
   const digest = await provider.analyzeDocument(input);
   assert.equal(requests.length, 3);
   assert.equal(requests[2].messages.length, 2);

@@ -845,7 +845,7 @@ void test('second analysis of the same PDF reuses the cached digest without new 
 });
 
 void test('single-PDF summary and mindmap come from the mocked AI response', async () => {
-  const { provider } = makeProvider([chunkAnalysisReply(), digestReply()]);
+  const { provider } = makeProvider([chunkAnalysisReply(), digestReply()], undefined, { ...settings, generationMode: 'deep' });
   const digest = await provider.analyzeDocument({
     fingerprint: FINGERPRINT,
     fileName: FILE_NAME,
@@ -1467,7 +1467,7 @@ $$E = mc^2 + \frac{p^2}{2m}$$
   const { provider, requests } = makeProvider([chunkAnalysisReply(), digestReply({sections:[{
     title:'能量', summary:'适用条件', pageStart:1, pageEnd:2,
     points:[{text,pageStart:2,pageEnd:2}],
-  }]})]);
+  }]})], undefined, { ...settings, generationMode: 'deep' });
   const input = {fingerprint:FINGERPRINT,documentId:DOCUMENT_ID,fileName:FILE_NAME,pages:PAGES};
   const digest = await provider.analyzeDocument(input);
   assert.equal(digest.sections[0].points?.[0].text, text);
@@ -1483,7 +1483,7 @@ $$E = mc^2 + \frac{p^2}{2m}$$
 void test('out-of-document point sources are rejected before cache writes', async () => {
   const { provider, store } = makeProvider([chunkAnalysisReply(), digestReply({sections:[{
     title:'能量',summary:'条件',pageStart:1,pageEnd:1,points:[{text:'结论',pageStart:99,pageEnd:99}],
-  }]})]);
+  }]})], undefined, { ...settings, generationMode: 'deep' });
   await assert.rejects(provider.analyzeDocument({fingerprint:FINGERPRINT,documentId:DOCUMENT_ID,fileName:FILE_NAME,pages:PAGES}), /超出 PDF 实际页码/);
   assert.equal((await store.keys()).length, 0);
 });

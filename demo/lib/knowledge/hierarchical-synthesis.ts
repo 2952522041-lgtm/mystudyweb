@@ -120,6 +120,25 @@ export function synthesisRecords(
   return records;
 }
 
+/** Validates an explicit final byte budget once; omitted means the existing default. */
+function resolveFinalPayloadLimit(
+  limit: number | undefined,
+  layer: 'document' | 'course',
+): number {
+  if (limit === undefined) return SYNTHESIS_BUDGET.finalPayload;
+  const maximum = SYNTHESIS_BUDGET[layer];
+  if (
+    typeof limit !== 'number' ||
+    !Number.isSafeInteger(limit) ||
+    limit < SYNTHESIS_BUDGET.payload ||
+    limit > maximum
+  )
+    throw new RangeError(
+      `finalPayloadLimit 必须是 ${SYNTHESIS_BUDGET.payload} 到 ${maximum} 之间的安全整数；收到 ${String(limit)}。`,
+    );
+  return limit;
+}
+
 export async function reduceWithinBudget(options: {
   records: unknown[];
   layer: 'document' | 'course';
@@ -127,6 +146,8 @@ export async function reduceWithinBudget(options: {
   signal?: AbortSignal;
   report: (diagnostic: SynthesisDiagnostic) => void;
   shouldSplit?: (error: unknown) => boolean;
+  /** UTF-8 JSON bytes of records only; full request budgets remain independently enforced. */
+  finalPayloadLimit?: number;
   reduce: (
     records: unknown[],
     identity: string,
@@ -134,6 +155,10 @@ export async function reduceWithinBudget(options: {
     signal?: AbortSignal,
   ) => Promise<unknown>;
 }): Promise<unknown> {
+  const finalPayloadLimit = resolveFinalPayloadLimit(
+    options.finalPayloadLimit,
+    options.layer,
+  );
   const reduceSafely = async (
     records: unknown[],
     identity: string,
@@ -182,7 +207,7 @@ export async function reduceWithinBudget(options: {
   let records = options.records;
   for (let round = 0; round <= SYNTHESIS_BUDGET.rounds; round++) {
     if (options.signal?.aborted) throw options.signal.reason ?? new Error('分层综合已取消。');
-    if (utf8Size(records) <= SYNTHESIS_BUDGET.finalPayload)
+    if (utf8Size(records) <= finalPayloadLimit)
       return reduceSafely(records, `${options.identity}/final`, false, options.signal);
     const batches: unknown[][] = [];
     let batch: unknown[] = [];
